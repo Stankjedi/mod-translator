@@ -25,3 +25,14 @@
 *.wav
 *.ogg
 *.mov
+
+# Build artifacts
+/target/
+/apps/desktop/node_modules/
+/apps/desktop/dist/
+/apps/desktop/.turbo/
+/apps/desktop/.tauri/
+
+# General cache files
+*.log
+.DS_Store
