@@ -19,6 +19,14 @@ The workspace bundles a policy-aware Tauri desktop shell with a React + Tailwind
 - Rust 1.77+ with `tauri-cli`
 - npm (or pnpm/yarn)
 
+### Windows-specific setup
+
+Building the Rust crates on Windows targets requires the Microsoft Visual C++ toolchain. If you see an error such as `linker
+link.exe not found`, install the **Build Tools for Visual Studio 2017 or later** (or a full Visual Studio installation) and
+include the **Desktop development with C++** workload. After installation, restart your terminal so that `link.exe` is available
+on the `PATH` and run `rustup default stable-x86_64-pc-windows-msvc` (or `rustup target add x86_64-pc-windows-msvc`) to ensure
+Rust uses the MSVC toolchain.
+
 ## First-time setup
 
 ```bash
