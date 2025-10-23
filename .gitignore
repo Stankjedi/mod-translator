@@ -1,0 +1,27 @@
+# Binary assets
+*.png
+!assets/images/arc-logo.png
+!assets/images/updates-hero.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+*.svgz
+*.zip
+*.tar
+*.gz
+*.bz2
+*.7z
+*.rar
+*.exe
+*.dll
+*.so
+*.dylib
+*.bin
+*.pdf
+*.mp4
+*.mp3
+*.wav
+*.ogg
+*.mov
