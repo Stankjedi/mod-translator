@@ -34,14 +34,14 @@ pub struct TranslationJobSummary {
 }
 
 #[tauri::command]
-pub fn discover_steam_path() -> Result<SteamPathResponse, String> {
+pub fn detect_steam_path() -> Result<SteamPathResponse, String> {
     let locator = SteamLocator::new();
     let discovered = locator.discover_path();
 
     let note = if discovered.is_some() {
-        "Detected Steam installation path".to_string()
+        "Steam 설치 경로를 자동으로 감지했습니다.".to_string()
     } else {
-        "Steam path not found automatically; please provide it manually.".to_string()
+        "Steam 경로를 자동으로 찾지 못했습니다. 직접 경로를 입력해 주세요.".to_string()
     };
 
     Ok(SteamPathResponse {
@@ -51,7 +51,7 @@ pub fn discover_steam_path() -> Result<SteamPathResponse, String> {
 }
 
 #[tauri::command]
-pub fn scan_library(explicit_path: Option<String>) -> Result<LibraryScanResponse, String> {
+pub fn scan_steam_library(explicit_path: Option<String>) -> Result<LibraryScanResponse, String> {
     let locator = SteamLocator::new();
     let scanner = LibraryScanner::new();
 
@@ -94,10 +94,10 @@ mod tests {
 
     #[test]
     fn responses_are_serializable() {
-        let path = discover_steam_path().unwrap();
+        let path = detect_steam_path().unwrap();
         serde_json::to_string(&path).expect("steam path should serialize");
 
-        let libraries = scan_library(None).unwrap();
+        let libraries = scan_steam_library(None).unwrap();
         serde_json::to_string(&libraries).expect("library scan should serialize");
 
         let request = TranslationJobRequest {
