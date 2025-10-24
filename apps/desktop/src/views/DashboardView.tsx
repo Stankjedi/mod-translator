@@ -1,68 +1,122 @@
-const metrics = [
-  {
-    title: 'Detected Libraries',
-    value: '3',
-    hint: 'Registry + VDF parse completed 2 minutes ago',
-  },
-  {
-    title: 'Active Tokens',
-    value: '4 / 5',
-    hint: 'Token bucket refills every 750ms',
-  },
-  {
-    title: 'Quality Samples',
-    value: '5%',
-    hint: 'Automatic re-requests triggered for failed checks',
-  },
-]
-
-const highlights = [
-  {
-    title: 'Steam Sync',
-    description:
-      'Library scan successfully parsed libraryfolders.vdf and discovered two workshop content roots.',
-  },
-  {
-    title: 'AI Translator Health',
-    description:
-      'Gemini, GPT, Claude, and Grok adapters are online with placeholder guards enabled for every batch.',
-  },
-]
-
-const policyProfiles = [
-  {
-    game: 'Skyrim Special Edition',
-    notes:
-      'Creation Club terms apply. Redistribution blocked without the original author and Bethesda approval.',
-  },
-  {
-    game: 'Baldur’s Gate 3',
-    notes: 'Larian EULA requires personal-use only exports. Community reuploads must be negotiated.',
-  },
-]
+import { useMemo } from 'react'
+import { useLibraryContext } from '../context/LibraryContext'
 
 const pipelineStages = [
-  'Unpack workshop archive',
-  'Detect file formats and classify text assets',
-  'Parse JSON/INI/XML/RESX resources',
-  'Translate batches with placeholder locking',
-  'Run placeholder + markup validators',
-  'Repackage resources or Harmony patches',
-]
-
-const quickActions = [
-  { label: 'Run Library Scan', description: 'Parse registry + libraryfolders.vdf for new libraries.' },
-  { label: 'Start Translation Job', description: 'Queue a batch with token bucket + retry guard.' },
-  { label: 'Review Policy Profiles', description: 'Confirm redistribution requirements before export.' },
+  '워크샵 압축 해제',
+  '파일 형식 식별 및 텍스트 자산 분류',
+  'JSON/INI/XML/RESX 리소스 파싱',
+  '플레이스홀더 고정 후 번역 실행',
+  '플레이스홀더와 마크업 검증',
+  '리소스 재패키징 또는 패치 생성',
 ]
 
 function DashboardView() {
+  const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
+
+  const totalLibraries = libraries.length
+  const healthyLibraries = useMemo(
+    () => libraries.filter((library) => library.status === 'healthy').length,
+    [libraries],
+  )
+  const totalMods = useMemo(
+    () => libraries.reduce((sum, library) => sum + library.mods.length, 0),
+    [libraries],
+  )
+  const totalWarnings = useMemo(
+    () =>
+      libraries.reduce(
+        (sum, library) =>
+          sum + library.mods.reduce((warningSum, mod) => warningSum + mod.warnings.length, 0),
+        0,
+      ),
+    [libraries],
+  )
+
+  const firstNote = useMemo(() => {
+    const note = libraries.find((library) => library.notes.length > 0)?.notes[0]
+    if (note) return note
+    if (isScanning) return '워크샵 콘텐츠를 찾는 중입니다.'
+    if (!totalLibraries) return '스팀 경로가 확인되면 자동으로 스캔이 실행됩니다.'
+    return '라이브러리가 정상적으로 감지되었습니다.'
+  }, [libraries, isScanning, totalLibraries])
+
+  const availableWorkshops = useMemo(
+    () => libraries.filter((library) => library.workshop_root).length,
+    [libraries],
+  )
+
+  const metrics = [
+    {
+      title: '감지된 라이브러리',
+      value: isScanning ? '스캔 중' : `${totalLibraries}개`,
+      hint: `정상 경로 ${healthyLibraries}개`,
+    },
+    {
+      title: '발견된 모드',
+      value: `${totalMods}개`,
+      hint: availableWorkshops
+        ? `워크샵 루트 ${availableWorkshops}개`
+        : '워크샵 루트를 찾지 못했습니다',
+    },
+    {
+      title: '주의 항목',
+      value: `${totalWarnings}건`,
+      hint: totalWarnings ? '경고를 확인하고 필요한 작업을 진행하세요.' : '추가 조치가 필요한 경고가 없습니다.',
+    },
+  ]
+
+  const highlights = [
+    {
+      title: '라이브러리 스캔 결과',
+      description: firstNote,
+    },
+    {
+      title: '워크샵 경로',
+      description: availableWorkshops
+        ? '워크샵 콘텐츠가 연결된 라이브러리를 찾았습니다.'
+        : '워크샵 경로를 찾지 못했습니다. Steam을 한 번 실행한 뒤 다시 시도하세요.',
+    },
+  ]
+
+  const uniquePolicyProfiles = useMemo(() => {
+    const map = new Map<string, { game: string; notes: string[] }>()
+    libraries.forEach((library) => {
+      library.mods.forEach((mod) => {
+        if (!map.has(mod.policy.game)) {
+          map.set(mod.policy.game, { game: mod.policy.game, notes: mod.policy.notes })
+        }
+      })
+    })
+    return Array.from(map.values()).slice(0, 4)
+  }, [libraries])
+
+  const quickActions = [
+    {
+      label: isScanning ? '스캔 중...' : '라이브러리 다시 스캔',
+      description: 'Steam 경로의 libraryfolders.vdf를 다시 읽어서 모드 목록을 갱신합니다.',
+      onClick: async () => {
+        await scanLibrary(steamPath?.path ?? undefined)
+      },
+      disabled: isScanning,
+    },
+    {
+      label: '번역 작업 예약',
+      description: 'Rust 코어에서 제공하는 번역 작업 엔드포인트와 연결할 수 있습니다.',
+      disabled: true,
+    },
+    {
+      label: '정책 프로필 확인',
+      description: '모드 상세에서 게임별 재배포 정책과 참고 문서를 확인하세요.',
+      disabled: true,
+    },
+  ]
+
   return (
     <div className="space-y-10">
       <section>
-        <h2 className="text-xl font-semibold text-white">Today&apos;s Overview</h2>
+        <h2 className="text-xl font-semibold text-white">오늘의 요약</h2>
         <p className="text-sm text-slate-400">
-          A snapshot of the desktop orchestrator&apos;s status including policy, pipeline, and rate-limit health.
+          정책 동의 상태와 라이브러리 스캔 결과, 워크샵 경고를 한 자리에서 확인할 수 있습니다.
         </p>
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {metrics.map((metric) => (
@@ -80,7 +134,7 @@ function DashboardView() {
 
       <section className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-4 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6">
-          <h3 className="text-lg font-semibold text-white">Operational Highlights</h3>
+          <h3 className="text-lg font-semibold text-white">운영 하이라이트</h3>
           <ul className="space-y-3 text-sm text-slate-300">
             {highlights.map((item) => (
               <li key={item.title} className="rounded-lg border border-slate-800/60 bg-slate-900/60 p-4">
@@ -91,7 +145,7 @@ function DashboardView() {
           </ul>
         </div>
         <div className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6">
-          <h3 className="text-lg font-semibold text-white">Quick Actions</h3>
+          <h3 className="text-lg font-semibold text-white">빠른 작업</h3>
           <ul className="mt-4 space-y-3 text-sm text-slate-300">
             {quickActions.map((action) => (
               <li
@@ -102,9 +156,18 @@ function DashboardView() {
                   <div className="font-medium text-white">{action.label}</div>
                   <p className="mt-1 text-xs text-slate-400">{action.description}</p>
                 </div>
-                <span className="rounded-full bg-brand-600/20 px-3 py-1 text-xs font-semibold text-brand-500">
-                  Launch
-                </span>
+                {action.onClick ? (
+                  <button
+                    type="button"
+                    onClick={action.onClick}
+                    disabled={action.disabled}
+                    className="rounded-full bg-brand-600/20 px-3 py-1 text-xs font-semibold text-brand-500 transition hover:bg-brand-600/40 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    실행
+                  </button>
+                ) : (
+                  <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-400">준비 중</span>
+                )}
               </li>
             ))}
           </ul>
@@ -113,18 +176,22 @@ function DashboardView() {
 
       <section className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6">
-          <h3 className="text-lg font-semibold text-white">Game-specific Policy Profiles</h3>
-          <ul className="mt-4 space-y-3 text-sm text-slate-300">
-            {policyProfiles.map((profile) => (
-              <li key={profile.game} className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-4">
-                <div className="text-sm font-semibold text-white">{profile.game}</div>
-                <p className="mt-1 text-xs text-slate-400">{profile.notes}</p>
-              </li>
-            ))}
-          </ul>
+          <h3 className="text-lg font-semibold text-white">게임별 정책 프로필</h3>
+          {uniquePolicyProfiles.length ? (
+            <ul className="mt-4 space-y-3 text-sm text-slate-300">
+              {uniquePolicyProfiles.map((profile) => (
+                <li key={profile.game} className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-4">
+                  <div className="text-sm font-semibold text-white">{profile.game}</div>
+                  <p className="mt-1 text-xs text-slate-400">{profile.notes[0] ?? '추가 메모가 없습니다.'}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-4 text-sm text-slate-400">스캔된 모드가 없어 정책 정보를 표시할 수 없습니다.</p>
+          )}
         </div>
         <div className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6">
-          <h3 className="text-lg font-semibold text-white">Pipeline Snapshot</h3>
+          <h3 className="text-lg font-semibold text-white">파이프라인 스냅샷</h3>
           <ol className="mt-4 space-y-2 text-sm text-slate-300">
             {pipelineStages.map((stage) => (
               <li key={stage} className="flex items-start gap-3">

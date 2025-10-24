@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "mod-translator",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.modtranslator.desktop",
   "build": {
     "frontendDist": "../dist",
     "beforeDevCommand": "npm run dev",
@@ -26,11 +26,7 @@
     "active": true,
     "targets": "all",
     "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.svg"
     ]
   }
 }

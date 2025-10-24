@@ -1,84 +1,79 @@
-# ModSync Translator Workspace
+# ModSync Translator 워크스페이스
 
-The workspace bundles a policy-aware Tauri desktop shell with a React + Tailwind UI and a Rust backend that models Steam Workshop discovery, translation pipelines, and AI adapter abstractions.
+이 워크스페이스는 정책 검증을 지원하는 Tauri 데스크톱 셸과 React + Tailwind UI, Steam 워크숍 탐색과 번역 파이프라인, AI 어댑터 추상화를 모델링하는 Rust 백엔드를 함께 제공합니다.
 
-## Layout
+## 레이아웃
 
 ```
 .
-├── apps/desktop/          # React + TypeScript frontend with Tailwind CSS
-│   ├── src-tauri/         # Tauri host application
-│   └── src/views/         # Dashboard, mod management, progress, and settings screens
-├── core/                  # Shared Rust library (Steam discovery, policy, pipeline, AI adapters)
-└── Cargo.toml             # Workspace definition
+├── apps/desktop/          # React + TypeScript 프런트엔드(Tailwind CSS 사용)
+│   ├── src-tauri/         # Tauri 호스트 애플리케이션
+│   └── src/views/         # 대시보드·모드 관리·진행 상황·설정 화면
+├── core/                  # 공유 Rust 라이브러리(워크숍 탐색, 정책, 파이프라인, AI 어댑터)
+└── Cargo.toml             # 워크스페이스 정의
 ```
 
-## Prerequisites
+## 사전 준비
 
-- Node.js 18+ (Vite/Tailwind tooling)
-- Rust 1.77+ with `tauri-cli`
-- npm (or pnpm/yarn)
+- Node.js 18+ (Vite/Tailwind 도구 체인)
+- Rust 1.77+ 및 `tauri-cli`
+- npm (또는 pnpm/yarn)
 
-### Windows-specific setup
+### Windows 전용 설정
 
-Building the Rust crates on Windows targets requires the Microsoft Visual C++ toolchain. If you see an error such as `linker
-link.exe not found`, install the **Build Tools for Visual Studio 2017 or later** (or a full Visual Studio installation) and
-include the **Desktop development with C++** workload. After installation, restart your terminal so that `link.exe` is available
-on the `PATH` and run `rustup default stable-x86_64-pc-windows-msvc` (or `rustup target add x86_64-pc-windows-msvc`) to ensure
-Rust uses the MSVC toolchain.
+Windows 타깃에서 Rust 크레이트를 빌드하려면 Microsoft Visual C++ 도구 체인이 필요합니다. `linker link.exe not found`와 같은 오류가 표시되면 **Visual Studio 2017 이상용 Build Tools**(또는 전체 Visual Studio) 설치 후 **Desktop development with C++** 워크로드를 포함하세요. 설치가 끝나면 터미널을 재시작하고 `link.exe`가 `PATH`에 있는지 확인한 뒤 `rustup default stable-x86_64-pc-windows-msvc`(또는 `rustup target add x86_64-pc-windows-msvc`)를 실행해 Rust가 MSVC 도구 체인을 사용하도록 설정합니다.
 
-## First-time setup
+## 최초 설정
 
 ```bash
 cd apps/desktop
 npm install
 ```
 
-## Run the desktop workspace in development
+## 데스크톱 워크스페이스 개발 모드 실행
 
 ```bash
 cd apps/desktop
 npm run tauri:dev
 ```
 
-This launches the Vite dev server, the Tauri shell, and wires the React UI to the Rust commands from `core`.
+이 명령은 Vite 개발 서버와 Tauri 셸을 실행하고 React UI를 `core`의 Rust 명령과 연결합니다.
 
-## Build for release
+## 릴리스 빌드
 
 ```bash
 cd apps/desktop
-npm run build       # bundle the React frontend
-npm run tauri:build # package the desktop app
+npm run build       # React 프런트엔드 번들링
+npm run tauri:build # 데스크톱 앱 패키징
 ```
 
-## Backend architecture
+## 백엔드 구조
 
-- `core/src/steam.rs` discovers Steam via environment overrides, Windows registry lookup, and `libraryfolders.vdf` parsing. The scanner surfaces workshop/content roots plus helper methods for app manifests.
-- `core/src/library.rs` enumerates workshop directories, synthesizes policy-rich `ModSummary` records, flags DLL/binary assets, and attaches conservative `PolicyProfile` guidance for each game.
-- `core/src/ai/mod.rs` defines a `Translator` trait with a provider-agnostic `translate_batch` API, placeholder guards, and stub adapters for Gemini, GPT, Claude, and Grok. `TranslateOptions` captures domain/style metadata for downstream providers.
-- `core/src/jobs.rs` models a work queue, token-bucket rate limiter, quality gate snapshot, and pipeline plan summary for each translation request.
-- `core/src/pipeline.rs` and `core/src/policy.rs` describe the translation stages, validator specs, and legal banner content shared with the UI.
+- `core/src/steam.rs`: 환경 변수, Windows 레지스트리 조회, `libraryfolders.vdf` 파싱을 통해 Steam을 탐색하고 워크숍/콘텐츠 루트와 앱 매니페스트 헬퍼를 노출합니다.
+- `core/src/library.rs`: 워크숍 디렉터리를 열거하고 정책 정보가 포함된 `ModSummary`를 생성하며 DLL/바이너리 자산을 표시하고 각 게임에 보수적인 `PolicyProfile` 가이던스를 부여합니다.
+- `core/src/ai/mod.rs`: 공급자에 구애받지 않는 `translate_batch` API를 가진 `Translator` 트레이트와 Gemini, GPT, Claude, Grok용 스텁 어댑터, 도메인/스타일 메타데이터를 담는 `TranslateOptions`를 정의합니다.
+- `core/src/jobs.rs`: 작업 큐, 토큰 버킷 속도 제한기, 품질 게이트 스냅샷, 각 번역 요청의 파이프라인 계획 요약을 모델링합니다.
+- `core/src/pipeline.rs`, `core/src/policy.rs`: 번역 단계, 검증자 사양, UI 배너와 공유하는 법적 안내 문구를 기술합니다.
 
-### Exposed Tauri commands
+### 공개된 Tauri 명령
 
-- `discover_steam_path` → `SteamPathResponse`
-- `scan_library` → `LibraryScanResponse` (includes `PolicyBanner` data for the UI banner)
-- `start_translation_job` → `TranslationJobStatus` with queue, rate-limit, and pipeline snapshots
+- `detect_steam_path` → `SteamPathResponse`
+- `scan_steam_library` → `LibraryScanResponse` (`PolicyBanner` 데이터를 포함해 UI 배너에 전달)
+- `start_translation_job` → 큐·속도 제한·파이프라인 스냅샷을 담은 `TranslationJobStatus`
 
-## Frontend architecture
+## 프런트엔드 구조
 
-- `src/App.tsx` renders the navigation shell and a mandatory Steam Workshop legal banner (headline, warning, and acknowledgement checkbox).
-- `views/DashboardView.tsx` surfaces policy profiles, pipeline stages, and concurrency metrics.
-- `views/ModManagementView.tsx` presents workshop mod placeholders enriched with policy warnings and detected asset notes.
-- `views/ProgressView.tsx` shows queue, rate limit, and quality gating data alongside job progress.
-- `views/SettingsView.tsx` lets users configure translators, Steam overrides, concurrency limits, and translation safeguards (placeholder parity, resource-first DLL handling, etc.).
+- `src/App.tsx`: 탐색 셸과 필수 Steam 워크숍 법적 배너(헤드라인, 경고, 확인 체크박스)를 렌더링합니다.
+- `views/DashboardView.tsx`: 정책 프로필, 파이프라인 단계, 동시성 지표를 제공합니다.
+- `views/ModManagementView.tsx`: 워크숍 모드 자리표시자를 표시하고 정책 경고와 탐지된 자산 정보를 덧붙입니다.
+- `views/ProgressView.tsx`: 큐, 속도 제한, 품질 게이트 데이터를 작업 진행 상황과 함께 보여줍니다.
+- `views/SettingsView.tsx`: 번역기, Steam 경로 재정의, 동시성 제한, 번역 보호장치(자리표시자 유지, DLL 우선 처리 등)를 구성합니다.
 
-Tailwind CSS powers the layout; React Router (`HashRouter`) keeps routes stable in the Tauri environment.
+레이아웃은 Tailwind CSS가 담당하며, React Router(`HashRouter`)는 Tauri 환경에서도 안정적인 라우팅을 제공합니다.
 
-## Extending the workspace
+## 워크스페이스 확장 방법
 
-- Expand Steam/workshop logic in `core::steam` and `core::library` to read real manifests or integrate additional policy profiles.
-- Implement provider integrations by replacing stub translators in `core::ai` while keeping `TranslateOptions` stable.
-- Drive the UI from real Tauri command results via `@tauri-apps/api` invoke calls.
-- Keep legal and policy messaging intact—any feature that exports content should require the acknowledgement surfaced in the banner.
-
+- 실제 매니페스트를 읽거나 추가 정책 프로필을 통합하려면 `core::steam`과 `core::library`의 Steam/워크숍 로직을 확장합니다.
+- `core::ai`의 스텁 번역기를 실제 공급자 통합으로 교체하되 `TranslateOptions`는 유지합니다.
+- `@tauri-apps/api`의 invoke 호출을 통해 UI를 실제 Tauri 명령 결과에 연결합니다.
+- 법적·정책 안내 문구를 유지하세요. 콘텐츠를 내보내는 기능은 배너에 제공되는 확인 절차를 반드시 요구해야 합니다.

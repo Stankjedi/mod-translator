@@ -42,7 +42,9 @@ impl LibraryScanner {
 
     pub fn scan(&self, candidates: &[PathBuf]) -> Result<Vec<LibraryEntry>, String> {
         if candidates.is_empty() {
-            return Ok(vec![self.placeholder_entry("<no library paths detected>")]);
+            return Ok(vec![
+                self.placeholder_entry("라이브러리 경로를 찾을 수 없음")
+            ]);
         }
 
         let mut entries = Vec::new();
@@ -63,10 +65,10 @@ impl LibraryScanner {
             let mut notes = Vec::new();
             if !exists {
                 notes.push(
-                    "steamapps directory not found; add the library manually from settings.".into(),
+                    "steamapps 디렉터리를 찾을 수 없습니다. 설정에서 라이브러리를 수동으로 추가하세요.".into(),
                 );
             } else if mods.is_empty() {
-                notes.push("No workshop content detected. Launch Steam once to let it generate appworkshop manifests.".into());
+                notes.push("워크샵 콘텐츠를 찾지 못했습니다. Steam을 한 번 실행하여 appworkshop 정보를 생성하세요.".into());
             }
 
             entries.push(LibraryEntry {
@@ -91,7 +93,7 @@ impl LibraryScanner {
             status: LibraryStatus::Missing,
             mods: vec![],
             workshop_root: None,
-            notes: vec!["Provide a Steam library path to begin scanning.".into()],
+            notes: vec!["Steam 라이브러리 경로를 입력하면 스캔을 시작할 수 있습니다.".into()],
         }
     }
 
@@ -107,10 +109,10 @@ impl LibraryScanner {
             Err(err) => {
                 return vec![self.synthetic_mod(
                     "unknown-app",
-                    "Workshop content unreadable",
-                    "Unknown Game",
+                    "워크샵 콘텐츠를 읽을 수 없습니다",
+                    "알 수 없는 게임",
                     vec!["en".into()],
-                    format!("Failed to enumerate workshop content: {err}"),
+                    format!("워크샵 콘텐츠를 열거하지 못했습니다: {err}"),
                 )];
             }
         };
@@ -136,18 +138,18 @@ impl LibraryScanner {
                 let last_updated = metadata
                     .and_then(|meta| meta.modified().ok())
                     .map(|time| format_timestamp(time))
-                    .unwrap_or_else(|| "unknown".into());
+                    .unwrap_or_else(|| "알 수 없음".into());
 
                 let languages = self.detect_languages(&mod_dir.path());
                 let warnings = self.collect_warnings(&mod_dir.path());
 
                 mods.push(ModSummary {
                     id: format!("{app_id}:{mod_id}"),
-                    name: format!("Workshop Item {mod_id}"),
-                    game: format!("App {app_id}"),
+                    name: format!("워크샵 항목 {mod_id}"),
+                    game: format!("앱 {app_id}"),
                     installed_languages: languages,
                     last_updated,
-                    policy: PolicyProfile::conservative(format!("App {app_id}")),
+                    policy: PolicyProfile::conservative(format!("앱 {app_id}")),
                     warnings,
                 });
             }
@@ -156,10 +158,10 @@ impl LibraryScanner {
         if mods.is_empty() {
             mods.push(self.synthetic_mod(
                 "no-content",
-                "No workshop archives detected",
-                "Unknown Game",
+                "워크샵 아카이브를 찾지 못했습니다",
+                "알 수 없는 게임",
                 vec!["en".into()],
-                "Run a Steam sync to populate workshop/content.".into(),
+                "Steam 동기화를 실행하여 workshop/content를 채워 주세요.".into(),
             ));
         }
 
@@ -179,7 +181,7 @@ impl LibraryScanner {
             name: name.into(),
             game: game.into(),
             installed_languages: languages,
-            last_updated: "unknown".into(),
+            last_updated: "알 수 없음".into(),
             policy: PolicyProfile::conservative(game),
             warnings: vec![warning],
         }
@@ -225,12 +227,13 @@ impl LibraryScanner {
         }
 
         if contains_dll {
-            warnings
-                .push("Managed DLL detected – prefer resource extraction over decompiling.".into());
+            warnings.push(
+                "관리형 DLL이 감지되었습니다. 디컴파일 대신 리소스 추출 방식을 사용하세요.".into(),
+            );
         }
         if contains_binary {
             warnings.push(
-                "Unity AssetBundle detected – skipped by default per workspace policy.".into(),
+                "Unity AssetBundle이 감지되었습니다. 워크스페이스 정책에 따라 기본적으로 건너뜁니다.".into(),
             );
         }
 
@@ -249,6 +252,6 @@ fn format_timestamp(time: SystemTime) -> String {
                     .unwrap_or_else(|| seconds.to_string())
             )
         }
-        Err(_) => "unknown".into(),
+        Err(_) => "알 수 없음".into(),
     }
 }

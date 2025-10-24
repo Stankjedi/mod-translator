@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Mod Translator Icon</title>
+  <desc id="desc">Rounded square with stylised translation arrows</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#8b5cf6" />
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#bg)" />
+  <path fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"
+        d="M38 46h24l-8-12m-16 48h24l-8 12M90 40l-18 48m0-20h22" />
+</svg>

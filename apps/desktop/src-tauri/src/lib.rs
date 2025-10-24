@@ -1,4 +1,4 @@
-use mod_translator_core::{discover_steam_path, scan_library, start_translation_job};
+use mod_translator_core::{detect_steam_path, scan_steam_library, start_translation_job};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 
@@ -15,8 +15,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            discover_steam_path,
-            scan_library,
+            detect_steam_path,
+            scan_steam_library,
             start_translation_job
         ])
         .run(tauri::generate_context!())

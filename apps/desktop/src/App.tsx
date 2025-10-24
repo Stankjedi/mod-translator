@@ -1,28 +1,40 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
+import { LibraryProvider, useLibraryContext } from './context/LibraryContext'
 import DashboardView from './views/DashboardView'
 import ModManagementView from './views/ModManagementView'
 import ProgressView from './views/ProgressView'
 import SettingsView from './views/SettingsView'
 
 const navigation = [
-  { to: '/', label: 'Dashboard', description: 'Overview of recent activity' },
-  { to: '/mods', label: 'Mod Management', description: 'Manage installed workshop content' },
-  { to: '/progress', label: 'Progress', description: 'Track translation pipelines' },
-  { to: '/settings', label: 'Settings', description: 'Configure translator preferences' },
+  { to: '/', label: '대시보드', description: '최근 상태와 진행 현황 요약' },
+  { to: '/mods', label: '모드 관리', description: '설치된 워크샵 콘텐츠 살펴보기' },
+  { to: '/progress', label: '진행 상황', description: '번역 파이프라인 모니터링' },
+  { to: '/settings', label: '설정', description: '번역기 환경과 스캔 옵션 구성' },
 ]
 
-function App() {
+function AppShell() {
+  const { policyBanner, error } = useLibraryContext()
   const [policyAcknowledged, setPolicyAcknowledged] = useState(false)
+
+  useEffect(() => {
+    setPolicyAcknowledged(false)
+  }, [policyBanner?.headline])
+
+  const showPolicyBanner = useMemo(() => {
+    if (!policyBanner) return false
+    if (!policyBanner.requires_acknowledgement) return false
+    return !policyAcknowledged
+  }, [policyBanner, policyAcknowledged])
 
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-100">
       <aside className="hidden w-72 flex-col border-r border-slate-800/60 bg-slate-900/60 backdrop-blur md:flex">
         <div className="px-6 py-8">
-          <p className="text-sm font-semibold uppercase tracking-widest text-slate-400">Mod Translator</p>
-          <h1 className="mt-2 text-2xl font-bold text-white">Control Center</h1>
+          <p className="text-sm font-semibold uppercase tracking-widest text-slate-400">모드 번역기</p>
+          <h1 className="mt-2 text-2xl font-bold text-white">제어 센터</h1>
           <p className="mt-2 text-sm text-slate-400">
-            Launch translation jobs, inspect your Steam library, and keep projects on track.
+            스팀 라이브러리를 점검하고 번역 작업을 실행하며 프로젝트 전반을 한눈에 살펴보세요.
           </p>
         </div>
         <nav className="flex-1 space-y-1 px-4 pb-6">
@@ -48,42 +60,44 @@ function App() {
       </aside>
 
       <main className="flex-1 overflow-y-auto">
-        <div
-          className="border-b border-yellow-500/30 bg-yellow-500/5 px-6 py-5 text-sm text-yellow-100"
-          role="alert"
-        >
-          <div className="mx-auto flex max-w-5xl flex-col gap-4">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-widest text-yellow-400">
-                Steam Workshop Policy Notice
-              </p>
-              <p className="mt-1 text-sm text-yellow-100">
-                Workshop assets are provided for personal use only. Redistribution of localized builds requires explicit
-                permission from the original author. Steam/Community Guidelines warn that unauthorized distribution can
-                lead to account restrictions.
-              </p>
+        {showPolicyBanner && policyBanner && (
+          <div
+            className="border-b border-yellow-500/30 bg-yellow-500/5 px-6 py-5 text-sm text-yellow-100"
+            role="alert"
+          >
+            <div className="mx-auto flex max-w-5xl flex-col gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-yellow-400">
+                  {policyBanner.headline}
+                </p>
+                <p className="mt-1 text-sm text-yellow-100">{policyBanner.message}</p>
+              </div>
+              <label className="flex items-start gap-3 text-xs text-yellow-200">
+                <input
+                  type="checkbox"
+                  checked={policyAcknowledged}
+                  onChange={(event) => setPolicyAcknowledged(event.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-yellow-400 bg-slate-950 text-yellow-500 focus:ring-yellow-400"
+                />
+                <span>{policyBanner.checkbox_label}</span>
+              </label>
+              <p className="text-xs text-yellow-300">{policyBanner.warning}</p>
             </div>
-            <label className="flex items-start gap-3 text-xs text-yellow-200">
-              <input
-                type="checkbox"
-                checked={policyAcknowledged}
-                onChange={(event) => setPolicyAcknowledged(event.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-yellow-400 bg-slate-950 text-yellow-500 focus:ring-yellow-400"
-              />
-              <span>
-                I understand that redistribution requires permission and agree to comply with all game-specific EULAs.
-              </span>
-            </label>
           </div>
-        </div>
+        )}
         <header className="border-b border-slate-800/70 bg-slate-900/40 backdrop-blur">
           <div className="mx-auto flex max-w-5xl flex-col gap-4 px-6 py-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-white">Mod Translator Workspace</h2>
+              <h2 className="text-lg font-semibold text-white">Mod Translator 작업 공간</h2>
               <p className="text-sm text-slate-400">
-                Connect to Steam, orchestrate AI translators, and monitor localization health from one place.
-                {policyAcknowledged ? ' Policy acknowledgement recorded.' : ' Confirm the policy notice before exporting translations.'}
+                스팀과 연결하고 AI 번역기를 조율하며 품질을 모니터링하세요.
+                {policyBanner && policyBanner.requires_acknowledgement
+                  ? policyAcknowledged
+                    ? ' 정책 동의가 기록되었습니다.'
+                    : ' 정책 안내를 확인하고 동의해 주세요.'
+                  : ''}
               </p>
+              {error && <p className="mt-2 text-xs text-rose-300">{error}</p>}
             </div>
             <nav className="flex flex-wrap gap-2 md:hidden">
               {navigation.map((item) => (
@@ -117,6 +131,14 @@ function App() {
         </section>
       </main>
     </div>
+  )
+}
+
+function App() {
+  return (
+    <LibraryProvider>
+      <AppShell />
+    </LibraryProvider>
   )
 }
 
