@@ -63,6 +63,14 @@ impl Default for TranslateOptions {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProviderAuth {
+    pub gemini: Option<String>,
+    pub gpt: Option<String>,
+    pub claude: Option<String>,
+    pub grok: Option<String>,
+}
+
 pub trait Translator: Send {
     fn name(&self) -> &'static str;
     fn translate_batch(
@@ -93,19 +101,31 @@ pub enum TranslatorKind {
 impl TranslatorKind {
     pub fn label(&self) -> &'static str {
         match self {
-            TranslatorKind::Gemini => "Gemini Advanced",
-            TranslatorKind::Gpt => "GPT-4.1 Turbo",
-            TranslatorKind::Claude => "Claude 3.5 Sonnet",
-            TranslatorKind::Grok => "xAI Grok 2",
+            TranslatorKind::Gemini => "Gemini",
+            TranslatorKind::Gpt => "GPT",
+            TranslatorKind::Claude => "Claude",
+            TranslatorKind::Grok => "Grok",
         }
     }
 
     pub fn build(self) -> Box<dyn Translator> {
+        self.build_with_auth(&ProviderAuth::default())
+    }
+
+    pub fn build_with_auth(self, auth: &ProviderAuth) -> Box<dyn Translator> {
         match self {
-            TranslatorKind::Gemini => Box::new(GeminiTranslator::default()),
-            TranslatorKind::Gpt => Box::new(GptTranslator::default()),
-            TranslatorKind::Claude => Box::new(ClaudeTranslator::default()),
-            TranslatorKind::Grok => Box::new(GrokTranslator::default()),
+            TranslatorKind::Gemini => {
+                Box::new(GeminiTranslator::default().with_api_key(auth.gemini.clone()))
+            }
+            TranslatorKind::Gpt => {
+                Box::new(GptTranslator::default().with_api_key(auth.gpt.clone()))
+            }
+            TranslatorKind::Claude => {
+                Box::new(ClaudeTranslator::default().with_api_key(auth.claude.clone()))
+            }
+            TranslatorKind::Grok => {
+                Box::new(GrokTranslator::default().with_api_key(auth.grok.clone()))
+            }
         }
     }
 }
@@ -157,11 +177,12 @@ fn ensure_placeholder_integrity(original: &str, translated: &str) -> Result<(), 
 #[derive(Debug, Default)]
 pub struct GeminiTranslator {
     invocation_count: u32,
+    api_key: Option<String>,
 }
 
 impl Translator for GeminiTranslator {
     fn name(&self) -> &'static str {
-        "Gemini Advanced"
+        "Gemini"
     }
 
     fn translate_batch(
@@ -172,8 +193,13 @@ impl Translator for GeminiTranslator {
         self.invocation_count += 1;
         let mut outputs = Vec::with_capacity(inputs.len());
         for input in inputs {
+            let key_status = if self.api_key.is_some() {
+                "with-key"
+            } else {
+                "no-key"
+            };
             let output = format!(
-                "[Gemini#{:03}] {} -> {} ({:?}/{:?}): {}",
+                "[Gemini#{:03} {key_status}] {} -> {} ({:?}/{:?}): {}",
                 self.invocation_count,
                 options.source_lang.as_deref().unwrap_or("unknown"),
                 options.target_lang,
@@ -192,11 +218,12 @@ impl Translator for GeminiTranslator {
 #[derive(Debug, Default)]
 pub struct GptTranslator {
     invocation_count: u32,
+    api_key: Option<String>,
 }
 
 impl Translator for GptTranslator {
     fn name(&self) -> &'static str {
-        "GPT-4.1 Turbo"
+        "GPT"
     }
 
     fn translate_batch(
@@ -207,16 +234,22 @@ impl Translator for GptTranslator {
         self.invocation_count += 1;
         let mut outputs = Vec::with_capacity(inputs.len());
         for input in inputs {
+            let key_status = if self.api_key.is_some() {
+                "with-key"
+            } else {
+                "no-key"
+            };
+            let domain_label = options
+                .domain
+                .as_ref()
+                .map(|domain| format!("{:?}", domain))
+                .unwrap_or_else(|| "domain:none".into());
             let output = format!(
-                "[GPT#{:03}] {} -> {} [{}]: {}",
+                "[GPT#{:03} {key_status}] {} -> {} [{}]: {}",
                 self.invocation_count,
                 options.source_lang.as_deref().unwrap_or("unknown"),
                 options.target_lang,
-                options
-                    .domain
-                    .as_ref()
-                    .map(|domain| format!("{:?}", domain))
-                    .unwrap_or_else(|| "domain:none".into()),
+                domain_label,
                 input
             );
             ensure_placeholder_integrity(input, &output)?;
@@ -230,11 +263,12 @@ impl Translator for GptTranslator {
 #[derive(Debug, Default)]
 pub struct ClaudeTranslator {
     batches_processed: u32,
+    api_key: Option<String>,
 }
 
 impl Translator for ClaudeTranslator {
     fn name(&self) -> &'static str {
-        "Claude 3.5 Sonnet"
+        "Claude"
     }
 
     fn translate_batch(
@@ -245,8 +279,13 @@ impl Translator for ClaudeTranslator {
         self.batches_processed += 1;
         let mut outputs = Vec::with_capacity(inputs.len());
         for input in inputs {
+            let key_status = if self.api_key.is_some() {
+                "with-key"
+            } else {
+                "no-key"
+            };
             let output = format!(
-                "[Claude batch {}] {} -> {} :: {}",
+                "[Claude batch {} {key_status}] {} -> {} :: {}",
                 self.batches_processed,
                 options.source_lang.as_deref().unwrap_or("unknown"),
                 options.target_lang,
@@ -263,11 +302,12 @@ impl Translator for ClaudeTranslator {
 #[derive(Debug, Default)]
 pub struct GrokTranslator {
     previews_generated: u32,
+    api_key: Option<String>,
 }
 
 impl Translator for GrokTranslator {
     fn name(&self) -> &'static str {
-        "xAI Grok 2"
+        "Grok"
     }
 
     fn translate_batch(
@@ -278,8 +318,13 @@ impl Translator for GrokTranslator {
         self.previews_generated += 1;
         let mut outputs = Vec::with_capacity(inputs.len());
         for input in inputs {
+            let key_status = if self.api_key.is_some() {
+                "with-key"
+            } else {
+                "no-key"
+            };
             let output = format!(
-                "[Grok run {}] {}>{}: {}",
+                "[Grok run {} {key_status}] {}>{}: {}",
                 self.previews_generated,
                 options.source_lang.as_deref().unwrap_or("unknown"),
                 options.target_lang,
@@ -290,5 +335,68 @@ impl Translator for GrokTranslator {
         }
 
         Ok(outputs)
+    }
+}
+
+fn normalize_api_key(key: Option<String>) -> Option<String> {
+    key.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+impl ProviderAuth {
+    pub fn set_key(&mut self, provider_id: &str, key: Option<String>) {
+        let slot = match provider_id {
+            "gemini" => &mut self.gemini,
+            "gpt" => &mut self.gpt,
+            "claude" => &mut self.claude,
+            "grok" => &mut self.grok,
+            _ => return,
+        };
+
+        *slot = normalize_api_key(key);
+    }
+
+    pub fn key(&self, provider_id: &str) -> Option<&String> {
+        match provider_id {
+            "gemini" => self.gemini.as_ref(),
+            "gpt" => self.gpt.as_ref(),
+            "claude" => self.claude.as_ref(),
+            "grok" => self.grok.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+impl GeminiTranslator {
+    pub fn with_api_key(mut self, key: Option<String>) -> Self {
+        self.api_key = normalize_api_key(key);
+        self
+    }
+}
+
+impl GptTranslator {
+    pub fn with_api_key(mut self, key: Option<String>) -> Self {
+        self.api_key = normalize_api_key(key);
+        self
+    }
+}
+
+impl ClaudeTranslator {
+    pub fn with_api_key(mut self, key: Option<String>) -> Self {
+        self.api_key = normalize_api_key(key);
+        self
+    }
+}
+
+impl GrokTranslator {
+    pub fn with_api_key(mut self, key: Option<String>) -> Self {
+        self.api_key = normalize_api_key(key);
+        self
     }
 }

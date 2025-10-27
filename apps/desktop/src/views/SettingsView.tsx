@@ -1,29 +1,35 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useI18n } from '../i18n/ko'
 
 const providers = [
   {
-    name: 'Gemini Advanced',
+    id: 'gemini',
+    name: '제미니',
     description: 'Google 기반 컨텍스트 확장 모델을 사용합니다.',
     defaultChecked: true,
   },
   {
-    name: 'GPT-4.1 Turbo',
+    id: 'gpt',
+    name: 'gpt',
     description: '긴 컨텍스트와 안정적인 번역 품질을 제공합니다.',
     defaultChecked: true,
   },
   {
-    name: 'Claude 3.5 Sonnet',
+    id: 'claude',
+    name: '클로드',
     description: '대사 중심 콘텐츠에 적합한 Anthropic 어댑터입니다.',
     defaultChecked: false,
   },
   {
-    name: 'xAI Grok 2',
+    id: 'grok',
+    name: '그록',
     description: '신속한 반복 실험에 적합한 실험적 제공자입니다.',
     defaultChecked: false,
   },
 ]
+
+const storageKey = 'mod-translator:apiKeys'
 
 function SettingsView() {
   const i18n = useI18n()
@@ -39,6 +45,31 @@ function SettingsView() {
   const [explicitPath, setExplicitPath] = useState(steamPath?.path ?? '')
   const [pathNote, setPathNote] = useState('')
   const [scanStatus, setScanStatus] = useState('')
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>(() =>
+    providers.reduce((acc, provider) => {
+      acc[provider.id] = ''
+      return acc
+    }, {} as Record<string, string>),
+  )
+  const [apiKeyMessage, setApiKeyMessage] = useState('')
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    try {
+      const stored = window.localStorage.getItem(storageKey)
+      if (!stored) {
+        return
+      }
+
+      const parsed = JSON.parse(stored) as Record<string, string>
+      setApiKeys((previous) => ({ ...previous, ...parsed }))
+    } catch (error) {
+      console.warn('failed to load API keys from storage', error)
+    }
+  }, [])
 
   useEffect(() => {
     setExplicitPath(steamPath?.path ?? '')
@@ -92,6 +123,26 @@ function SettingsView() {
     setScanStatus(success ? steamTexts.noteDone : steamTexts.noteError)
   }
 
+  const handleApiKeyChange = useCallback((providerId: string, value: string) => {
+    setApiKeys((previous) => ({ ...previous, [providerId]: value }))
+    setApiKeyMessage('')
+  }, [])
+
+  const handleApiKeySave = useCallback(() => {
+    if (typeof window === 'undefined') {
+      setApiKeyMessage('API 키 저장이 지원되지 않는 환경입니다.')
+      return
+    }
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(apiKeys))
+      setApiKeyMessage('API 키가 저장되었습니다.')
+    } catch (error) {
+      console.error('failed to persist API keys', error)
+      setApiKeyMessage('API 키 저장에 실패했습니다. 저장소 접근 권한을 확인하세요.')
+    }
+  }, [apiKeys])
+
   return (
     <div className="space-y-8">
       <header>
@@ -115,6 +166,7 @@ function SettingsView() {
                   type="checkbox"
                   defaultChecked={provider.defaultChecked}
                   className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+                  value={provider.id}
                 />
                 <span>
                   <span className="block text-sm font-medium text-white">{provider.name}</span>
@@ -122,6 +174,42 @@ function SettingsView() {
                 </span>
               </label>
             ))}
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6 shadow-inner shadow-black/30">
+          <h3 className="text-lg font-semibold text-white">API 키 설정</h3>
+          <p className="mt-1 text-sm text-slate-400">
+            각 제공자별 API 키를 직접 입력해 Rust 백엔드와의 연동을 준비하세요. 빈 값으로 저장하면 키가 제거됩니다.
+          </p>
+          <div className="mt-4 space-y-4">
+            {providers.map((provider) => (
+              <label key={provider.id} className="block text-sm text-slate-300">
+                <span className="mb-1 block font-medium text-white">{provider.name} API 키</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={apiKeys[provider.id] ?? ''}
+                  onChange={(event) => handleApiKeyChange(provider.id, event.target.value)}
+                  placeholder={`${provider.name} API 키를 입력하세요`}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  API 키는 로컬 장치에 암호화되지 않은 상태로 저장되므로 보안에 유의하세요.
+                </p>
+              </label>
+            ))}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleApiKeySave}
+                className="inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-brand-600/40 transition hover:bg-brand-500"
+              >
+                API 키 저장
+              </button>
+              {apiKeyMessage && <p className="text-xs text-slate-400">{apiKeyMessage}</p>}
+            </div>
           </div>
         </section>
 
