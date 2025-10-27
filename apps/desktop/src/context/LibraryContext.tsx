@@ -8,42 +8,12 @@ import {
   useState,
 } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-
-type LibraryStatus = 'healthy' | 'missing'
-
-export interface PolicyBanner {
-  headline: string
-  message: string
-  requires_acknowledgement: boolean
-  checkbox_label: string
-  warning: string
-}
-
-export interface PolicyProfile {
-  game: string
-  redistribution_blocked: boolean
-  requires_author_permission: boolean
-  eula_reference: string | null
-  notes: string[]
-}
-
-export interface ModSummary {
-  id: string
-  name: string
-  game: string
-  installed_languages: string[]
-  last_updated: string
-  policy: PolicyProfile
-  warnings: string[]
-}
-
-export interface LibraryEntry {
-  path: string
-  status: LibraryStatus
-  mods: ModSummary[]
-  workshop_root: string | null
-  notes: string[]
-}
+import type {
+  LibraryEntry,
+  LibraryScanResponse,
+  PolicyBanner,
+  SteamPathResponse,
+} from '../types/core'
 
 export interface SteamPathInfo {
   path: string | null
@@ -63,16 +33,6 @@ interface LibraryContextValue {
 const LibraryContext = createContext<LibraryContextValue | undefined>(undefined)
 
 const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-
-type LibraryScanResponse = {
-  libraries: LibraryEntry[]
-  policy_banner: PolicyBanner
-}
-
-type SteamPathResponse = {
-  path: string | null
-  note: string
-}
 
 export function LibraryProvider({ children }: { children: ReactNode }) {
   const [policyBanner, setPolicyBanner] = useState<PolicyBanner | null>(null)

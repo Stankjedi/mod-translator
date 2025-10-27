@@ -33,7 +33,7 @@ function ModManagementView() {
           warnings: mod.warnings,
           workshopRoot: library.workshop_root,
           libraryPath: library.path,
-          lastUpdated: mod.last_updated,
+          lastUpdated: mod.last_updated.iso_date,
         })),
       ),
     [libraries],

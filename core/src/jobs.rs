@@ -1,8 +1,12 @@
 use crate::ai::{ProviderAuth, TranslateOptions, TranslationError, TranslatorKind};
 use crate::pipeline::PipelinePlan;
+use dirs::data_dir;
+use log::warn;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::fs::{create_dir_all, OpenOptions};
+use std::io::Write;
 use std::sync::Mutex;
 use std::time::Duration;
 use thiserror::Error;
@@ -119,7 +123,7 @@ impl TranslationOrchestrator {
             .as_deref()
             .unwrap_or(request.mod_id.as_str());
 
-        Ok(TranslationJobStatus {
+        let status = TranslationJobStatus {
             job_id,
             translator: translator.name().to_string(),
             state: if queue_snapshot.queued > 0 {
@@ -143,7 +147,46 @@ impl TranslationOrchestrator {
                     .as_deref()
                     .unwrap_or(request.mod_id.as_str()),
             ),
-        })
+        };
+
+        append_job_log(&status);
+
+        Ok(status)
+    }
+}
+
+fn append_job_log(job: &TranslationJobStatus) {
+    let Some(mut base_dir) = data_dir() else {
+        warn!("data_dir unavailable; skipping job log persistence");
+        return;
+    };
+
+    base_dir.push("mod-translator");
+    base_dir.push("logs");
+
+    if let Err(err) = create_dir_all(&base_dir) {
+        warn!("failed to prepare log directory {:?}: {}", base_dir, err);
+        return;
+    }
+
+    let log_file = base_dir.join("jobs.log");
+    let serialized = match serde_json::to_string(job) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!("failed to serialize job log: {}", err);
+            return;
+        }
+    };
+
+    match OpenOptions::new().create(true).append(true).open(&log_file) {
+        Ok(mut file) => {
+            if let Err(err) = writeln!(file, "{}", serialized) {
+                warn!("failed to write job log {:?}: {}", log_file, err);
+            }
+        }
+        Err(err) => {
+            warn!("failed to open job log {:?}: {}", log_file, err);
+        }
     }
 }
 
