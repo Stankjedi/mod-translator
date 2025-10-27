@@ -31,11 +31,12 @@ function ModManagementView() {
       libraries.flatMap((library) =>
         library.mods.map((mod) => {
           const game = mod.game ?? ''
+          const normalizedGame = game.replace(/\s+/g, '')
           return {
             id: mod.id,
             name: mod.name,
             game,
-            normalizedGame: game.trim(),
+            normalizedGame,
             languages: mod.installed_languages,
             status: library.status,
             warnings: mod.warnings,
@@ -57,20 +58,34 @@ function ModManagementView() {
       }
     })
 
+    const options: Array<{ value: string; label: string }> = [
+      { value: ALL_GAMES, label: '모든 게임' },
+    ]
+
+    const emptyKeyValue = normalizedToRaw.get('')
+    if (emptyKeyValue !== undefined) {
+      options.push({ value: emptyKeyValue, label: emptyKeyValue })
+    }
+
     const sorted = Array.from(normalizedToRaw.entries())
       .filter(([key]) => key.length > 0)
       .sort((a, b) => a[0].localeCompare(b[0], 'ko'))
-      .map(([, rawValue]) => rawValue)
+      .map(([, rawValue]) => ({ value: rawValue, label: rawValue }))
 
-    const emptyKeyValue = normalizedToRaw.get('')
-    return emptyKeyValue ? [ALL_GAMES, emptyKeyValue, ...sorted] : [ALL_GAMES, ...sorted]
+    return [...options, ...sorted]
   }, [modRows])
 
+  const selectedGameLabel = useMemo(() => {
+    const match = gameOptions.find((option) => option.value === selectedGame)
+    return match ? match.label : selectedGame
+  }, [gameOptions, selectedGame])
+
   const filteredModRows = useMemo(() => {
-    const normalizedSelectedGame = selectedGame.trim()
+    const normalizedSelectedGame =
+      selectedGame === ALL_GAMES ? '' : selectedGame.replace(/\s+/g, '')
 
     const filteredByGame =
-      normalizedSelectedGame === ALL_GAMES
+      selectedGame === ALL_GAMES
         ? modRows
         : modRows.filter((mod) => mod.normalizedGame === normalizedSelectedGame)
 
@@ -113,8 +128,8 @@ function ModManagementView() {
             className="w-full rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2 text-sm text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:w-56"
           >
             {gameOptions.map((option) => (
-              <option key={option} value={option}>
-                {option === ALL_GAMES ? '모든 게임' : option}
+              <option key={option.value} value={option.value}>
+                {option.label}
               </option>
             ))}
           </select>
@@ -216,7 +231,7 @@ function ModManagementView() {
               {hasAnyMods
                 ? hasSearchQuery
                   ? '검색 조건과 일치하는 모드를 찾지 못했습니다.'
-                  : `${selectedGame === ALL_GAMES ? '모든 게임' : selectedGame}에 해당하는 모드를 찾지 못했습니다.`
+                  : `${selectedGame === ALL_GAMES ? '모든 게임' : selectedGameLabel}에 해당하는 모드를 찾지 못했습니다.`
                 : '표시할 모드가 없습니다.'}
             </p>
             <p className="text-sm">
