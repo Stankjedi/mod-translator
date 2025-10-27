@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 
 const languageLabels: Record<string, string> = {
@@ -22,6 +23,7 @@ const ALL_GAMES = 'All'
 function ModManagementView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
   const [selectedGame, setSelectedGame] = useState<string>(ALL_GAMES)
+  const navigate = useNavigate()
 
   const modRows = useMemo(
     () =>
@@ -36,7 +38,6 @@ function ModManagementView() {
           workshopRoot: library.workshop_root,
           libraryPath: library.path,
           lastUpdated: mod.last_updated.iso_date,
-          eulaReference: mod.policy.eula_reference,
         })),
       ),
     [libraries],
@@ -114,10 +115,24 @@ function ModManagementView() {
             </thead>
             <tbody className="divide-y divide-slate-800/60">
               {filteredModRows.map((mod) => (
-                <tr key={mod.id} className="hover:bg-slate-800/60">
+                <tr
+                  key={mod.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => navigate(`/progress/${encodeURIComponent(mod.id)}`)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      navigate(`/progress/${encodeURIComponent(mod.id)}`)
+                    }
+                  }}
+                  className="cursor-pointer hover:bg-slate-800/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500"
+                  aria-label={`${mod.name} 번역 진행 화면으로 이동`}
+                >
                   <td className="px-4 py-4 font-medium text-white">
                     <div>{mod.name}</div>
                     <p className="mt-1 text-xs text-slate-400">마지막 업데이트: {mod.lastUpdated}</p>
+                    <p className="mt-1 text-[11px] text-slate-500">번역 진행 화면으로 이동하려면 클릭하세요.</p>
                   </td>
                   <td className="px-4 py-4 text-slate-300">
                     <div className="font-medium text-white">{mod.game}</div>
@@ -151,9 +166,6 @@ function ModManagementView() {
                       </ul>
                     ) : (
                       <p className="text-slate-500">경고 없음</p>
-                    )}
-                    {mod.eulaReference && (
-                      <p className="mt-2 text-[11px] text-slate-500">참고: {mod.eulaReference}</p>
                     )}
                   </td>
                 </tr>

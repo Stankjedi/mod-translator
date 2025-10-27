@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobContext } from '../context/JobContext'
 import type { JobState, ModSummary } from '../types/core'
@@ -28,11 +29,34 @@ function ProgressView() {
   const { libraries } = useLibraryContext()
   const { jobsByMod, startJob, refreshJob } = useJobContext()
   const [pendingMods, setPendingMods] = useState<Record<string, boolean>>({})
+  const { modId: encodedModId } = useParams<{ modId?: string }>()
+
+  const selectedModId = useMemo(() => {
+    if (!encodedModId) return null
+    try {
+      return decodeURIComponent(encodedModId)
+    } catch {
+      return encodedModId
+    }
+  }, [encodedModId])
 
   const trackedMods = useMemo(
     () => libraries.flatMap((library) => library.mods),
     [libraries],
   )
+
+  const focusedMod = useMemo(
+    () => (selectedModId ? trackedMods.find((mod) => mod.id === selectedModId) ?? null : null),
+    [selectedModId, trackedMods],
+  )
+
+  const displayedMods = useMemo(() => {
+    if (!selectedModId) return trackedMods
+    return focusedMod ? [focusedMod] : []
+  }, [focusedMod, selectedModId, trackedMods])
+
+  const isFocusedView = Boolean(selectedModId)
+  const missingFocusedMod = Boolean(selectedModId) && !focusedMod
 
   const setPending = (modId: string, value: boolean) => {
     setPendingMods((prev) => {
@@ -66,16 +90,28 @@ function ProgressView() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h2 className="text-xl font-semibold text-white">번역 진행 상황</h2>
-        <p className="text-sm text-slate-400">
-          감지된 모드별로 번역 작업을 예약하고 Rust 백엔드의 작업 큐에서 보고된 상태를 실시간으로 확인하세요.
-        </p>
+      <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="text-xl font-semibold text-white">번역 진행 상황</h2>
+          <p className="text-sm text-slate-400">
+            {isFocusedView
+              ? '선택한 모드에 대한 번역 상태만 표시합니다. 필요한 경우 다시 전체 목록으로 돌아갈 수 있습니다.'
+              : '감지된 모드별로 번역 작업을 예약하고 Rust 백엔드의 작업 큐에서 보고된 상태를 실시간으로 확인하세요.'}
+          </p>
+        </div>
+        {isFocusedView && (
+          <Link
+            to="/progress"
+            className="inline-flex items-center justify-center rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200"
+          >
+            전체 모드 보기
+          </Link>
+        )}
       </header>
 
-      {trackedMods.length ? (
+      {displayedMods.length ? (
         <div className="space-y-4">
-          {trackedMods.map((mod) => {
+          {displayedMods.map((mod) => {
             const jobEntry = jobsByMod[mod.id]
             const status = jobEntry?.status
             const progressValue = Math.round((status?.progress ?? 0) * 100)
@@ -154,16 +190,40 @@ function ProgressView() {
                 ) : (
                   <p className="mt-4 text-xs text-slate-500">추가 경고가 없습니다.</p>
                 )}
+                {isFocusedView && mod.policy.notes.length > 0 && (
+                  <div className="mt-4 rounded-lg border border-slate-800/60 bg-slate-900/60 p-3 text-xs text-slate-300">
+                    <p className="font-semibold text-slate-200">정책 참고</p>
+                    <ul className="mt-1 space-y-1">
+                      {mod.policy.notes.map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </article>
             )
           })}
         </div>
       ) : (
         <div className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-10 text-center">
-          <p className="text-base font-semibold text-white">등록된 모드가 없습니다.</p>
-          <p className="mt-2 text-sm text-slate-400">
-            라이브러리를 스캔하여 모드를 감지하면 이곳에 작업 대기열이 표시됩니다.
+          <p className="text-base font-semibold text-white">
+            {missingFocusedMod ? '선택한 모드를 찾지 못했습니다.' : '등록된 모드가 없습니다.'}
           </p>
+          <p className="mt-2 text-sm text-slate-400">
+            {missingFocusedMod
+              ? '라이브러리를 다시 스캔했는지 확인하거나 다른 모드를 선택해 주세요.'
+              : '라이브러리를 스캔하여 모드를 감지하면 이곳에 작업 대기열이 표시됩니다.'}
+          </p>
+          {missingFocusedMod && (
+            <div className="mt-4 flex justify-center">
+              <Link
+                to="/mods"
+                className="rounded-full bg-brand-600/20 px-4 py-2 text-sm font-semibold text-brand-400 transition hover:bg-brand-600/40 hover:text-brand-200"
+              >
+                모드 관리로 이동
+              </Link>
+            </div>
+          )}
         </div>
       )}
     </div>

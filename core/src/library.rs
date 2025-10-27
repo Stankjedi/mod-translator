@@ -1,11 +1,17 @@
 use crate::policy::{self, PolicyBanner, PolicyProfile};
 use crate::steam::{resolve_app_name, SteamLocator};
 use crate::time::{format_system_time, FormattedTimestamp};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+static RIMWORLD_ABOUT_NAME_CAPTURE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?is)<name>\s*([^<]+?)\s*</name>").expect("valid RimWorld About.xml name regex")
+});
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -166,7 +172,9 @@ impl LibraryScanner {
                     continue;
                 }
 
-                let mod_id = match file_name_to_string(&mod_dir.path()) {
+                let mod_path = mod_dir.path();
+
+                let mod_id = match file_name_to_string(&mod_path) {
                     Ok(value) => value,
                     Err(err) => {
                         mods.push(self.synthetic_mod(
@@ -179,18 +187,21 @@ impl LibraryScanner {
                         continue;
                     }
                 };
-                let metadata = fs::metadata(mod_dir.path()).ok();
+                let metadata = fs::metadata(&mod_path).ok();
                 let last_updated = metadata
                     .and_then(|meta| meta.modified().ok())
                     .and_then(|time| format_system_time(time).ok())
                     .unwrap_or_else(|| FormattedTimestamp::new("알 수 없음".into()));
 
-                let languages = self.detect_languages(&mod_dir.path());
-                let warnings = self.collect_warnings(&mod_dir.path());
+                let languages = self.detect_languages(&mod_path);
+                let warnings = self.collect_warnings(&mod_path);
+                let resolved_name = self
+                    .resolve_mod_name(&steamapps, &app_id, &mod_id, &mod_path)
+                    .unwrap_or_else(|| format!("워크샵 항목 {mod_id}"));
 
                 mods.push(ModSummary {
                     id: format!("{app_id}:{mod_id}"),
-                    name: format!("워크샵 항목 {mod_id}"),
+                    name: resolved_name,
                     game: game_name.clone(),
                     installed_languages: languages,
                     last_updated,
@@ -293,6 +304,17 @@ impl LibraryScanner {
 
         warnings
     }
+
+    fn resolve_mod_name(
+        &self,
+        steamapps: &Path,
+        app_id: &str,
+        mod_id: &str,
+        mod_path: &Path,
+    ) -> Option<String> {
+        resolve_workshop_title(steamapps, app_id, mod_id)
+            .or_else(|| resolve_about_metadata_title(mod_path))
+    }
 }
 
 #[tauri::command]
@@ -341,4 +363,144 @@ fn os_str_to_string(value: &OsStr) -> Result<String, String> {
         .to_str()
         .map(|string| string.to_string())
         .ok_or_else(|| "파일 이름을 UTF-8로 변환할 수 없습니다.".into())
+}
+
+fn resolve_workshop_title(steamapps: &Path, app_id: &str, mod_id: &str) -> Option<String> {
+    let workshop_file = steamapps.join(format!("workshop/appworkshop_{}.acf", app_id));
+    let contents = fs::read_to_string(workshop_file).ok()?;
+    let pattern = format!(
+        r#"(?s)"{}"\s*\{{.*?"title"\s*"([^"]+)""#,
+        regex::escape(mod_id)
+    );
+    let regex = Regex::new(&pattern).ok()?;
+    let captures = regex.captures(&contents)?;
+    let raw = captures.get(1)?.as_str();
+    clean_title(raw)
+}
+
+fn resolve_about_metadata_title(mod_path: &Path) -> Option<String> {
+    let about_path = mod_path.join("About/About.xml");
+    let contents = fs::read_to_string(about_path).ok()?;
+    let captures = RIMWORLD_ABOUT_NAME_CAPTURE.captures(&contents)?;
+    let raw = captures.get(1)?.as_str();
+    clean_title(raw)
+}
+
+fn clean_title(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("mod_translator_{}_{}", label, Uuid::new_v4()));
+        fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    #[test]
+    fn resolves_title_from_workshop_acf() {
+        let root = temp_dir("workshop");
+        let steamapps = root.join("steamapps");
+        let workshop = steamapps.join("workshop");
+        fs::create_dir_all(&workshop).expect("create workshop dir");
+        let contents = r#"
+"AppWorkshop"
+{
+    "appid"        "294100"
+    "WorkshopItemDetails"
+    {
+        "123456"
+        {
+            "manifest"     "987654321"
+            "timeupdated"  "1700000000"
+            "title"        "Test Workshop Title"
+        }
+    }
+}
+"#;
+        let file_path = workshop.join("appworkshop_294100.acf");
+        fs::write(&file_path, contents).expect("write appworkshop file");
+
+        let resolved = resolve_workshop_title(&steamapps, "294100", "123456");
+        assert_eq!(resolved.as_deref(), Some("Test Workshop Title"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn resolves_title_from_about_metadata() {
+        let root = temp_dir("about");
+        let mod_path = root.join("RimWorld");
+        let about_dir = mod_path.join("About");
+        fs::create_dir_all(&about_dir).expect("create about dir");
+        let contents = r#"
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>
+    RimWorld Korean Language Pack
+  </name>
+</ModMetaData>
+"#;
+        fs::write(about_dir.join("About.xml"), contents).expect("write About.xml");
+
+        let resolved = resolve_about_metadata_title(&mod_path);
+        assert_eq!(resolved.as_deref(), Some("RimWorld Korean Language Pack"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn prefers_workshop_title_over_about_metadata() {
+        let root = temp_dir("prefer_workshop");
+        let steamapps = root.join("steamapps");
+        let workshop = steamapps.join("workshop");
+        let mod_path = root.join("mod");
+        fs::create_dir_all(&workshop).expect("create workshop dir");
+        fs::create_dir_all(mod_path.join("About")).expect("create About dir");
+        fs::write(
+            workshop.join("appworkshop_123.acf"),
+            r#"
+"AppWorkshop"
+{
+    "appid"        "123"
+    "WorkshopItemDetails"
+    {
+        "999"
+        {
+            "title" "Workshop Primary Title"
+        }
+    }
+}
+"#,
+        )
+        .expect("write workshop acf");
+        fs::write(
+            mod_path.join("About/About.xml"),
+            r#"<ModMetaData><name>Local About Name</name></ModMetaData>"#,
+        )
+        .expect("write about xml");
+
+        let scanner = LibraryScanner::new();
+        let resolved = scanner.resolve_mod_name(&steamapps, "123", "999", &mod_path);
+        assert_eq!(resolved.as_deref(), Some("Workshop Primary Title"));
+
+        fs::remove_dir_all(root).ok();
+    }
 }
