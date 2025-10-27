@@ -24,7 +24,7 @@ pub struct TranslationJobSummary {
     pub status: TranslationJobStatus,
 }
 
-pub fn tauri_invoke_handler() -> impl Fn(Invoke<'_>) + Send + Sync + 'static {
+pub fn tauri_invoke_handler() -> impl Fn(Invoke<tauri::Wry>) + Send + Sync + 'static {
     tauri::generate_handler![
         crate::steam::detect_steam_path,
         crate::library::scan_steam_library,
