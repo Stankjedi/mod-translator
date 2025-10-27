@@ -94,7 +94,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 
       try {
         const status = await invoke<TranslationJobStatus>('get_translation_job_status', {
-          jobId: entry.jobId,
+          job_id: entry.jobId,
         })
         setJobsByMod((prev) => {
           const current = prev[modId]
@@ -125,7 +125,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
     const interval = window.setInterval(() => {
       activeJobs.forEach(([modId, entry]) => {
         invoke<TranslationJobStatus>('get_translation_job_status', {
-          jobId: entry.jobId,
+          job_id: entry.jobId,
         })
           .then((status) => {
             setJobsByMod((prev) => {

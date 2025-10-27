@@ -15,7 +15,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             mod_translator_core::detect_steam_path,
             mod_translator_core::scan_steam_library,
-            mod_translator_core::start_translation_job
+            mod_translator_core::start_translation_job,
+            mod_translator_core::get_translation_job_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
