@@ -4,6 +4,7 @@ mod library;
 pub mod pipeline;
 pub mod policy;
 mod steam;
+mod time;
 
 pub use ai::TranslatorKind;
 pub use jobs::{

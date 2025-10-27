@@ -1,8 +1,8 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// High level banner content presented in the UI to surface redistribution rules
 /// before any translation workflow begins.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PolicyBanner {
     pub headline: String,
     pub message: String,
@@ -12,7 +12,7 @@ pub struct PolicyBanner {
 }
 
 /// Captures the restrictions that may apply to a specific game or mod line.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PolicyProfile {
     pub game: String,
     pub redistribution_blocked: bool,

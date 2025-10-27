@@ -1,7 +1,7 @@
 use dirs::home_dir;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,8 +13,10 @@ use winreg::RegKey;
 
 static LIBRARY_PATH_CAPTURE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"path"\s+"([^"]+)"#).expect("valid library path regex"));
+static APP_NAME_CAPTURE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?m)"name"\s+"([^"]+)""#).expect("valid Steam app name regex"));
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SteamPathResponse {
     pub path: Option<String>,
     pub note: String,
@@ -43,12 +45,11 @@ impl SteamLocator {
     }
 
     pub fn library_candidates(&self, explicit: Option<&str>) -> Vec<PathBuf> {
-        let mut seen = HashSet::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
         let mut results = Vec::new();
 
         let mut push_unique = |path: PathBuf, results: &mut Vec<PathBuf>| {
-            let key = path.to_string_lossy().to_string();
-            if seen.insert(key) {
+            if seen.insert(path.clone()) {
                 results.push(path);
             }
         };
@@ -134,7 +135,12 @@ impl SteamLocator {
             #[cfg(target_os = "windows")]
             {
                 candidates.push(home.join("AppData/Local/Steam"));
-                candidates.push(PathBuf::from("C:/Program Files (x86)/Steam"));
+                if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+                    candidates.push(PathBuf::from(program_files_x86).join("Steam"));
+                }
+                if let Some(program_files) = std::env::var_os("ProgramW6432") {
+                    candidates.push(PathBuf::from(program_files).join("Steam"));
+                }
             }
 
             #[cfg(target_os = "linux")]
@@ -176,6 +182,16 @@ impl SteamLocator {
     }
 }
 
+pub fn resolve_app_name(steamapps: &Path, app_id: &str) -> Option<String> {
+    let manifest_path = steamapps.join(format!("appmanifest_{}.acf", app_id));
+    let contents = fs::read_to_string(manifest_path).ok()?;
+    APP_NAME_CAPTURE
+        .captures(&contents)
+        .and_then(|capture| capture.get(1))
+        .map(|name| name.as_str().trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
 #[tauri::command]
 pub fn detect_steam_path() -> Result<SteamPathResponse, String> {
     let locator = SteamLocator::new();
@@ -187,15 +203,61 @@ pub fn detect_steam_path() -> Result<SteamPathResponse, String> {
         "Steam 경로를 자동으로 찾지 못했습니다. 직접 경로를 입력해 주세요.".to_string()
     };
 
-    Ok(SteamPathResponse {
-        path: discovered.map(|path| path.to_string_lossy().to_string()),
-        note,
-    })
+    let path = match discovered {
+        Some(path_buf) => Some(
+            path_buf
+                .to_str()
+                .ok_or_else(|| "Steam 경로를 UTF-8로 변환하지 못했습니다.".to_string())?
+                .to_string(),
+        ),
+        None => None,
+    };
+
+    Ok(SteamPathResponse { path, note })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn create_temp_steamapps(manifest_contents: &str, app_id: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "mod_translator_resolve_app_name_test_{}",
+            Uuid::new_v4()
+        ));
+        let steamapps = root.join("steamapps");
+        fs::create_dir_all(&steamapps).expect("create steamapps temp dir");
+        let manifest_path = steamapps.join(format!("appmanifest_{}.acf", app_id));
+        fs::write(manifest_path, manifest_contents).expect("write manifest contents");
+        steamapps
+    }
+
+    #[test]
+    fn extracts_app_name_from_manifest() {
+        let contents = r#"
+"AppState"
+{
+    "appid"        "294100"
+    "Universe"     "1"
+    "name"         "RimWorld"
+}
+"#;
+        let steamapps = create_temp_steamapps(contents, "294100");
+        let resolved = resolve_app_name(&steamapps, "294100");
+        assert_eq!(resolved.as_deref(), Some("RimWorld"));
+        fs::remove_dir_all(steamapps.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn returns_none_when_manifest_missing() {
+        let steamapps = create_temp_steamapps("", "111111");
+        let resolved = resolve_app_name(&steamapps, "222222");
+        assert!(resolved.is_none());
+        fs::remove_dir_all(steamapps.parent().unwrap()).ok();
+    }
 
     #[test]
     fn candidate_generation_provides_fallback() {

@@ -33,6 +33,11 @@
 /apps/desktop/.turbo/
 /apps/desktop/.tauri/
 
+# Environment overrides
+*.env.local
+apps/desktop/.env
+apps/desktop/src-tauri/.env
+
 # General cache files
 *.log
 .DS_Store
