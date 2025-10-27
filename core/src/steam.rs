@@ -1,6 +1,7 @@
 use dirs::home_dir;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,12 @@ use winreg::RegKey;
 
 static LIBRARY_PATH_CAPTURE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"path"\s+"([^"]+)"#).expect("valid library path regex"));
+
+#[derive(Debug, Serialize, Clone)]
+pub struct SteamPathResponse {
+    pub path: Option<String>,
+    pub note: String,
+}
 
 #[derive(Debug, Default)]
 pub struct SteamLocator;
@@ -167,6 +174,23 @@ impl SteamLocator {
 
         libraries
     }
+}
+
+#[tauri::command]
+pub fn detect_steam_path() -> Result<SteamPathResponse, String> {
+    let locator = SteamLocator::new();
+    let discovered = locator.discover_path();
+
+    let note = if discovered.is_some() {
+        "Steam 설치 경로를 자동으로 감지했습니다.".to_string()
+    } else {
+        "Steam 경로를 자동으로 찾지 못했습니다. 직접 경로를 입력해 주세요.".to_string()
+    };
+
+    Ok(SteamPathResponse {
+        path: discovered.map(|path| path.to_string_lossy().to_string()),
+        note,
+    })
 }
 
 #[cfg(test)]

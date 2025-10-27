@@ -95,9 +95,7 @@ impl TranslationOrchestrator {
         request: TranslationJobRequest,
     ) -> Result<TranslationJobStatus, JobError> {
         let job_id = Uuid::new_v4().to_string();
-        let mut translator = request
-            .translator
-            .build_with_auth(&request.provider_auth);
+        let mut translator = request.translator.build_with_auth(&request.provider_auth);
         let options = TranslateOptions {
             source_lang: Some(request.source_language.clone()),
             target_lang: request.target_language.clone(),
@@ -116,6 +114,10 @@ impl TranslationOrchestrator {
         let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
         let queue_snapshot = queue.register_job(job_id.clone());
         let rate_limiter_snapshot = queue.rate_limiter_snapshot();
+        let job_display_name = request
+            .mod_name
+            .as_deref()
+            .unwrap_or(request.mod_id.as_str());
 
         Ok(TranslationJobStatus {
             job_id,
@@ -127,10 +129,7 @@ impl TranslationOrchestrator {
             },
             progress: if queue_snapshot.queued > 0 { 0.1 } else { 1.0 },
             preview,
-            message: Some(format!(
-                "Translation job prepared for {}",
-                request.mod_name.unwrap_or_else(|| request.mod_id.clone())
-            )),
+            message: Some(format!("Translation job prepared for {}", job_display_name)),
             queue: queue_snapshot,
             rate_limiter: rate_limiter_snapshot,
             quality_gates: QualityGateSnapshot {
@@ -218,4 +217,13 @@ impl RateLimiter {
             refill_interval_ms: self.refill_interval.as_millis() as u64,
         }
     }
+}
+
+#[tauri::command]
+pub fn start_translation_job(
+    request: TranslationJobRequest,
+) -> Result<TranslationJobStatus, String> {
+    TranslationOrchestrator::new()
+        .start_job(request)
+        .map_err(|err| err.to_string())
 }
