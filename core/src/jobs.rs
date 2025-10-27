@@ -254,13 +254,15 @@ impl WorkQueue {
         (status, start_immediately)
     }
 
-    fn update_status<F>(&mut self, job_id: &str, mut update: F) -> Option<TranslationJobStatus>
+    fn update_status<F>(&mut self, job_id: &str, update: F) -> Option<TranslationJobStatus>
     where
         F: FnOnce(&mut TranslationJobStatus),
     {
+        let queue_snapshot = self.snapshot();
+
         if let Some(status) = self.statuses.get_mut(job_id) {
             update(status);
-            status.queue = self.snapshot();
+            status.queue = queue_snapshot;
             return Some(status.clone());
         }
 
@@ -277,8 +279,9 @@ impl WorkQueue {
             Some(next_job)
         } else {
             // Job is finished and no queued work.
+            let queue_snapshot = self.snapshot();
             self.statuses.get_mut(job_id).map(|status| {
-                status.queue = self.snapshot();
+                status.queue = queue_snapshot.clone();
             });
             None
         }
