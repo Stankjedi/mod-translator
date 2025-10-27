@@ -1,6 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PipelinePlan {
     pub target: String,
     pub stages: Vec<PipelineStage>,
@@ -8,14 +8,14 @@ pub struct PipelinePlan {
     pub skip_rules: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PipelineStage {
     pub name: String,
     pub description: String,
     pub strategy: StageStrategy,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum StageStrategy {
     Enumerate,
@@ -26,7 +26,7 @@ pub enum StageStrategy {
     Repackage,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ValidatorSpec {
     pub name: String,
     pub description: String,
