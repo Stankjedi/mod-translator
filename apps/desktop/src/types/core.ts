@@ -20,6 +20,13 @@ export interface PolicyProfile {
   notes: string[]
 }
 
+export interface ProviderAuth {
+  gemini?: string | null
+  gpt?: string | null
+  claude?: string | null
+  grok?: string | null
+}
+
 export interface ModSummary {
   id: string
   name: string
@@ -49,6 +56,17 @@ export interface SteamPathResponse {
 }
 
 export type JobState = 'queued' | 'running' | 'completed' | 'failed'
+
+export type TranslatorKind = 'gemini' | 'gpt' | 'claude' | 'grok'
+
+export interface TranslationJobRequest {
+  mod_id: string
+  mod_name?: string | null
+  translator: TranslatorKind
+  source_language: string
+  target_language: string
+  provider_auth?: ProviderAuth
+}
 
 export interface QueueSnapshot {
   queued: number

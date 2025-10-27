@@ -8,8 +8,8 @@ mod time;
 
 pub use ai::TranslatorKind;
 pub use jobs::{
-    start_translation_job, JobState, TranslationJobRequest, TranslationJobRequest as JobRequest,
-    TranslationJobStatus, TranslationOrchestrator,
+    get_translation_job_status, start_translation_job, JobState, TranslationJobRequest,
+    TranslationJobRequest as JobRequest, TranslationJobStatus, TranslationOrchestrator,
 };
 pub use library::{scan_steam_library, LibraryEntry, LibraryScanResponse, LibraryScanner};
 pub use pipeline::PipelinePlan;

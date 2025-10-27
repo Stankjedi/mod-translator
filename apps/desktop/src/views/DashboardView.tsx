@@ -1,5 +1,7 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useLibraryContext } from '../context/LibraryContext'
+import { useJobContext } from '../context/JobContext'
+import type { JobState } from '../types/core'
 
 const pipelineStages = [
   '워크샵 압축 해제',
@@ -10,8 +12,17 @@ const pipelineStages = [
   '리소스 재패키징 또는 패치 생성',
 ]
 
+const jobStateLabels: Record<JobState, string> = {
+  queued: '대기 중',
+  running: '실행 중',
+  completed: '완료',
+  failed: '실패',
+}
+
 function DashboardView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
+  const { jobsByMod, startJob, refreshJob } = useJobContext()
+  const [isJobActionBusy, setIsJobActionBusy] = useState(false)
 
   const totalLibraries = libraries.length
   const healthyLibraries = useMemo(
@@ -32,6 +43,13 @@ function DashboardView() {
     [libraries],
   )
 
+  const allMods = useMemo(
+    () => libraries.flatMap((library) => library.mods),
+    [libraries],
+  )
+  const firstDetectedMod = useMemo(() => allMods[0] ?? null, [allMods])
+  const firstModJob = firstDetectedMod ? jobsByMod[firstDetectedMod.id] : undefined
+
   const firstNote = useMemo(() => {
     const note = libraries.find((library) => library.notes.length > 0)?.notes[0]
     if (note) return note
@@ -44,6 +62,39 @@ function DashboardView() {
     () => libraries.filter((library) => library.workshop_root).length,
     [libraries],
   )
+
+  const jobHighlight = useMemo(() => {
+    const entries = Object.values(jobsByMod)
+    if (!entries.length) {
+      return '예약된 번역 작업이 없습니다. 진행 상황 탭에서 작업을 시작해 보세요.'
+    }
+
+    const summary = entries.reduce(
+      (acc, entry) => {
+        acc.total += 1
+        acc[entry.status.state as JobState] += 1
+        return acc
+      },
+      {
+        total: 0,
+        queued: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+      } as Record<JobState | 'total', number>,
+    )
+
+    const pieces = [
+      `총 ${summary.total}건`,
+      `대기 ${summary.queued}`,
+      `실행 ${summary.running}`,
+      `완료 ${summary.completed}`,
+    ]
+    if (summary.failed) {
+      pieces.push(`실패 ${summary.failed}`)
+    }
+    return pieces.join(' · ')
+  }, [jobsByMod])
 
   const metrics = [
     {
@@ -61,7 +112,9 @@ function DashboardView() {
     {
       title: '주의 항목',
       value: `${totalWarnings}건`,
-      hint: totalWarnings ? '경고를 확인하고 필요한 작업을 진행하세요.' : '추가 조치가 필요한 경고가 없습니다.',
+      hint: totalWarnings
+        ? '경고를 확인하고 필요한 작업을 진행하세요.'
+        : '추가 조치가 필요한 경고가 없습니다.',
     },
   ]
 
@@ -76,19 +129,50 @@ function DashboardView() {
         ? '워크샵 콘텐츠가 연결된 라이브러리를 찾았습니다.'
         : '워크샵 경로를 찾지 못했습니다. Steam을 한 번 실행한 뒤 다시 시도하세요.',
     },
+    {
+      title: '번역 작업 현황',
+      description: jobHighlight,
+    },
   ]
 
-  const uniquePolicyProfiles = useMemo(() => {
-    const map = new Map<string, { game: string; notes: string[] }>()
+  const gameSummaries = useMemo(() => {
+    const map = new Map<string, { game: string; modCount: number; warningCount: number }>()
     libraries.forEach((library) => {
       library.mods.forEach((mod) => {
-        if (!map.has(mod.policy.game)) {
-          map.set(mod.policy.game, { game: mod.policy.game, notes: mod.policy.notes })
+        const existing = map.get(mod.game)
+        if (existing) {
+          existing.modCount += 1
+          existing.warningCount += mod.warnings.length
+        } else {
+          map.set(mod.game, {
+            game: mod.game,
+            modCount: 1,
+            warningCount: mod.warnings.length,
+          })
         }
       })
     })
-    return Array.from(map.values()).slice(0, 4)
+
+    return Array.from(map.values())
+      .sort((a, b) => b.modCount - a.modCount)
+      .slice(0, 4)
   }, [libraries])
+
+  const handleJobAction = useCallback(async () => {
+    if (!firstDetectedMod) return
+    setIsJobActionBusy(true)
+    try {
+      if (firstModJob) {
+        await refreshJob(firstDetectedMod.id)
+      } else {
+        await startJob(firstDetectedMod)
+      }
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setIsJobActionBusy(false)
+    }
+  }, [firstDetectedMod, firstModJob, refreshJob, startJob])
 
   const quickActions = [
     {
@@ -100,13 +184,22 @@ function DashboardView() {
       disabled: isScanning,
     },
     {
-      label: '번역 작업 예약',
-      description: 'Rust 코어에서 제공하는 번역 작업 엔드포인트와 연결할 수 있습니다.',
-      disabled: true,
+      label: firstModJob
+        ? '번역 상태 새로고침'
+        : firstDetectedMod
+          ? '번역 작업 시작'
+          : '번역 작업 예약',
+      description: firstDetectedMod
+        ? firstModJob
+          ? `${firstDetectedMod.name} · ${jobStateLabels[firstModJob.status.state]} · ${firstModJob.status.message ?? '상태를 갱신해 보세요.'}`
+          : `${firstDetectedMod.name} 모드를 번역 대기열에 등록합니다.`
+        : '감지된 모드가 있어야 번역 작업을 예약할 수 있습니다.',
+      onClick: firstDetectedMod ? handleJobAction : undefined,
+      disabled: !firstDetectedMod || isJobActionBusy,
     },
     {
-      label: '정책 프로필 확인',
-      description: '모드 상세에서 게임별 재배포 정책과 참고 문서를 확인하세요.',
+      label: '품질 가드 설정',
+      description: '추후 번역 품질 검증 도구와 연동될 예정입니다.',
       disabled: true,
     },
   ]
@@ -153,7 +246,7 @@ function DashboardView() {
                 className="flex items-start justify-between rounded-lg border border-slate-800/60 bg-slate-900/60 p-4"
               >
                 <div>
-                  <div className="font-medium text-white">{action.label}</div>
+                  <div className="text-sm font-semibold text-white">{action.label}</div>
                   <p className="mt-1 text-xs text-slate-400">{action.description}</p>
                 </div>
                 {action.onClick ? (
@@ -176,18 +269,20 @@ function DashboardView() {
 
       <section className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6">
-          <h3 className="text-lg font-semibold text-white">게임별 정책 프로필</h3>
-          {uniquePolicyProfiles.length ? (
+          <h3 className="text-lg font-semibold text-white">게임별 모드 분포</h3>
+          {gameSummaries.length ? (
             <ul className="mt-4 space-y-3 text-sm text-slate-300">
-              {uniquePolicyProfiles.map((profile) => (
-                <li key={profile.game} className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-4">
-                  <div className="text-sm font-semibold text-white">{profile.game}</div>
-                  <p className="mt-1 text-xs text-slate-400">{profile.notes[0] ?? '추가 메모가 없습니다.'}</p>
+              {gameSummaries.map((summary) => (
+                <li key={summary.game} className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-4">
+                  <div className="text-sm font-semibold text-white">{summary.game}</div>
+                  <p className="mt-1 text-xs text-slate-400">
+                    감지된 모드 {summary.modCount}개 · 경고 {summary.warningCount}건
+                  </p>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="mt-4 text-sm text-slate-400">스캔된 모드가 없어 정책 정보를 표시할 수 없습니다.</p>
+            <p className="mt-4 text-sm text-slate-400">스캔된 모드가 없어 분포 정보를 표시할 수 없습니다.</p>
           )}
         </div>
         <div className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6">
