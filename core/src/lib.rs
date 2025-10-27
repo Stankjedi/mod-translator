@@ -6,6 +6,7 @@ pub mod policy;
 mod steam;
 
 use serde::{Deserialize, Serialize};
+use tauri::ipc::Invoke;
 
 pub use ai::TranslatorKind;
 pub use jobs::{
@@ -23,7 +24,7 @@ pub struct TranslationJobSummary {
     pub status: TranslationJobStatus,
 }
 
-pub fn tauri_invoke_handler() -> impl Fn(tauri::Invoke<'_>) + Send + Sync + 'static {
+pub fn tauri_invoke_handler() -> impl Fn(Invoke<'_>) + Send + Sync + 'static {
     tauri::generate_handler![
         crate::steam::detect_steam_path,
         crate::library::scan_steam_library,

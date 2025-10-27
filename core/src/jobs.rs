@@ -1,4 +1,4 @@
-use crate::ai::{ProviderAuth, TranslateOptions, TranslationError, Translator, TranslatorKind};
+use crate::ai::{ProviderAuth, TranslateOptions, TranslationError, TranslatorKind};
 use crate::pipeline::PipelinePlan;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ static WORK_QUEUE: Lazy<Mutex<WorkQueue>> = Lazy::new(|| {
     ))
 });
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     Queued,
@@ -24,28 +24,28 @@ pub enum JobState {
     Failed,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QueueSnapshot {
     pub queued: usize,
     pub running: usize,
     pub concurrent_workers: usize,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RateLimiterSnapshot {
     pub bucket_capacity: u32,
     pub tokens_available: u32,
     pub refill_interval_ms: u64,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QualityGateSnapshot {
     pub placeholder_guard: bool,
     pub format_validator: bool,
     pub sample_rate: f32,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TranslationJobStatus {
     pub job_id: String,
     pub translator: String,
