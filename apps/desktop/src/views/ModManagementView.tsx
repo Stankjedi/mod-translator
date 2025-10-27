@@ -18,7 +18,7 @@ function resolveLanguage(code: string) {
   return languageLabels[lowered] ?? lowered.toUpperCase()
 }
 
-const ALL_GAMES = 'All'
+const ALL_GAMES = 'ALL'
 
 function ModManagementView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
@@ -29,31 +29,50 @@ function ModManagementView() {
   const modRows = useMemo(
     () =>
       libraries.flatMap((library) =>
-        library.mods.map((mod) => ({
-          id: mod.id,
-          name: mod.name,
-          game: mod.game,
-          languages: mod.installed_languages,
-          status: library.status,
-          warnings: mod.warnings,
-          workshopRoot: library.workshop_root,
-          libraryPath: library.path,
-          lastUpdated: mod.last_updated.iso_date,
-        })),
+        library.mods.map((mod) => {
+          const game = mod.game ?? ''
+          return {
+            id: mod.id,
+            name: mod.name,
+            game,
+            normalizedGame: game.trim(),
+            languages: mod.installed_languages,
+            status: library.status,
+            warnings: mod.warnings,
+            workshopRoot: library.workshop_root,
+            libraryPath: library.path,
+            lastUpdated: mod.last_updated.iso_date,
+          }
+        }),
       ),
     [libraries],
   )
 
   const gameOptions = useMemo(() => {
-    const set = new Set<string>()
-    modRows.forEach((mod) => set.add(mod.game))
-    const sorted = Array.from(set).sort((a, b) => a.localeCompare(b, 'ko'))
-    return [ALL_GAMES, ...sorted]
+    const normalizedToRaw = new Map<string, string>()
+
+    modRows.forEach((mod) => {
+      if (!normalizedToRaw.has(mod.normalizedGame)) {
+        normalizedToRaw.set(mod.normalizedGame, mod.game)
+      }
+    })
+
+    const sorted = Array.from(normalizedToRaw.entries())
+      .filter(([key]) => key.length > 0)
+      .sort((a, b) => a[0].localeCompare(b[0], 'ko'))
+      .map(([, rawValue]) => rawValue)
+
+    const emptyKeyValue = normalizedToRaw.get('')
+    return emptyKeyValue ? [ALL_GAMES, emptyKeyValue, ...sorted] : [ALL_GAMES, ...sorted]
   }, [modRows])
 
   const filteredModRows = useMemo(() => {
+    const normalizedSelectedGame = selectedGame.trim()
+
     const filteredByGame =
-      selectedGame === ALL_GAMES ? modRows : modRows.filter((mod) => mod.game === selectedGame)
+      normalizedSelectedGame === ALL_GAMES
+        ? modRows
+        : modRows.filter((mod) => mod.normalizedGame === normalizedSelectedGame)
 
     const normalizedQuery = searchQuery.trim().toLowerCase()
     if (!normalizedQuery) {
