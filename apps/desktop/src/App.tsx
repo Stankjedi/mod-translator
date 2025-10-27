@@ -127,6 +127,7 @@ function AppShell() {
             <Route path="/" element={<DashboardView />} />
             <Route path="/mods" element={<ModManagementView />} />
             <Route path="/progress" element={<ProgressView />} />
+            <Route path="/progress/:modId" element={<ProgressView />} />
             <Route path="/settings" element={<SettingsView />} />
           </Routes>
         </section>
