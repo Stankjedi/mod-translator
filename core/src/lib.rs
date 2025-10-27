@@ -106,6 +106,7 @@ mod tests {
             translator: TranslatorKind::Gpt,
             source_language: "en".into(),
             target_language: "jp".into(),
+            provider_auth: crate::ai::ProviderAuth::default(),
         };
         let status = start_translation_job(request).unwrap();
         serde_json::to_string(&status).expect("job status should serialize");
