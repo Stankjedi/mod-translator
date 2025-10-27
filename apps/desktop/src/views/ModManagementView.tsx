@@ -23,6 +23,7 @@ const ALL_GAMES = 'All'
 function ModManagementView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
   const [selectedGame, setSelectedGame] = useState<string>(ALL_GAMES)
+  const [searchQuery, setSearchQuery] = useState('')
   const navigate = useNavigate()
 
   const modRows = useMemo(
@@ -50,13 +51,24 @@ function ModManagementView() {
     return [ALL_GAMES, ...sorted]
   }, [modRows])
 
-  const filteredModRows = useMemo(
-    () =>
-      modRows.filter((mod) => selectedGame === ALL_GAMES || mod.game === selectedGame),
-    [modRows, selectedGame],
-  )
+  const filteredModRows = useMemo(() => {
+    const filteredByGame =
+      selectedGame === ALL_GAMES ? modRows : modRows.filter((mod) => mod.game === selectedGame)
+
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+    if (!normalizedQuery) {
+      return filteredByGame
+    }
+
+    return filteredByGame.filter((mod) => {
+      const nameMatch = mod.name.toLowerCase().includes(normalizedQuery)
+      const idMatch = mod.id.toLowerCase().includes(normalizedQuery)
+      return nameMatch || idMatch
+    })
+  }, [modRows, selectedGame, searchQuery])
 
   const hasAnyMods = modRows.length > 0
+  const hasSearchQuery = searchQuery.trim().length > 0
 
   return (
     <div className="space-y-6">
@@ -69,10 +81,17 @@ function ModManagementView() {
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="모드 검색"
+            className="w-full rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2 text-sm text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:w-64"
+          />
           <select
             value={selectedGame}
             onChange={(event) => setSelectedGame(event.target.value)}
-            className="w-full rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2 text-sm text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:w-64"
+            className="w-full rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2 text-sm text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:w-56"
           >
             {gameOptions.map((option) => (
               <option key={option} value={option}>
@@ -176,12 +195,16 @@ function ModManagementView() {
           <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center text-slate-400">
             <p className="text-base font-semibold text-white">
               {hasAnyMods
-                ? `${selectedGame === ALL_GAMES ? '모든 게임' : selectedGame}에 해당하는 모드를 찾지 못했습니다.`
+                ? hasSearchQuery
+                  ? '검색 조건과 일치하는 모드를 찾지 못했습니다.'
+                  : `${selectedGame === ALL_GAMES ? '모든 게임' : selectedGame}에 해당하는 모드를 찾지 못했습니다.`
                 : '표시할 모드가 없습니다.'}
             </p>
             <p className="text-sm">
               {hasAnyMods
-                ? '다른 게임을 선택하거나 라이브러리 스캔을 다시 실행해 보세요.'
+                ? hasSearchQuery
+                  ? '다른 키워드로 검색하거나 검색어를 지워 전체 목록을 확인해 보세요.'
+                  : '다른 게임을 선택하거나 라이브러리 스캔을 다시 실행해 보세요.'
                 : 'Steam을 실행하여 워크샵 콘텐츠를 다운로드한 뒤, 상단의 스캔 버튼을 눌러 목록을 새로고침하세요.'}
             </p>
           </div>
