@@ -1,4 +1,4 @@
-use mod_translator_core::{detect_steam_path, scan_steam_library, start_translation_job};
+use mod_translator_core::tauri_invoke_handler;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 
@@ -14,11 +14,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            detect_steam_path,
-            scan_steam_library,
-            start_translation_job
-        ])
+        .invoke_handler(tauri_invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

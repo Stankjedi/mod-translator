@@ -1,4 +1,5 @@
-use crate::policy::PolicyProfile;
+use crate::policy::{self, PolicyBanner, PolicyProfile};
+use crate::steam::SteamLocator;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,12 @@ pub struct LibraryEntry {
     pub mods: Vec<ModSummary>,
     pub workshop_root: Option<String>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LibraryScanResponse {
+    pub libraries: Vec<LibraryEntry>,
+    pub policy_banner: PolicyBanner,
 }
 
 #[derive(Debug, Default)]
@@ -239,6 +246,34 @@ impl LibraryScanner {
 
         warnings
     }
+}
+
+#[tauri::command]
+pub fn scan_steam_library(explicit_path: Option<String>) -> Result<LibraryScanResponse, String> {
+    let locator = SteamLocator::new();
+    let scanner = LibraryScanner::new();
+
+    let primary_path = explicit_path
+        .and_then(|value| {
+            if value.trim().is_empty() {
+                None
+            } else {
+                Some(value.into())
+            }
+        })
+        .or_else(|| {
+            locator
+                .discover_path()
+                .map(|path| path.to_string_lossy().to_string())
+        });
+
+    let candidates = locator.library_candidates(primary_path.as_deref());
+    let libraries = scanner.scan(&candidates)?;
+
+    Ok(LibraryScanResponse {
+        libraries,
+        policy_banner: policy::default_policy_banner(),
+    })
 }
 
 fn format_timestamp(time: SystemTime) -> String {
