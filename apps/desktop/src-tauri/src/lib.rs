@@ -1,5 +1,3 @@
-use mod_translator_core::tauri_invoke_handler;
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 
 pub fn run() {
@@ -14,7 +12,11 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri_invoke_handler())
+        .invoke_handler(tauri::generate_handler![
+            mod_translator_core::detect_steam_path,
+            mod_translator_core::scan_steam_library,
+            mod_translator_core::start_translation_job
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

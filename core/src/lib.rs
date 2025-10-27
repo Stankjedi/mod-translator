@@ -5,9 +5,6 @@ pub mod pipeline;
 pub mod policy;
 mod steam;
 
-use serde::{Deserialize, Serialize};
-use tauri::ipc::Invoke;
-
 pub use ai::TranslatorKind;
 pub use jobs::{
     start_translation_job, JobState, TranslationJobRequest, TranslationJobRequest as JobRequest,
@@ -16,20 +13,13 @@ pub use jobs::{
 pub use library::{scan_steam_library, LibraryEntry, LibraryScanResponse, LibraryScanner};
 pub use pipeline::PipelinePlan;
 pub use policy::{default_policy_banner, PolicyBanner, PolicyProfile};
+use serde::{Deserialize, Serialize};
 pub use steam::{detect_steam_path, SteamLocator, SteamPathResponse};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TranslationJobSummary {
     pub request: TranslationJobRequest,
     pub status: TranslationJobStatus,
-}
-
-pub fn tauri_invoke_handler() -> impl Fn(Invoke<tauri::Wry>) + Send + Sync + 'static {
-    tauri::generate_handler![
-        crate::steam::detect_steam_path,
-        crate::library::scan_steam_library,
-        crate::jobs::start_translation_job
-    ]
 }
 
 #[cfg(test)]
