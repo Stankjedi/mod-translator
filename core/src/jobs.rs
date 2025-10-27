@@ -1,4 +1,4 @@
-use crate::ai::{TranslateOptions, TranslationError, Translator, TranslatorKind};
+use crate::ai::{ProviderAuth, TranslateOptions, TranslationError, Translator, TranslatorKind};
 use crate::pipeline::PipelinePlan;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,8 @@ pub struct TranslationJobRequest {
     pub translator: TranslatorKind,
     pub source_language: String,
     pub target_language: String,
+    #[serde(default)]
+    pub provider_auth: ProviderAuth,
 }
 
 #[derive(Debug, Error)]
@@ -93,7 +95,9 @@ impl TranslationOrchestrator {
         request: TranslationJobRequest,
     ) -> Result<TranslationJobStatus, JobError> {
         let job_id = Uuid::new_v4().to_string();
-        let mut translator = request.translator.build();
+        let mut translator = request
+            .translator
+            .build_with_auth(&request.provider_auth);
         let options = TranslateOptions {
             source_lang: Some(request.source_language.clone()),
             target_lang: request.target_language.clone(),
