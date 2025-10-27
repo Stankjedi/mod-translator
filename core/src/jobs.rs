@@ -4,10 +4,11 @@ use dirs::data_dir;
 use log::warn;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{create_dir_all, OpenOptions};
 use std::io::Write;
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
@@ -115,41 +116,56 @@ impl TranslationOrchestrator {
             .map(Some)
             .map_err(JobError::from)?;
 
-        let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
-        let queue_snapshot = queue.register_job(job_id.clone());
-        let rate_limiter_snapshot = queue.rate_limiter_snapshot();
         let job_display_name = request
             .mod_name
             .as_deref()
-            .unwrap_or(request.mod_id.as_str());
+            .unwrap_or(request.mod_id.as_str())
+            .to_string();
 
-        let status = TranslationJobStatus {
-            job_id,
+        let initial_status = TranslationJobStatus {
+            job_id: job_id.clone(),
             translator: translator.name().to_string(),
-            state: if queue_snapshot.queued > 0 {
-                JobState::Queued
-            } else {
-                JobState::Completed
-            },
-            progress: if queue_snapshot.queued > 0 { 0.1 } else { 1.0 },
+            state: JobState::Queued,
+            progress: 0.05,
             preview,
-            message: Some(format!("Translation job prepared for {}", job_display_name)),
-            queue: queue_snapshot,
-            rate_limiter: rate_limiter_snapshot,
+            message: Some(format!(
+                "{} 번역 작업이 큐에 등록되었습니다.",
+                job_display_name
+            )),
+            queue: QueueSnapshot {
+                queued: 0,
+                running: 0,
+                concurrent_workers: 0,
+            },
+            rate_limiter: RateLimiterSnapshot {
+                bucket_capacity: 0,
+                tokens_available: 0,
+                refill_interval_ms: 0,
+            },
             quality_gates: QualityGateSnapshot {
                 placeholder_guard: true,
                 format_validator: true,
                 sample_rate: 0.05,
             },
-            pipeline: PipelinePlan::default_for(
-                request
-                    .mod_name
-                    .as_deref()
-                    .unwrap_or(request.mod_id.as_str()),
-            ),
+            pipeline: PipelinePlan::default_for(&job_display_name),
+        };
+
+        let job = QueuedJob {
+            job_id: job_id.clone(),
+            request: request.clone(),
+            options: options.clone(),
+        };
+
+        let (status, maybe_job_to_start) = {
+            let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
+            queue.register_job(job, initial_status)
         };
 
         append_job_log(&status);
+
+        if let Some(job_to_start) = maybe_job_to_start {
+            spawn_job_worker(job_to_start);
+        }
 
         Ok(status)
     }
@@ -190,12 +206,20 @@ fn append_job_log(job: &TranslationJobStatus) {
     }
 }
 
+#[derive(Debug, Clone)]
+struct QueuedJob {
+    job_id: String,
+    request: TranslationJobRequest,
+    options: TranslateOptions,
+}
+
 #[derive(Debug)]
 struct WorkQueue {
     concurrent_workers: usize,
     running: usize,
-    waiting: VecDeque<String>,
+    waiting: VecDeque<QueuedJob>,
     rate_limiter: RateLimiter,
+    statuses: HashMap<String, TranslationJobStatus>,
 }
 
 impl WorkQueue {
@@ -205,16 +229,62 @@ impl WorkQueue {
             running: 0,
             waiting: VecDeque::new(),
             rate_limiter,
+            statuses: HashMap::new(),
         }
     }
 
-    fn register_job(&mut self, job_id: String) -> QueueSnapshot {
+    fn register_job(
+        &mut self,
+        job: QueuedJob,
+        mut status: TranslationJobStatus,
+    ) -> (TranslationJobStatus, Option<QueuedJob>) {
+        let mut start_immediately = None;
         if self.running < self.concurrent_workers {
             self.running += 1;
+            start_immediately = Some(job);
         } else {
-            self.waiting.push_back(job_id);
+            self.waiting.push_back(job);
         }
 
+        self.rate_limiter.consume();
+        status.queue = self.snapshot();
+        status.rate_limiter = self.rate_limiter.snapshot();
+        self.statuses.insert(status.job_id.clone(), status.clone());
+
+        (status, start_immediately)
+    }
+
+    fn update_status<F>(&mut self, job_id: &str, mut update: F) -> Option<TranslationJobStatus>
+    where
+        F: FnOnce(&mut TranslationJobStatus),
+    {
+        if let Some(status) = self.statuses.get_mut(job_id) {
+            update(status);
+            status.queue = self.snapshot();
+            return Some(status.clone());
+        }
+
+        None
+    }
+
+    fn finish_job(&mut self, job_id: &str) -> Option<QueuedJob> {
+        if self.running > 0 {
+            self.running -= 1;
+        }
+
+        if let Some(next_job) = self.waiting.pop_front() {
+            self.running += 1;
+            Some(next_job)
+        } else {
+            // Job is finished and no queued work.
+            self.statuses.get_mut(job_id).map(|status| {
+                status.queue = self.snapshot();
+            });
+            None
+        }
+    }
+
+    fn snapshot(&self) -> QueueSnapshot {
         QueueSnapshot {
             queued: self.waiting.len(),
             running: self.running,
@@ -222,9 +292,8 @@ impl WorkQueue {
         }
     }
 
-    fn rate_limiter_snapshot(&mut self) -> RateLimiterSnapshot {
-        self.rate_limiter.consume();
-        self.rate_limiter.snapshot()
+    fn job_status(&self, job_id: &str) -> Option<TranslationJobStatus> {
+        self.statuses.get(job_id).cloned()
     }
 }
 
@@ -262,6 +331,99 @@ impl RateLimiter {
     }
 }
 
+fn spawn_job_worker(job: QueuedJob) {
+    thread::spawn(move || {
+        let job_display_name = job
+            .request
+            .mod_name
+            .as_deref()
+            .unwrap_or(job.request.mod_id.as_str())
+            .to_string();
+
+        {
+            let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
+            if let Some(status) = queue.update_status(&job.job_id, |status| {
+                status.state = JobState::Running;
+                status.progress = status.progress.max(0.2);
+                status.message = Some(format!("{} 번역을 시작했습니다.", job_display_name));
+            }) {
+                append_job_log(&status);
+            }
+        }
+
+        thread::sleep(Duration::from_millis(400));
+
+        let mut translator = job
+            .request
+            .translator
+            .build_with_auth(&job.request.provider_auth);
+
+        let sample_inputs = vec![
+            format!("{} — UI 문자열 샘플", job_display_name),
+            format!("{} — 시스템 로그 문장", job_display_name),
+            "Placeholder string {0} 테스트".to_string(),
+        ];
+
+        let result = translator.translate_batch(&sample_inputs, &job.options);
+
+        match result {
+            Ok(outputs) => {
+                {
+                    let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
+                    if let Some(status) = queue.update_status(&job.job_id, |status| {
+                        status.progress = 0.9;
+                        if let Some(first) = outputs.first() {
+                            status.preview = Some(first.clone());
+                        }
+                        status.message =
+                            Some(format!("{}개의 문자열을 번역했습니다.", outputs.len()));
+                    }) {
+                        append_job_log(&status);
+                    }
+                }
+
+                thread::sleep(Duration::from_millis(300));
+
+                let next_job = {
+                    let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
+                    let next_job = queue.finish_job(&job.job_id);
+                    if let Some(status) = queue.update_status(&job.job_id, |status| {
+                        status.state = JobState::Completed;
+                        status.progress = 1.0;
+                        status.message =
+                            Some(format!("{} 번역이 완료되었습니다.", job_display_name));
+                    }) {
+                        append_job_log(&status);
+                    }
+                    next_job
+                };
+
+                if let Some(next_job) = next_job {
+                    spawn_job_worker(next_job);
+                }
+            }
+            Err(err) => {
+                let next_job = {
+                    let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
+                    let next_job = queue.finish_job(&job.job_id);
+                    if let Some(status) = queue.update_status(&job.job_id, |status| {
+                        status.state = JobState::Failed;
+                        status.progress = 1.0;
+                        status.message = Some(format!("번역 실패: {}", err));
+                    }) {
+                        append_job_log(&status);
+                    }
+                    next_job
+                };
+
+                if let Some(next_job) = next_job {
+                    spawn_job_worker(next_job);
+                }
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub fn start_translation_job(
     request: TranslationJobRequest,
@@ -269,4 +431,15 @@ pub fn start_translation_job(
     TranslationOrchestrator::new()
         .start_job(request)
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn get_translation_job_status(job_id: String) -> Result<TranslationJobStatus, String> {
+    let queue = WORK_QUEUE
+        .lock()
+        .map_err(|_| "queue lock poisoned".to_string())?;
+
+    queue
+        .job_status(&job_id)
+        .ok_or_else(|| format!("job {job_id} not found"))
 }

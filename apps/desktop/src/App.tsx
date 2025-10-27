@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { LibraryProvider, useLibraryContext } from './context/LibraryContext'
+import { JobProvider } from './context/JobContext'
 import DashboardView from './views/DashboardView'
 import ModManagementView from './views/ModManagementView'
 import ProgressView from './views/ProgressView'
@@ -137,7 +138,9 @@ function AppShell() {
 function App() {
   return (
     <LibraryProvider>
-      <AppShell />
+      <JobProvider>
+        <AppShell />
+      </JobProvider>
     </LibraryProvider>
   )
 }
