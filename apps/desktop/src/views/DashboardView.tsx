@@ -1,8 +1,7 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
-import { useJobContext } from '../context/JobContext'
-import type { JobState } from '../types/core'
+import { useJobStore } from '../context/JobStore'
 
 const pipelineStages = [
   '워크샵 압축 해제',
@@ -13,17 +12,9 @@ const pipelineStages = [
   '리소스 재패키징 또는 패치 생성',
 ]
 
-const jobStateLabels: Record<JobState, string> = {
-  queued: '대기 중',
-  running: '실행 중',
-  completed: '완료',
-  failed: '실패',
-}
-
 function DashboardView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
-  const { jobsByMod, refreshJob } = useJobContext()
-  const [isJobActionBusy, setIsJobActionBusy] = useState(false)
+  const { currentJob, queue, completedJobs } = useJobStore()
   const navigate = useNavigate()
 
   const totalLibraries = libraries.length
@@ -50,7 +41,6 @@ function DashboardView() {
     [libraries],
   )
   const firstDetectedMod = useMemo(() => allMods[0] ?? null, [allMods])
-  const firstModJob = firstDetectedMod ? jobsByMod[firstDetectedMod.id] : undefined
 
   const firstNote = useMemo(() => {
     const note = libraries.find((library) => library.notes.length > 0)?.notes[0]
@@ -66,37 +56,29 @@ function DashboardView() {
   )
 
   const jobHighlight = useMemo(() => {
-    const entries = Object.values(jobsByMod)
-    if (!entries.length) {
-      return '예약된 번역 작업이 없습니다. 진행 상황 탭에서 작업을 시작해 보세요.'
+    const runningCount = currentJob ? 1 : 0
+    const queuedCount = queue.length
+    const completedCount = completedJobs.filter((job) => job.status === 'completed').length
+    const failedCount = completedJobs.filter((job) => job.status === 'failed').length
+
+    if (!runningCount && !queuedCount) {
+      if (!completedJobs.length) {
+        return '예약된 번역 작업이 없습니다. 모드 관리 탭에서 새 작업을 추가해 보세요.'
+      }
+
+      const pieces = [`최근 완료 ${completedCount}건`]
+      if (failedCount) {
+        pieces.push(`실패 ${failedCount}건`)
+      }
+      return pieces.join(' · ')
     }
 
-    const summary = entries.reduce(
-      (acc, entry) => {
-        acc.total += 1
-        acc[entry.status.state as JobState] += 1
-        return acc
-      },
-      {
-        total: 0,
-        queued: 0,
-        running: 0,
-        completed: 0,
-        failed: 0,
-      } as Record<JobState | 'total', number>,
-    )
-
-    const pieces = [
-      `총 ${summary.total}건`,
-      `대기 ${summary.queued}`,
-      `실행 ${summary.running}`,
-      `완료 ${summary.completed}`,
-    ]
-    if (summary.failed) {
-      pieces.push(`실패 ${summary.failed}`)
+    const summaryPieces = [`실행 중 ${runningCount}건`, `대기 ${queuedCount}건`, `완료 ${completedCount}건`]
+    if (failedCount) {
+      summaryPieces.push(`실패 ${failedCount}건`)
     }
-    return pieces.join(' · ')
-  }, [jobsByMod])
+    return summaryPieces.join(' · ')
+  }, [completedJobs, currentJob, queue.length])
 
   const metrics = [
     {
@@ -160,20 +142,14 @@ function DashboardView() {
       .slice(0, 4)
   }, [libraries])
 
-  const handleJobAction = useCallback(async () => {
-    if (!firstDetectedMod) return
-    if (firstModJob) {
-      setIsJobActionBusy(true)
-      try {
-        await refreshJob(firstDetectedMod.id)
-      } finally {
-        setIsJobActionBusy(false)
-      }
+  const handleJobAction = useCallback(() => {
+    if (currentJob || queue.length) {
+      navigate('/progress')
       return
     }
 
-    navigate(`/progress/${encodeURIComponent(firstDetectedMod.id)}`)
-  }, [firstDetectedMod, firstModJob, navigate, refreshJob])
+    navigate('/mods')
+  }, [currentJob, navigate, queue.length])
 
   const quickActions = [
     {
@@ -189,18 +165,20 @@ function DashboardView() {
       disabled: isScanning,
     },
     {
-      label: firstModJob
-        ? '번역 상태 새로고침'
-        : firstDetectedMod
-          ? '번역 작업 시작'
+      label: currentJob
+        ? `${currentJob.modName} 작업 보기`
+        : queue.length
+          ? '대기 중 작업 확인'
           : '번역 작업 예약',
-      description: firstDetectedMod
-        ? firstModJob
-          ? `${firstDetectedMod.name} · ${jobStateLabels[firstModJob.status.state]} · ${firstModJob.status.message ?? '상태를 갱신해 보세요.'}`
-          : `${firstDetectedMod.name} 모드를 번역 대기열에 등록합니다.`
-        : '감지된 모드가 있어야 번역 작업을 예약할 수 있습니다.',
-      onClick: firstDetectedMod ? handleJobAction : undefined,
-      disabled: !firstDetectedMod || isJobActionBusy,
+      description: currentJob
+        ? `${currentJob.modName} · 진행률 ${currentJob.progress}%`
+        : queue.length
+          ? `대기열에 ${queue.length}건의 작업이 준비되어 있습니다.`
+          : firstDetectedMod
+            ? `${firstDetectedMod.name} 모드를 선택해 번역을 예약하세요.`
+            : '작업을 예약하려면 먼저 라이브러리를 스캔해 모드를 확인하세요.',
+      onClick: handleJobAction,
+      disabled: false,
     },
     {
       label: '품질 가드 설정',
