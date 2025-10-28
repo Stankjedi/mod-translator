@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobStore } from '../context/JobStore'
+import Chip from '../components/Chip'
 
 const pipelineStages = [
   '워크샵 압축 해제',
@@ -233,16 +234,15 @@ function DashboardView() {
                   <p className="mt-1 text-xs text-slate-400">{action.description}</p>
                 </div>
                 {action.onClick ? (
-                  <button
-                    type="button"
+                  <Chip
+                    label="실행"
+                    variant="action"
+                    tone={action.disabled ? 'idle' : 'primary'}
                     onClick={action.onClick}
                     disabled={action.disabled}
-                    className="rounded-full bg-brand-600/20 px-3 py-1 text-xs font-semibold text-brand-500 transition hover:bg-brand-600/40 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    실행
-                  </button>
+                  />
                 ) : (
-                  <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-400">준비 중</span>
+                  <Chip label="준비 중" variant="action" tone="idle" />
                 )}
               </li>
             ))}

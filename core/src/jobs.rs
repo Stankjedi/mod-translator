@@ -4,7 +4,7 @@ use dirs::data_dir;
 use log::warn;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{create_dir_all, OpenOptions};
 use std::io::Write;
 use std::sync::Mutex;
@@ -35,6 +35,7 @@ pub enum JobState {
     Running,
     Completed,
     Failed,
+    Canceled,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -70,6 +71,7 @@ pub struct TranslationJobStatus {
     pub rate_limiter: RateLimiterSnapshot,
     pub quality_gates: QualityGateSnapshot,
     pub pipeline: PipelinePlan,
+    pub cancel_requested: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -159,6 +161,7 @@ impl TranslationOrchestrator {
                 sample_rate: 0.05,
             },
             pipeline: PipelinePlan::default_for(&job_display_name),
+            cancel_requested: false,
         };
 
         let job = QueuedJob {
@@ -242,6 +245,7 @@ struct WorkQueue {
     statuses: HashMap<String, TranslationJobStatus>,
     event_handle: Option<AppHandle>,
     job_mod_index: HashMap<String, String>,
+    cancel_requests: HashSet<String>,
 }
 
 impl WorkQueue {
@@ -254,6 +258,7 @@ impl WorkQueue {
             statuses: HashMap::new(),
             event_handle: None,
             job_mod_index: HashMap::new(),
+            cancel_requests: HashSet::new(),
         }
     }
 
@@ -279,11 +284,40 @@ impl WorkQueue {
         self.job_mod_index.insert(job_id.clone(), mod_id);
         status.queue = self.queue_snapshot();
         status.rate_limiter = self.rate_limiter.snapshot();
+        status.cancel_requested = false;
         self.statuses.insert(job_id.clone(), status.clone());
 
         let payload = self.build_payload(&status);
 
         (status, start_immediately, payload)
+    }
+
+    fn request_cancel(&mut self, job_id: &str) -> Result<Option<JobStatusEventPayload>, String> {
+        let status = self
+            .statuses
+            .get(job_id)
+            .cloned()
+            .ok_or_else(|| format!("job {job_id} not found"))?;
+
+        if matches!(
+            status.state,
+            JobState::Completed | JobState::Failed | JobState::Canceled
+        ) {
+            return Err(format!("job {job_id} is not cancellable"));
+        }
+
+        self.cancel_requests.insert(job_id.to_string());
+
+        let (_, payload) = self.update_status(job_id, |status| {
+            status.cancel_requested = true;
+            status.message = Some("사용자가 작업 중단을 요청했습니다.".to_string());
+        });
+
+        Ok(payload)
+    }
+
+    fn take_cancel_request(&mut self, job_id: &str) -> bool {
+        self.cancel_requests.remove(job_id)
     }
 
     fn update_status<F>(
@@ -306,7 +340,10 @@ impl WorkQueue {
             update(status);
             status.queue = queue_snapshot.clone();
             status.rate_limiter = rate_snapshot.clone();
-            let is_terminal = matches!(status.state, JobState::Completed | JobState::Failed);
+            let is_terminal = matches!(
+                status.state,
+                JobState::Completed | JobState::Failed | JobState::Canceled
+            );
             let status_clone = status.clone();
 
             (status_clone, is_terminal)
@@ -325,6 +362,8 @@ impl WorkQueue {
         if self.running > 0 {
             self.running -= 1;
         }
+
+        self.cancel_requests.remove(job_id);
 
         if let Some(next_job) = self.waiting.pop_front() {
             self.running += 1;
@@ -495,6 +534,7 @@ fn spawn_job_worker(job: QueuedJob) {
             .as_deref()
             .unwrap_or(job.request.mod_id.as_str())
             .to_string();
+        let job_id = job.job_id.clone();
 
         let (maybe_status, initial_event, initial_handle) = {
             let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
@@ -515,6 +555,43 @@ fn spawn_job_worker(job: QueuedJob) {
             emit_job_status(initial_handle, payload);
         }
 
+        let cancel_message = format!("{} 작업이 사용자에 의해 중단되었습니다.", job_display_name);
+        let mut finalize_cancel = || -> bool {
+            let (maybe_status, event_payload, event_handle, next_job) = {
+                let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
+                if !queue.take_cancel_request(&job_id) {
+                    return false;
+                }
+                let next_job = queue.finish_job(&job_id);
+                let (status, event_payload) = queue.update_status(&job_id, |status| {
+                    status.state = JobState::Canceled;
+                    status.progress = status.progress.max(0.0);
+                    status.cancel_requested = true;
+                    status.message = Some(cancel_message.clone());
+                });
+                let event_handle = queue.event_handle.clone();
+                (status, event_payload, event_handle, next_job)
+            };
+
+            if let Some(status) = maybe_status {
+                append_job_log(&status);
+            }
+
+            if let Some(payload) = event_payload {
+                emit_job_status(event_handle, payload);
+            }
+
+            if let Some(next_job) = next_job {
+                spawn_job_worker(next_job);
+            }
+
+            true
+        };
+
+        if finalize_cancel() {
+            return;
+        }
+
         loop {
             let (wait_duration, throttle_event, throttle_handle) = {
                 let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
@@ -527,6 +604,10 @@ fn spawn_job_worker(job: QueuedJob) {
                 emit_job_status(throttle_handle, payload);
             }
 
+            if finalize_cancel() {
+                return;
+            }
+
             if wait_duration.is_zero() {
                 break;
             }
@@ -534,7 +615,15 @@ fn spawn_job_worker(job: QueuedJob) {
             thread::sleep(wait_duration);
         }
 
+        if finalize_cancel() {
+            return;
+        }
+
         thread::sleep(Duration::from_millis(400));
+
+        if finalize_cancel() {
+            return;
+        }
 
         let mut translator = job
             .request
@@ -548,6 +637,10 @@ fn spawn_job_worker(job: QueuedJob) {
         ];
 
         let result = translator.translate_batch(&sample_inputs, &job.options);
+
+        if finalize_cancel() {
+            return;
+        }
 
         match result {
             Ok(outputs) => {
@@ -573,7 +666,15 @@ fn spawn_job_worker(job: QueuedJob) {
                     emit_job_status(event_handle, payload);
                 }
 
+                if finalize_cancel() {
+                    return;
+                }
+
                 thread::sleep(Duration::from_millis(300));
+
+                if finalize_cancel() {
+                    return;
+                }
 
                 let (maybe_status, event_payload, event_handle, next_job) = {
                     let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
@@ -601,6 +702,10 @@ fn spawn_job_worker(job: QueuedJob) {
                 }
             }
             Err(err) => {
+                if finalize_cancel() {
+                    return;
+                }
+
                 let (maybe_status, event_payload, event_handle, next_job) = {
                     let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
                     let next_job = queue.finish_job(&job.job_id);
@@ -641,6 +746,24 @@ pub fn start_translation_job(
     TranslationOrchestrator::new()
         .start_job(request, Some(app_handle))
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_translation_job(job_id: String) -> Result<(), String> {
+    let (event_payload, event_handle) = {
+        let mut queue = WORK_QUEUE
+            .lock()
+            .map_err(|_| "queue lock poisoned".to_string())?;
+        let payload = queue.request_cancel(&job_id)?;
+        let event_handle = queue.event_handle.clone();
+        (payload, event_handle)
+    };
+
+    if let Some(payload) = event_payload {
+        emit_job_status(event_handle, payload);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

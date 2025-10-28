@@ -8,8 +8,9 @@ mod time;
 
 pub use ai::TranslatorKind;
 pub use jobs::{
-    get_translation_job_status, start_translation_job, JobState, TranslationJobRequest,
-    TranslationJobRequest as JobRequest, TranslationJobStatus, TranslationOrchestrator,
+    cancel_translation_job, get_translation_job_status, start_translation_job, JobState,
+    TranslationJobRequest, TranslationJobRequest as JobRequest, TranslationJobStatus,
+    TranslationOrchestrator,
 };
 pub use library::{
     list_mod_files, scan_steam_library, LibraryEntry, LibraryScanResponse, LibraryScanner,
