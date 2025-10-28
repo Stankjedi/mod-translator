@@ -6,7 +6,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from 'react'
 import { invoke } from '@tauri-apps/api/core'
@@ -115,6 +114,13 @@ interface JobStoreValue {
 
 const JobStoreContext = createContext<JobStoreValue | undefined>(undefined)
 
+const clampProgress = (value: number) => {
+  if (Number.isNaN(value)) {
+    return 0
+  }
+  return Math.min(100, Math.max(0, value))
+}
+
 const createLogEntry = (level: JobLogLevel, message: string): JobLogEntry => ({
   id: createId(),
   level,
@@ -135,9 +141,9 @@ const prepareJobForActivation = (job: QueueJob): QueueJob => ({
   qualityGates: null,
   pipeline: null,
   logs: [],
-  selectedFiles: job.selectedFiles ?? [],
-  sourceLanguageGuess: job.sourceLanguageGuess ?? null,
-  targetLanguage: job.targetLanguage ?? null,
+  selectedFiles: [],
+  sourceLanguageGuess: null,
+  targetLanguage: job.targetLanguage ?? DEFAULT_TARGET_LANGUAGE,
   lastUpdated: Date.now(),
 })
 
@@ -165,6 +171,26 @@ const createJob = (input: EnqueueJobInput): QueueJob => ({
   lastUpdated: Date.now(),
 })
 
+const promoteNextJobState = (previous: JobStoreState): JobStoreState => {
+  if (previous.queue.length === 0) {
+    if (previous.currentJob === null) {
+      return previous
+    }
+    return {
+      ...previous,
+      currentJob: null,
+      queue: [],
+    }
+  }
+
+  const [nextJob, ...rest] = previous.queue
+  return {
+    ...previous,
+    currentJob: prepareJobForActivation(nextJob),
+    queue: rest,
+  }
+}
+
 const arraysEqual = (a: string[], b: string[]) => {
   if (a.length !== b.length) return false
   for (let index = 0; index < a.length; index += 1) {
@@ -180,29 +206,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     completedJobs: [],
   })
 
-  const stateRef = useRef(state)
-  useEffect(() => {
-    stateRef.current = state
-  }, [state])
-
   const promoteNextJob = useCallback(() => {
-    setState((prev) => {
-      if (!prev.queue.length) {
-        if (!prev.currentJob) return prev
-        return {
-          ...prev,
-          currentJob: null,
-          queue: [],
-        }
-      }
-
-      const [nextJob, ...rest] = prev.queue
-      return {
-        currentJob: prepareJobForActivation(nextJob),
-        queue: rest,
-        completedJobs: prev.completedJobs,
-      }
-    })
+    setState((prev) => promoteNextJobState(prev))
   }, [])
 
   const appendLog = useCallback((message: string, level: JobLogLevel = 'info') => {
@@ -224,55 +229,55 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const markCurrentJobCompleted = useCallback(
-    (message?: string | null, patch?: Partial<QueueJob>) => {
-      const entry = message ? createLogEntry('info', message) : null
-      setState((prev) => {
-        if (!prev.currentJob) return prev
-        const logs = entry ? [...prev.currentJob.logs, entry] : prev.currentJob.logs
-        const completedJob: QueueJob = {
-          ...prev.currentJob,
-          ...patch,
-          status: 'completed',
-          progress: 100,
-          logs,
-          lastUpdated: Date.now(),
-        }
-        return {
-          currentJob: null,
-          queue: prev.queue,
-          completedJobs: [...prev.completedJobs, completedJob],
-        }
-      })
-      promoteNextJob()
-    },
-    [promoteNextJob],
-  )
+  const markCurrentJobCompleted = useCallback((message?: string | null, patch?: Partial<QueueJob>) => {
+    const entry = message ? createLogEntry('info', message) : null
+    setState((prev) => {
+      if (!prev.currentJob) return prev
 
-  const markCurrentJobFailed = useCallback(
-    (message?: string | null, patch?: Partial<QueueJob>) => {
-      const entry = message ? createLogEntry('error', message) : null
-      setState((prev) => {
-        if (!prev.currentJob) return prev
-        const logs = entry ? [...prev.currentJob.logs, entry] : prev.currentJob.logs
-        const failedJob: QueueJob = {
-          ...prev.currentJob,
-          ...patch,
-          status: 'failed',
-          progress: patch?.progress ?? prev.currentJob.progress,
-          logs,
-          lastUpdated: Date.now(),
-        }
-        return {
-          currentJob: null,
-          queue: prev.queue,
-          completedJobs: [...prev.completedJobs, failedJob],
-        }
-      })
-      promoteNextJob()
-    },
-    [promoteNextJob],
-  )
+      const logs = entry ? [...prev.currentJob.logs, entry] : prev.currentJob.logs
+      const completedJob: QueueJob = {
+        ...prev.currentJob,
+        ...patch,
+        status: 'completed',
+        progress: 100,
+        logs,
+        lastUpdated: Date.now(),
+      }
+
+      const baseState: JobStoreState = {
+        ...prev,
+        currentJob: null,
+        completedJobs: [...prev.completedJobs, completedJob],
+      }
+
+      return promoteNextJobState(baseState)
+    })
+  }, [])
+
+  const markCurrentJobFailed = useCallback((message?: string | null, patch?: Partial<QueueJob>) => {
+    const entry = message ? createLogEntry('error', message) : null
+    setState((prev) => {
+      if (!prev.currentJob) return prev
+
+      const logs = entry ? [...prev.currentJob.logs, entry] : prev.currentJob.logs
+      const failedJob: QueueJob = {
+        ...prev.currentJob,
+        ...patch,
+        status: 'failed',
+        progress: patch?.progress ?? prev.currentJob.progress,
+        logs,
+        lastUpdated: Date.now(),
+      }
+
+      const baseState: JobStoreState = {
+        ...prev,
+        currentJob: null,
+        completedJobs: [...prev.completedJobs, failedJob],
+      }
+
+      return promoteNextJobState(baseState)
+    })
+  }, [])
 
   const setCurrentJobSelection = useCallback(
     (selectedFiles: string[], sourceLanguageGuess: string | null, targetLanguage?: string | null) => {
@@ -303,61 +308,73 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  const enqueueJob = useCallback(
-    (input: EnqueueJobInput): EnqueueJobResult => {
-      const snapshot = stateRef.current
+  const enqueueJob = useCallback((input: EnqueueJobInput): EnqueueJobResult => {
+    let result: EnqueueJobResult | null = null
 
-      if (snapshot.currentJob && snapshot.currentJob.modId === input.modId) {
-        return { job: snapshot.currentJob, promoted: false, error: 'duplicate-active' }
+    setState((prev) => {
+      if (prev.currentJob && prev.currentJob.modId === input.modId) {
+        result = { job: prev.currentJob, promoted: false, error: 'duplicate-active' }
+        return prev
       }
 
-      const duplicateQueued = snapshot.queue.find((job) => job.modId === input.modId)
+      const duplicateQueued = prev.queue.find((job) => job.modId === input.modId)
       if (duplicateQueued) {
-        return { job: duplicateQueued, promoted: false, error: 'duplicate-queued' }
+        result = { job: duplicateQueued, promoted: false, error: 'duplicate-queued' }
+        return prev
       }
 
       const job = createJob(input)
-      if (!job.installPath || !job.installPath.trim()) {
+      const trimmedPath = job.installPath.trim()
+
+      if (!trimmedPath) {
         const failureLog = createLogEntry(
           'error',
           '모드 설치 경로가 유효하지 않아 작업을 완료할 수 없습니다.',
         )
         const failedJob: QueueJob = {
           ...job,
+          installPath: job.installPath,
           status: 'failed',
           logs: [failureLog],
+          lastUpdated: Date.now(),
         }
-        setState((prev) => ({
-          currentJob: prev.currentJob,
-          queue: prev.queue,
-          completedJobs: [...prev.completedJobs, failedJob],
-        }))
-        return { job: failedJob, promoted: false, error: 'invalid-path' }
-      }
 
-      let promoted = false
-      setState((prev) => {
-        const queue = [...prev.queue, job]
-        if (!prev.currentJob) {
-          const [nextJob, ...rest] = queue
-          promoted = true
-          return {
-            currentJob: prepareJobForActivation(nextJob),
-            queue: rest,
-            completedJobs: prev.completedJobs,
-          }
-        }
+        result = { job: failedJob, promoted: false, error: 'invalid-path' }
 
         return {
           ...prev,
-          queue,
+          completedJobs: [...prev.completedJobs, failedJob],
         }
-      })
+      }
 
-      return { job, promoted, error: null }
-    },
-    [],
-  )
+      const normalizedJob: QueueJob = {
+        ...job,
+        installPath: trimmedPath,
+        lastUpdated: Date.now(),
+      }
+
+      if (!prev.currentJob) {
+        const activated = prepareJobForActivation(normalizedJob)
+        result = { job: activated, promoted: true, error: null }
+        return {
+          ...prev,
+          currentJob: activated,
+        }
+      }
+
+      result = { job: normalizedJob, promoted: false, error: null }
+      return {
+        ...prev,
+        queue: [...prev.queue, normalizedJob],
+      }
+    })
+
+    if (!result) {
+      throw new Error('enqueueJob 결과를 결정하지 못했습니다.')
+    }
+
+    return result
+  }, [])
 
   const startTranslationForCurrentJob = useCallback(
     async (options: StartTranslationOptions) => {
@@ -365,8 +382,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         throw new Error('번역 작업은 데스크톱 환경에서만 실행할 수 있습니다.')
       }
 
-      const snapshot = stateRef.current
-      const activeJob = snapshot.currentJob
+      const activeJob = state.currentJob
       if (!activeJob) {
         throw new Error('현재 실행 중인 작업이 없습니다.')
       }
@@ -392,14 +408,50 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         request,
       })
 
-      const logLevel: JobLogLevel = status.state === 'failed' ? 'error' : 'info'
-      const logEntry = status.message && status.message.trim()
-        ? createLogEntry(logLevel, status.message)
-        : null
+      const progress = clampProgress(Math.round(status.progress * 100))
+
+      if (status.state === 'completed') {
+        markCurrentJobCompleted(status.message ?? null, {
+          backendJobId: status.job_id,
+          translator: status.translator,
+          message: status.message,
+          preview: status.preview,
+          queueSnapshot: status.queue,
+          rateLimiter: status.rate_limiter,
+          qualityGates: status.quality_gates,
+          pipeline: status.pipeline,
+          progress,
+          targetLanguage,
+        })
+        return status
+      }
+
+      if (status.state === 'failed') {
+        markCurrentJobFailed(status.message ?? null, {
+          backendJobId: status.job_id,
+          translator: status.translator,
+          message: status.message,
+          preview: status.preview,
+          queueSnapshot: status.queue,
+          rateLimiter: status.rate_limiter,
+          qualityGates: status.quality_gates,
+          pipeline: status.pipeline,
+          progress,
+          targetLanguage,
+        })
+        return status
+      }
+
+      const trimmedMessage = status.message?.trim()
+      const logEntry = trimmedMessage ? createLogEntry('info', trimmedMessage) : null
 
       setState((prev) => {
-        if (!prev.currentJob) return prev
+        if (!prev.currentJob || prev.currentJob.jobId !== activeJob.jobId) {
+          return prev
+        }
+
         const logs = logEntry ? [...prev.currentJob.logs, logEntry] : prev.currentJob.logs
+
         return {
           ...prev,
           currentJob: {
@@ -412,7 +464,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             rateLimiter: status.rate_limiter,
             qualityGates: status.quality_gates,
             pipeline: status.pipeline,
-            progress: Math.round(status.progress * 100),
+            progress,
             status: status.state,
             selectedFiles: [...options.selectedFiles],
             sourceLanguageGuess: options.sourceLanguageGuess ?? null,
@@ -423,35 +475,9 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         }
       })
 
-      if (status.state === 'completed') {
-        markCurrentJobCompleted(null, {
-          backendJobId: status.job_id,
-          translator: status.translator,
-          message: status.message,
-          preview: status.preview,
-          queueSnapshot: status.queue,
-          rateLimiter: status.rate_limiter,
-          qualityGates: status.quality_gates,
-          pipeline: status.pipeline,
-          progress: Math.round(status.progress * 100),
-        })
-      } else if (status.state === 'failed') {
-        markCurrentJobFailed(null, {
-          backendJobId: status.job_id,
-          translator: status.translator,
-          message: status.message,
-          preview: status.preview,
-          queueSnapshot: status.queue,
-          rateLimiter: status.rate_limiter,
-          qualityGates: status.quality_gates,
-          pipeline: status.pipeline,
-          progress: Math.round(status.progress * 100),
-        })
-      }
-
       return status
     },
-    [markCurrentJobCompleted, markCurrentJobFailed],
+    [markCurrentJobCompleted, markCurrentJobFailed, state.currentJob],
   )
 
   useEffect(() => {
@@ -465,26 +491,14 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       const payload = event.payload
       if (!payload) return
 
-      const snapshot = stateRef.current
-      const activeJob = snapshot.currentJob
-      if (!activeJob) return
-      if (
-        activeJob.modId !== payload.mod_id &&
-        activeJob.backendJobId &&
-        activeJob.backendJobId !== payload.job_id
-      ) {
-        return
-      }
-
       const status = payload.status
-      const progress = Math.round(status.progress * 100)
+      const progress = clampProgress(Math.round(status.progress * 100))
+      const trimmedMessage = status.message?.trim()
       const logLevel: JobLogLevel = status.state === 'failed' ? 'error' : 'info'
-      const logEntry = status.message && status.message.trim()
-        ? createLogEntry(logLevel, status.message)
-        : null
+      const logEntry = trimmedMessage ? createLogEntry(logLevel, trimmedMessage) : null
 
       if (status.state === 'completed') {
-        markCurrentJobCompleted(null, {
+        markCurrentJobCompleted(status.message ?? null, {
           backendJobId: payload.job_id,
           translator: status.translator,
           message: status.message,
@@ -494,13 +508,12 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           qualityGates: status.quality_gates,
           pipeline: status.pipeline,
           progress,
-          logs: logEntry ? [...activeJob.logs, logEntry] : activeJob.logs,
         })
         return
       }
 
       if (status.state === 'failed') {
-        markCurrentJobFailed(null, {
+        markCurrentJobFailed(status.message ?? null, {
           backendJobId: payload.job_id,
           translator: status.translator,
           message: status.message,
@@ -510,20 +523,29 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           qualityGates: status.quality_gates,
           pipeline: status.pipeline,
           progress,
-          logs: logEntry ? [...activeJob.logs, logEntry] : activeJob.logs,
         })
         return
       }
 
       setState((prev) => {
         if (!prev.currentJob) return prev
+
+        const sameMod = prev.currentJob.modId === payload.mod_id
+        const sameBackendJob =
+          !prev.currentJob.backendJobId || prev.currentJob.backendJobId === payload.job_id
+
+        if (!sameMod || !sameBackendJob) {
+          return prev
+        }
+
         const logs = logEntry ? [...prev.currentJob.logs, logEntry] : prev.currentJob.logs
+
         return {
           ...prev,
           currentJob: {
             ...prev.currentJob,
-            backendJobId: payload.job_id,
-            translator: status.translator,
+            backendJobId: payload.job_id ?? prev.currentJob.backendJobId,
+            translator: status.translator ?? prev.currentJob.translator,
             message: status.message,
             preview: status.preview,
             queueSnapshot: status.queue,
