@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { LibraryProvider, useLibraryContext } from './context/LibraryContext'
 import { JobProvider } from './context/JobContext'
@@ -6,6 +6,10 @@ import DashboardView from './views/DashboardView'
 import ModManagementView from './views/ModManagementView'
 import ProgressView from './views/ProgressView'
 import SettingsView from './views/SettingsView'
+import {
+  getPolicyAcknowledged,
+  setPolicyAcknowledged as persistPolicyAcknowledged,
+} from './storage/policyStorage'
 
 const navigation = [
   { to: '/', label: '대시보드', description: '최근 상태와 진행 현황 요약' },
@@ -16,11 +20,7 @@ const navigation = [
 
 function AppShell() {
   const { policyBanner, error } = useLibraryContext()
-  const [policyAcknowledged, setPolicyAcknowledged] = useState(false)
-
-  useEffect(() => {
-    setPolicyAcknowledged(false)
-  }, [policyBanner?.headline])
+  const [policyAcknowledged, setPolicyAcknowledgedState] = useState(() => getPolicyAcknowledged())
 
   const showPolicyBanner = useMemo(() => {
     if (!policyBanner) return false
@@ -77,7 +77,11 @@ function AppShell() {
                 <input
                   type="checkbox"
                   checked={policyAcknowledged}
-                  onChange={(event) => setPolicyAcknowledged(event.target.checked)}
+                  onChange={(event) => {
+                    const nextValue = event.target.checked
+                    setPolicyAcknowledgedState(nextValue)
+                    persistPolicyAcknowledged(nextValue)
+                  }}
                   className="mt-0.5 h-4 w-4 rounded border-yellow-400 bg-slate-950 text-yellow-500 focus:ring-yellow-400"
                 />
                 <span>{policyBanner.checkbox_label}</span>

@@ -137,3 +137,9 @@ export interface TranslationJobStatus {
   quality_gates: QualityGateSnapshot
   pipeline: PipelinePlan
 }
+
+export interface JobStatusUpdatedEvent {
+  job_id: string
+  mod_id: string
+  status: TranslationJobStatus
+}

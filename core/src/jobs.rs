@@ -9,7 +9,8 @@ use std::fs::{create_dir_all, OpenOptions};
 use std::io::Write;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -19,6 +20,13 @@ static WORK_QUEUE: Lazy<Mutex<WorkQueue>> = Lazy::new(|| {
         RateLimiter::new(5, Duration::from_millis(750)), // 5 tokens per 750ms bucket
     ))
 });
+
+#[derive(Debug, Serialize, Clone)]
+struct JobStatusEventPayload {
+    job_id: String,
+    mod_id: String,
+    status: TranslationJobStatus,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -99,6 +107,7 @@ impl TranslationOrchestrator {
     pub fn start_job(
         &self,
         request: TranslationJobRequest,
+        app_handle: Option<AppHandle>,
     ) -> Result<TranslationJobStatus, JobError> {
         let job_id = Uuid::new_v4().to_string();
         let mut translator = request.translator.build_with_auth(&request.provider_auth);
@@ -158,10 +167,20 @@ impl TranslationOrchestrator {
             options: options.clone(),
         };
 
-        let (status, maybe_job_to_start) = {
+        let (status, maybe_job_to_start, event_payload, event_handle) = {
             let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
-            queue.register_job(job, initial_status)
+            if let Some(ref handle) = app_handle {
+                queue.set_event_handle(handle.clone());
+            }
+            let (status, maybe_job_to_start, event_payload) =
+                queue.register_job(job, initial_status);
+            let event_handle = queue.event_handle.clone();
+            (status, maybe_job_to_start, event_payload, event_handle)
         };
+
+        if let Some(payload) = event_payload {
+            emit_job_status(event_handle, payload);
+        }
 
         append_job_log(&status);
 
@@ -215,13 +234,14 @@ struct QueuedJob {
     options: TranslateOptions,
 }
 
-#[derive(Debug)]
 struct WorkQueue {
     concurrent_workers: usize,
     running: usize,
     waiting: VecDeque<QueuedJob>,
     rate_limiter: RateLimiter,
     statuses: HashMap<String, TranslationJobStatus>,
+    event_handle: Option<AppHandle>,
+    job_mod_index: HashMap<String, String>,
 }
 
 impl WorkQueue {
@@ -232,6 +252,8 @@ impl WorkQueue {
             waiting: VecDeque::new(),
             rate_limiter,
             statuses: HashMap::new(),
+            event_handle: None,
+            job_mod_index: HashMap::new(),
         }
     }
 
@@ -239,7 +261,13 @@ impl WorkQueue {
         &mut self,
         job: QueuedJob,
         mut status: TranslationJobStatus,
-    ) -> (TranslationJobStatus, Option<QueuedJob>) {
+    ) -> (
+        TranslationJobStatus,
+        Option<QueuedJob>,
+        Option<JobStatusEventPayload>,
+    ) {
+        let job_id = job.job_id.clone();
+        let mod_id = job.request.mod_id.clone();
         let mut start_immediately = None;
         if self.running < self.concurrent_workers {
             self.running += 1;
@@ -248,27 +276,40 @@ impl WorkQueue {
             self.waiting.push_back(job);
         }
 
-        self.rate_limiter.consume();
-        status.queue = self.snapshot();
+        self.job_mod_index.insert(job_id.clone(), mod_id);
+        status.queue = self.queue_snapshot();
         status.rate_limiter = self.rate_limiter.snapshot();
-        self.statuses.insert(status.job_id.clone(), status.clone());
+        self.statuses.insert(job_id.clone(), status.clone());
 
-        (status, start_immediately)
+        let payload = self.build_payload(&status);
+
+        (status, start_immediately, payload)
     }
 
-    fn update_status<F>(&mut self, job_id: &str, update: F) -> Option<TranslationJobStatus>
+    fn update_status<F>(
+        &mut self,
+        job_id: &str,
+        update: F,
+    ) -> (Option<TranslationJobStatus>, Option<JobStatusEventPayload>)
     where
         F: FnOnce(&mut TranslationJobStatus),
     {
-        let queue_snapshot = self.snapshot();
+        let queue_snapshot = self.queue_snapshot();
+        let rate_snapshot = self.rate_limiter.snapshot();
 
         if let Some(status) = self.statuses.get_mut(job_id) {
             update(status);
             status.queue = queue_snapshot;
-            return Some(status.clone());
+            status.rate_limiter = rate_snapshot;
+            let status_clone = status.clone();
+            let payload = self.build_payload(&status_clone);
+            if matches!(status.state, JobState::Completed | JobState::Failed) {
+                self.job_mod_index.remove(job_id);
+            }
+            return (Some(status_clone), payload);
         }
 
-        None
+        (None, None)
     }
 
     fn finish_job(&mut self, job_id: &str) -> Option<QueuedJob> {
@@ -281,7 +322,7 @@ impl WorkQueue {
             Some(next_job)
         } else {
             // Job is finished and no queued work.
-            let queue_snapshot = self.snapshot();
+            let queue_snapshot = self.queue_snapshot();
             self.statuses.get_mut(job_id).map(|status| {
                 status.queue = queue_snapshot.clone();
             });
@@ -289,7 +330,7 @@ impl WorkQueue {
         }
     }
 
-    fn snapshot(&self) -> QueueSnapshot {
+    fn queue_snapshot(&self) -> QueueSnapshot {
         QueueSnapshot {
             queued: self.waiting.len(),
             running: self.running,
@@ -297,40 +338,132 @@ impl WorkQueue {
         }
     }
 
+    fn reserve_tokens(
+        &mut self,
+        job_id: &str,
+        tokens: u32,
+    ) -> (Duration, Option<JobStatusEventPayload>) {
+        let wait = self.rate_limiter.reserve(tokens);
+        let mut payload = None;
+        if let Some(status) = self.statuses.get_mut(job_id) {
+            status.rate_limiter = self.rate_limiter.snapshot();
+            if wait > Duration::from_millis(0) {
+                status.message = Some(format!(
+                    "API 제한으로 인해 {}ms 대기 중입니다.",
+                    wait.as_millis()
+                ));
+            }
+            let status_clone = status.clone();
+            payload = self.build_payload(&status_clone);
+        }
+        (wait, payload)
+    }
+
+    fn set_event_handle(&mut self, handle: AppHandle) {
+        self.event_handle = Some(handle);
+    }
+
+    fn build_payload(&self, status: &TranslationJobStatus) -> Option<JobStatusEventPayload> {
+        let mod_id = self.job_mod_index.get(&status.job_id)?.clone();
+        Some(JobStatusEventPayload {
+            job_id: status.job_id.clone(),
+            mod_id,
+            status: status.clone(),
+        })
+    }
+
     fn job_status(&self, job_id: &str) -> Option<TranslationJobStatus> {
         self.statuses.get(job_id).cloned()
+    }
+}
+
+fn emit_job_status(handle: Option<AppHandle>, payload: JobStatusEventPayload) {
+    if let Some(handle) = handle {
+        if let Err(err) = handle.emit_all("job-status-updated", payload) {
+            warn!("failed to emit job status update: {}", err);
+        }
     }
 }
 
 #[derive(Debug)]
 struct RateLimiter {
     capacity: u32,
-    available: u32,
+    available: f64,
     refill_interval: Duration,
+    last_refill: Instant,
 }
 
 impl RateLimiter {
     fn new(capacity: u32, refill_interval: Duration) -> Self {
         Self {
             capacity,
-            available: capacity,
+            available: capacity as f64,
             refill_interval,
+            last_refill: Instant::now(),
         }
     }
 
-    fn consume(&mut self) {
-        if self.available == 0 {
-            // Simulate backoff by refilling after a virtual interval.
-            self.available = self.capacity.saturating_sub(1);
-        } else {
-            self.available -= 1;
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.last_refill);
+        if elapsed.is_zero() {
+            return;
+        }
+
+        let interval_ms = self.refill_interval.as_millis();
+        if interval_ms == 0 {
+            self.available = self.capacity as f64;
+            self.last_refill = now;
+            return;
+        }
+
+        let tokens_per_ms = self.capacity as f64 / interval_ms as f64;
+        if tokens_per_ms <= 0.0 {
+            return;
+        }
+
+        let gained = tokens_per_ms * elapsed.as_millis() as f64;
+        if gained > 0.0 {
+            self.available = (self.available + gained).min(self.capacity as f64);
+            self.last_refill = now;
         }
     }
 
-    fn snapshot(&self) -> RateLimiterSnapshot {
+    fn reserve(&mut self, tokens: u32) -> Duration {
+        self.refill();
+
+        if tokens == 0 {
+            return Duration::from_millis(0);
+        }
+
+        let requested = tokens as f64;
+        let used_now = self.available.min(requested);
+        self.available -= used_now;
+        let remaining = requested - used_now;
+
+        if remaining <= 0.0 {
+            return Duration::from_millis(0);
+        }
+
+        let interval_ms = self.refill_interval.as_millis();
+        if interval_ms == 0 {
+            return Duration::from_millis(0);
+        }
+
+        let tokens_per_ms = self.capacity as f64 / interval_ms as f64;
+        if tokens_per_ms <= 0.0 {
+            return Duration::from_millis(interval_ms as u64);
+        }
+
+        let wait_ms = (remaining / tokens_per_ms).ceil() as u64;
+        Duration::from_millis(wait_ms.max(1))
+    }
+
+    fn snapshot(&mut self) -> RateLimiterSnapshot {
+        self.refill();
         RateLimiterSnapshot {
             bucket_capacity: self.capacity,
-            tokens_available: self.available,
+            tokens_available: self.available.floor().clamp(0.0, self.capacity as f64) as u32,
             refill_interval_ms: self.refill_interval.as_millis() as u64,
         }
     }
@@ -345,15 +478,42 @@ fn spawn_job_worker(job: QueuedJob) {
             .unwrap_or(job.request.mod_id.as_str())
             .to_string();
 
-        {
+        let (maybe_status, initial_event, initial_handle) = {
             let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
-            if let Some(status) = queue.update_status(&job.job_id, |status| {
+            let (status, event_payload) = queue.update_status(&job.job_id, |status| {
                 status.state = JobState::Running;
                 status.progress = status.progress.max(0.2);
                 status.message = Some(format!("{} 번역을 시작했습니다.", job_display_name));
-            }) {
-                append_job_log(&status);
+            });
+            let event_handle = queue.event_handle.clone();
+            (status, event_payload, event_handle)
+        };
+
+        if let Some(status) = maybe_status {
+            append_job_log(&status);
+        }
+
+        if let Some(payload) = initial_event {
+            emit_job_status(initial_handle, payload);
+        }
+
+        loop {
+            let (wait_duration, throttle_event, throttle_handle) = {
+                let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
+                let (wait, event_payload) = queue.reserve_tokens(&job.job_id, 1);
+                let event_handle = queue.event_handle.clone();
+                (wait, event_payload, event_handle)
+            };
+
+            if let Some(payload) = throttle_event {
+                emit_job_status(throttle_handle, payload);
             }
+
+            if wait_duration.is_zero() {
+                break;
+            }
+
+            thread::sleep(wait_duration);
         }
 
         thread::sleep(Duration::from_millis(400));
@@ -373,53 +533,75 @@ fn spawn_job_worker(job: QueuedJob) {
 
         match result {
             Ok(outputs) => {
-                {
+                let (maybe_status, event_payload, event_handle) = {
                     let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
-                    if let Some(status) = queue.update_status(&job.job_id, |status| {
+                    let (status, event_payload) = queue.update_status(&job.job_id, |status| {
                         status.progress = 0.9;
                         if let Some(first) = outputs.first() {
                             status.preview = Some(first.clone());
                         }
                         status.message =
                             Some(format!("{}개의 문자열을 번역했습니다.", outputs.len()));
-                    }) {
-                        append_job_log(&status);
-                    }
+                    });
+                    let event_handle = queue.event_handle.clone();
+                    (status, event_payload, event_handle)
+                };
+
+                if let Some(status) = maybe_status {
+                    append_job_log(&status);
+                }
+
+                if let Some(payload) = event_payload {
+                    emit_job_status(event_handle, payload);
                 }
 
                 thread::sleep(Duration::from_millis(300));
 
-                let next_job = {
+                let (maybe_status, event_payload, event_handle, next_job) = {
                     let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
                     let next_job = queue.finish_job(&job.job_id);
-                    if let Some(status) = queue.update_status(&job.job_id, |status| {
+                    let (status, event_payload) = queue.update_status(&job.job_id, |status| {
                         status.state = JobState::Completed;
                         status.progress = 1.0;
                         status.message =
                             Some(format!("{} 번역이 완료되었습니다.", job_display_name));
-                    }) {
-                        append_job_log(&status);
-                    }
-                    next_job
+                    });
+                    let event_handle = queue.event_handle.clone();
+                    (status, event_payload, event_handle, next_job)
                 };
+
+                if let Some(status) = maybe_status {
+                    append_job_log(&status);
+                }
+
+                if let Some(payload) = event_payload {
+                    emit_job_status(event_handle, payload);
+                }
 
                 if let Some(next_job) = next_job {
                     spawn_job_worker(next_job);
                 }
             }
             Err(err) => {
-                let next_job = {
+                let (maybe_status, event_payload, event_handle, next_job) = {
                     let mut queue = WORK_QUEUE.lock().expect("queue lock poisoned");
                     let next_job = queue.finish_job(&job.job_id);
-                    if let Some(status) = queue.update_status(&job.job_id, |status| {
+                    let (status, event_payload) = queue.update_status(&job.job_id, |status| {
                         status.state = JobState::Failed;
                         status.progress = 1.0;
                         status.message = Some(format!("번역 실패: {}", err));
-                    }) {
-                        append_job_log(&status);
-                    }
-                    next_job
+                    });
+                    let event_handle = queue.event_handle.clone();
+                    (status, event_payload, event_handle, next_job)
                 };
+
+                if let Some(status) = maybe_status {
+                    append_job_log(&status);
+                }
+
+                if let Some(payload) = event_payload {
+                    emit_job_status(event_handle, payload);
+                }
 
                 if let Some(next_job) = next_job {
                     spawn_job_worker(next_job);
@@ -431,6 +613,7 @@ fn spawn_job_worker(job: QueuedJob) {
 
 #[tauri::command]
 pub fn start_translation_job(
+    app_handle: AppHandle,
     request: TranslationJobRequest,
 ) -> Result<TranslationJobStatus, String> {
     if request.selected_files.is_empty() {
@@ -438,7 +621,7 @@ pub fn start_translation_job(
     }
 
     TranslationOrchestrator::new()
-        .start_job(request)
+        .start_job(request, Some(app_handle))
         .map_err(|err| err.to_string())
 }
 

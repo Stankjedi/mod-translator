@@ -47,7 +47,9 @@ mod tests {
             selected_files: vec!["localization/example.txt".into()],
             provider_auth: crate::ai::ProviderAuth::default(),
         };
-        let status = start_translation_job(request).unwrap();
+        let status = TranslationOrchestrator::new()
+            .start_job(request, None)
+            .expect("start translation job");
         serde_json::to_string(&status).expect("job status should serialize");
     }
 }
