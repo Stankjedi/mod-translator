@@ -56,7 +56,7 @@ export interface SteamPathResponse {
   note: string
 }
 
-export type JobState = 'queued' | 'running' | 'completed' | 'failed'
+export type JobState = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
 
 export type TranslatorKind = 'gemini' | 'gpt' | 'claude' | 'grok'
 

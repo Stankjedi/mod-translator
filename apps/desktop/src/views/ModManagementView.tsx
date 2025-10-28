@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import type { MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobStore } from '../context/JobStore'
@@ -40,8 +41,7 @@ function ModManagementView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
   const [selectedGame, setSelectedGame] = useState<string>(ALL_GAMES)
   const [searchQuery, setSearchQuery] = useState('')
-  const { currentJob, queue, enqueueJob } = useJobStore()
-  const [pendingModId, setPendingModId] = useState<string | null>(null)
+  const { currentJob, queue, enqueueJob, cancelQueuedJob } = useJobStore()
   const [actionMessage, setActionMessage] = useState<{
     type: 'success' | 'error'
     text: string
@@ -130,11 +130,15 @@ function ModManagementView() {
   }, [allMods, selectedGame, searchQuery])
 
   const jobLookup = useMemo(() => {
-    const map = new Map<string, { status: JobState; position?: number; progress?: number }>()
+    const map = new Map<
+      string,
+      { status: JobState; position?: number; progress?: number; jobId?: string }
+    >()
     if (currentJob) {
       map.set(currentJob.modId, {
         status: currentJob.status,
         progress: Math.round(currentJob.progress),
+        jobId: currentJob.jobId,
       })
     }
 
@@ -142,15 +146,25 @@ function ModManagementView() {
       map.set(job.modId, {
         status: job.status,
         position: index + 1,
+        jobId: job.jobId,
       })
     })
 
     return map
   }, [currentJob, queue])
 
-  const handleEnqueue = useCallback(
+  const handleSelectMod = useCallback(
     (mod: ModRow) => {
-      setPendingModId(mod.id)
+      setActionMessage(null)
+
+      const isCurrent = currentJob?.modId === mod.id
+      const queuedJob = queue.find((job) => job.modId === mod.id)
+
+      if (isCurrent || queuedJob) {
+        navigate('/progress')
+        return
+      }
+
       try {
         const result = enqueueJob({
           modId: mod.id,
@@ -160,26 +174,6 @@ function ModManagementView() {
           installPath: mod.directory,
         })
 
-        if (result.error === 'duplicate-active') {
-          setActionMessage({
-            type: 'error',
-            text: '이미 실행 중인 작업입니다. 진행 상황 탭에서 상태를 확인하세요.',
-          })
-          return
-        }
-
-        if (result.error === 'duplicate-queued') {
-          const position = jobLookup.get(mod.id)?.position ?? queue.findIndex((job) => job.modId === mod.id) + 1
-          setActionMessage({
-            type: 'error',
-            text:
-              position && position > 0
-                ? `이미 대기열 ${position}번에 예약된 작업입니다.`
-                : '이미 대기열에 있는 작업입니다.',
-          })
-          return
-        }
-
         if (result.error === 'invalid-path') {
           setActionMessage({
             type: 'error',
@@ -188,21 +182,24 @@ function ModManagementView() {
           return
         }
 
+        navigate('/progress')
+      } catch (error) {
+        console.error('모드 예약 중 오류가 발생했습니다.', error)
         setActionMessage({
-          type: 'success',
-          text: result.promoted
-            ? `${mod.name} 작업을 즉시 시작했습니다. 진행 상황 탭으로 이동합니다.`
-            : `${mod.name} 작업을 대기열에 추가했습니다.`,
+          type: 'error',
+          text: '작업을 예약하는 중 문제가 발생했습니다. 다시 시도해 주세요.',
         })
-
-        if (result.promoted) {
-          navigate('/progress')
-        }
-      } finally {
-        setPendingModId(null)
       }
     },
-    [enqueueJob, jobLookup, navigate, queue],
+    [currentJob, enqueueJob, navigate, queue],
+  )
+
+  const handleCancelQueuedJob = useCallback(
+    (event: MouseEvent<HTMLButtonElement>, jobId: string) => {
+      event.stopPropagation()
+      cancelQueuedJob(jobId)
+    },
+    [cancelQueuedJob],
   )
 
   const hasAnyMods = allMods.length > 0
@@ -296,23 +293,26 @@ function ModManagementView() {
                 const isRunning = isCurrent && jobInfo?.status === 'running'
                 const isQueued = jobInfo?.status === 'queued'
                 const queuePosition = jobInfo?.position
-                const isPending = pendingModId === mod.id
-                const buttonDisabled = Boolean(isPending || isRunning || isQueued)
-                const buttonLabel = isPending
-                  ? '등록 중...'
-                  : isRunning
-                    ? '진행 중'
-                    : isQueued
-                      ? `대기 중${queuePosition ? ` (${queuePosition}번)` : ''}`
-                      : '번역 예약'
                 const statusNote = isRunning
                   ? `실행 중 · ${jobInfo?.progress ?? 0}%`
                   : isQueued
-                    ? `대기열 ${queuePosition ?? 0}번`
+                    ? queuePosition
+                      ? `대기열 ${queuePosition}번`
+                      : '대기열 정보 없음'
                     : '대기열에 없음'
+                const jobId = jobInfo?.jobId
+                const badgeLabel = isRunning
+                  ? '진행 중'
+                  : isQueued
+                    ? `대기 중${queuePosition ? ` ${queuePosition}번` : ''}`
+                    : '예약 가능'
 
                 return (
-                  <tr key={mod.id} className="align-top transition hover:bg-slate-800/40">
+                  <tr
+                    key={mod.id}
+                    onClick={() => handleSelectMod(mod)}
+                    className="cursor-pointer align-top transition hover:bg-slate-800/40"
+                  >
                     <td className="px-4 py-4 font-medium text-white">
                       <div className="flex items-baseline gap-2">
                         <span className="text-xs font-semibold text-slate-500">{index + 1}.</span>
@@ -357,15 +357,19 @@ function ModManagementView() {
                     </td>
                     <td className="px-4 py-4 text-xs text-slate-300">
                       <div className="flex flex-col gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleEnqueue(mod)}
-                          disabled={buttonDisabled}
-                          className="inline-flex items-center justify-center rounded-full border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {buttonLabel}
-                        </button>
+                        <span className="inline-flex w-fit items-center rounded-full border border-slate-700 px-3 py-1 text-[11px] font-semibold text-slate-200">
+                          {badgeLabel}
+                        </span>
                         <p className="text-[11px] text-slate-500">{statusNote}</p>
+                        {isQueued && jobId && (
+                          <button
+                            type="button"
+                            onClick={(event) => handleCancelQueuedJob(event, jobId)}
+                            className="inline-flex w-fit items-center justify-center rounded-full border border-rose-500/40 px-3 py-1 text-[11px] font-semibold text-rose-200 transition hover:border-rose-400 hover:text-rose-100"
+                          >
+                            취소
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
