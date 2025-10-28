@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
+import type { LibraryStatus } from '../types/core'
 
 const languageLabels: Record<string, string> = {
   en: '영어',
@@ -20,19 +21,35 @@ function resolveLanguage(code: string) {
 
 const ALL_GAMES = 'ALL'
 
+interface ModRow {
+  id: string
+  name: string
+  game: string
+  normalizedGame: string
+  languages: string[]
+  status: LibraryStatus
+  warnings: string[]
+  workshopRoot: string | null
+  libraryPath: string
+  lastUpdated: string
+}
+
 function ModManagementView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
   const [selectedGame, setSelectedGame] = useState<string>(ALL_GAMES)
   const [searchQuery, setSearchQuery] = useState('')
   const navigate = useNavigate()
 
-  const modRows = useMemo(
-    () =>
-      libraries.flatMap((library) =>
-        library.mods.map((mod) => {
-          const game = mod.game ?? ''
-          const normalizedGame = game.replace(/\s+/g, '')
-          return {
+  const allMods = useMemo<ModRow[]>(() => {
+    const deduped = new Map<string, ModRow>()
+
+    libraries.forEach((library) => {
+      library.mods.forEach((mod) => {
+        const game = mod.game ?? ''
+        const normalizedGame = game.replace(/\s+/g, '')
+        const modKey = mod.id
+        if (!deduped.has(modKey)) {
+          deduped.set(modKey, {
             id: mod.id,
             name: mod.name,
             game,
@@ -43,16 +60,18 @@ function ModManagementView() {
             workshopRoot: library.workshop_root,
             libraryPath: library.path,
             lastUpdated: mod.last_updated.iso_date,
-          }
-        }),
-      ),
-    [libraries],
-  )
+          })
+        }
+      })
+    })
+
+    return Array.from(deduped.values())
+  }, [libraries])
 
   const gameOptions = useMemo(() => {
     const normalizedToRaw = new Map<string, string>()
 
-    modRows.forEach((mod) => {
+    allMods.forEach((mod) => {
       if (!normalizedToRaw.has(mod.normalizedGame)) {
         normalizedToRaw.set(mod.normalizedGame, mod.game)
       }
@@ -73,21 +92,21 @@ function ModManagementView() {
       .map(([, rawValue]) => ({ value: rawValue, label: rawValue }))
 
     return [...options, ...sorted]
-  }, [modRows])
+  }, [allMods])
 
   const selectedGameLabel = useMemo(() => {
     const match = gameOptions.find((option) => option.value === selectedGame)
     return match ? match.label : selectedGame
   }, [gameOptions, selectedGame])
 
-  const filteredModRows = useMemo(() => {
+  const visibleMods = useMemo(() => {
     const normalizedSelectedGame =
       selectedGame === ALL_GAMES ? '' : selectedGame.replace(/\s+/g, '')
 
     const filteredByGame =
       selectedGame === ALL_GAMES
-        ? modRows
-        : modRows.filter((mod) => mod.normalizedGame === normalizedSelectedGame)
+        ? allMods
+        : allMods.filter((mod) => mod.normalizedGame === normalizedSelectedGame)
 
     const normalizedQuery = searchQuery.trim().toLowerCase()
     if (!normalizedQuery) {
@@ -99,9 +118,9 @@ function ModManagementView() {
       const idMatch = mod.id.toLowerCase().includes(normalizedQuery)
       return nameMatch || idMatch
     })
-  }, [modRows, selectedGame, searchQuery])
+  }, [allMods, selectedGame, searchQuery])
 
-  const hasAnyMods = modRows.length > 0
+  const hasAnyMods = allMods.length > 0
   const hasSearchQuery = searchQuery.trim().length > 0
 
   return (
@@ -145,7 +164,7 @@ function ModManagementView() {
       </header>
 
       <div className="overflow-hidden rounded-2xl border border-slate-800/60 bg-slate-900/60">
-        {filteredModRows.length ? (
+        {visibleMods.length ? (
           <table className="min-w-full divide-y divide-slate-800 text-sm text-slate-200">
             <thead className="bg-slate-900/80 text-xs uppercase tracking-wider text-slate-400">
               <tr>
@@ -167,7 +186,7 @@ function ModManagementView() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
-              {filteredModRows.map((mod) => (
+              {visibleMods.map((mod, index) => (
                 <tr
                   key={mod.id}
                   role="button"
@@ -183,7 +202,10 @@ function ModManagementView() {
                   aria-label={`${mod.name} 번역 진행 화면으로 이동`}
                 >
                   <td className="px-4 py-4 font-medium text-white">
-                    <div>{mod.name}</div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-xs font-semibold text-slate-500">{index + 1}.</span>
+                      <span>{mod.name}</span>
+                    </div>
                     <p className="mt-1 text-xs text-slate-400">마지막 업데이트: {mod.lastUpdated}</p>
                     <p className="mt-1 text-[11px] text-slate-500">번역 진행 화면으로 이동하려면 클릭하세요.</p>
                   </td>
