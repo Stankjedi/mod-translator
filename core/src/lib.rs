@@ -11,7 +11,10 @@ pub use jobs::{
     get_translation_job_status, start_translation_job, JobState, TranslationJobRequest,
     TranslationJobRequest as JobRequest, TranslationJobStatus, TranslationOrchestrator,
 };
-pub use library::{scan_steam_library, LibraryEntry, LibraryScanResponse, LibraryScanner};
+pub use library::{
+    list_mod_files, scan_steam_library, LibraryEntry, LibraryScanResponse, LibraryScanner,
+    ModFileDescriptor, ModFileListing,
+};
 pub use pipeline::PipelinePlan;
 pub use policy::{default_policy_banner, PolicyBanner, PolicyProfile};
 use serde::{Deserialize, Serialize};
@@ -39,8 +42,9 @@ mod tests {
             mod_id: "example-mod".into(),
             mod_name: Some("Example Mod".into()),
             translator: TranslatorKind::Gpt,
-            source_language: "en".into(),
+            source_language_guess: "en".into(),
             target_language: "jp".into(),
+            selected_files: vec!["localization/example.txt".into()],
             provider_auth: crate::ai::ProviderAuth::default(),
         };
         let status = start_translation_job(request).unwrap();

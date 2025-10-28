@@ -23,7 +23,7 @@ interface JobEntry {
 
 interface JobContextValue {
   jobsByMod: Record<string, JobEntry>
-  startJob: (mod: ModSummary, overrides?: Partial<Pick<TranslationJobRequest, 'translator' | 'source_language' | 'target_language'>>) => Promise<TranslationJobStatus>
+  startJob: (mod: ModSummary, options: StartJobOptions) => Promise<TranslationJobStatus>
   refreshJob: (modId: string) => Promise<void>
 }
 
@@ -31,29 +31,32 @@ const JobContext = createContext<JobContextValue | undefined>(undefined)
 
 const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
-function resolveTranslator(overrides?: Partial<Pick<TranslationJobRequest, 'translator'>>) {
-  return overrides?.translator ?? ('gpt' as TranslatorKind)
+export interface StartJobOptions {
+  selectedFiles: string[]
+  sourceLanguageGuess: string
+  targetLanguage?: string
+  translator?: TranslatorKind
 }
 
-function resolveSourceLanguage(mod: ModSummary, overrides?: Partial<Pick<TranslationJobRequest, 'source_language'>>) {
-  if (overrides?.source_language) return overrides.source_language
-  return mod.installed_languages[0] ?? 'en'
+function resolveTranslator(options: StartJobOptions) {
+  return options.translator ?? ('gpt' as TranslatorKind)
 }
 
-function resolveTargetLanguage(overrides?: Partial<Pick<TranslationJobRequest, 'target_language'>>) {
-  return overrides?.target_language ?? 'ko'
+function resolveTargetLanguage(options: StartJobOptions) {
+  return options.targetLanguage ?? 'ko'
 }
 
 export function JobProvider({ children }: { children: ReactNode }) {
   const [jobsByMod, setJobsByMod] = useState<Record<string, JobEntry>>({})
 
   const startJob = useCallback(
-    async (
-      mod: ModSummary,
-      overrides?: Partial<Pick<TranslationJobRequest, 'translator' | 'source_language' | 'target_language'>>,
-    ) => {
+    async (mod: ModSummary, options: StartJobOptions) => {
       if (!isTauri()) {
         throw new Error('번역 작업은 데스크톱(Tauri) 환경에서만 실행할 수 있습니다.')
+      }
+
+      if (!options.selectedFiles.length) {
+        throw new Error('번역할 파일을 하나 이상 선택해야 합니다.')
       }
 
       const existing = jobsByMod[mod.id]
@@ -67,9 +70,10 @@ export function JobProvider({ children }: { children: ReactNode }) {
       const request: TranslationJobRequest = {
         mod_id: mod.id,
         mod_name: mod.name,
-        translator: resolveTranslator(overrides),
-        source_language: resolveSourceLanguage(mod, overrides),
-        target_language: resolveTargetLanguage(overrides),
+        translator: resolveTranslator(options),
+        source_language_guess: options.sourceLanguageGuess,
+        target_language: resolveTargetLanguage(options),
+        selected_files: options.selectedFiles,
       }
 
       const status = await invoke<TranslationJobStatus>('start_translation_job', {

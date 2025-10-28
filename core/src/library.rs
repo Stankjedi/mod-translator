@@ -4,6 +4,7 @@ use crate::time::{format_system_time, FormattedTimestamp};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,10 +26,25 @@ pub struct ModSummary {
     pub id: String,
     pub name: String,
     pub game: String,
+    pub directory: String,
     pub installed_languages: Vec<String>,
     pub last_updated: FormattedTimestamp,
     pub policy: PolicyProfile,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModFileDescriptor {
+    pub path: String,
+    pub translatable: bool,
+    #[serde(default)]
+    pub auto_selected: bool,
+    pub language_hint: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ModFileListing {
+    pub files: Vec<ModFileDescriptor>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -199,10 +215,25 @@ impl LibraryScanner {
                     .resolve_mod_name(&steamapps, &app_id, &mod_id, &mod_path)
                     .unwrap_or_else(|| format!("워크샵 항목 {mod_id}"));
 
+                let directory = match to_utf8_string(&mod_path) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        mods.push(self.synthetic_mod(
+                            "invalid-path",
+                            "모드 경로를 UTF-8로 변환하지 못했습니다",
+                            game_name.clone(),
+                            vec!["en".into()],
+                            err,
+                        ));
+                        continue;
+                    }
+                };
+
                 mods.push(ModSummary {
                     id: format!("{app_id}:{mod_id}"),
                     name: resolved_name,
                     game: game_name.clone(),
+                    directory,
                     installed_languages: languages,
                     last_updated,
                     policy: PolicyProfile::conservative(game_name.clone()),
@@ -236,6 +267,7 @@ impl LibraryScanner {
             id: format!("{}-{}", mod_id, Uuid::new_v4()),
             name: name.into(),
             game: game_name.clone(),
+            directory: String::new(),
             installed_languages: languages,
             last_updated: FormattedTimestamp::new("알 수 없음".into()),
             policy: PolicyProfile::conservative(game_name),
@@ -318,6 +350,54 @@ impl LibraryScanner {
 }
 
 #[tauri::command]
+pub fn list_mod_files(mod_directory: String) -> Result<ModFileListing, String> {
+    let root = PathBuf::from(mod_directory);
+    if !root.exists() {
+        return Err("모드 디렉터리를 찾을 수 없습니다.".into());
+    }
+    if !root.is_dir() {
+        return Err("지정된 경로가 디렉터리가 아닙니다.".into());
+    }
+
+    let mut queue = VecDeque::new();
+    queue.push_back(root.clone());
+    let mut files = Vec::new();
+
+    while let Some(dir) = queue.pop_front() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                return Err(format!("디렉터리를 열거하지 못했습니다: {err}"));
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+
+            if metadata.is_dir() {
+                queue.push_back(path);
+                continue;
+            }
+
+            if !metadata.is_file() {
+                continue;
+            }
+
+            if let Some(descriptor) = classify_mod_file(&root, &path) {
+                files.push(descriptor);
+            }
+        }
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(ModFileListing { files })
+}
+
+#[tauri::command]
 pub fn scan_steam_library(explicit_path: Option<String>) -> Result<LibraryScanResponse, String> {
     let locator = SteamLocator::new();
     let scanner = LibraryScanner::new();
@@ -349,6 +429,185 @@ fn to_utf8_string(path: &Path) -> Result<String, String> {
     path.to_str()
         .map(|value| value.to_string())
         .ok_or_else(|| format!("경로를 UTF-8 문자열로 변환하지 못했습니다: {:?}", path))
+}
+
+fn classify_mod_file(root: &Path, path: &Path) -> Option<ModFileDescriptor> {
+    let relative = path.strip_prefix(root).ok()?;
+    let relative_str = normalize_relative_path(relative);
+    let lowered = relative_str.to_lowercase();
+
+    if should_ignore_file(&lowered) {
+        return None;
+    }
+
+    let segments: Vec<&str> = relative_str.split('/').collect();
+    let directory_segments = if segments.is_empty() {
+        Vec::new()
+    } else {
+        segments[..segments.len().saturating_sub(1)].to_vec()
+    };
+
+    let in_localization_dir = directory_segments
+        .iter()
+        .any(|segment| is_localization_directory(segment));
+
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_lowercase());
+
+    let language_hint = detect_language_hint(path);
+
+    let is_text_extension = extension
+        .as_deref()
+        .map_or(false, |ext| matches_text_extension(ext));
+
+    let translatable = is_text_extension || (in_localization_dir && language_hint.is_some());
+    if !translatable {
+        return None;
+    }
+
+    let auto_selected = if let Some(lang) = language_hint.as_deref() {
+        lang != "ko"
+    } else {
+        in_localization_dir
+    };
+
+    Some(ModFileDescriptor {
+        path: relative_str,
+        translatable: true,
+        auto_selected,
+        language_hint,
+    })
+}
+
+fn normalize_relative_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn should_ignore_file(path: &str) -> bool {
+    const BINARY_EXTENSIONS: &[&str] = &[
+        "dll",
+        "exe",
+        "png",
+        "jpg",
+        "jpeg",
+        "dds",
+        "tga",
+        "wav",
+        "mp3",
+        "ogg",
+        "bank",
+        "unity3d",
+        "assetbundle",
+        "bundle",
+        "pck",
+        "pak",
+        "zip",
+        "7z",
+        "rar",
+        "psd",
+        "mp4",
+        "mov",
+    ];
+
+    if let Some(ext) = path.rsplit('.').next() {
+        if BINARY_EXTENSIONS.contains(&ext) {
+            return true;
+        }
+    }
+
+    path.contains("__macosx")
+}
+
+fn matches_text_extension(ext: &str) -> bool {
+    const TEXT_EXTENSIONS: &[&str] = &[
+        "txt",
+        "cfg",
+        "ini",
+        "xml",
+        "json",
+        "yml",
+        "yaml",
+        "csv",
+        "po",
+        "pot",
+        "resx",
+        "resw",
+        "strings",
+        "properties",
+        "loc",
+        "lua",
+        "md",
+        "html",
+        "htm",
+        "dat",
+        "defs",
+    ];
+
+    TEXT_EXTENSIONS.contains(&ext)
+}
+
+fn is_localization_directory(segment: &str) -> bool {
+    matches!(
+        segment.to_lowercase().as_str(),
+        "localization"
+            | "localisation"
+            | "languages"
+            | "language"
+            | "lang"
+            | "l10n"
+            | "locale"
+            | "loc"
+            | "strings"
+            | "text"
+    )
+}
+
+fn detect_language_hint(path: &Path) -> Option<String> {
+    let mut tokens = Vec::new();
+
+    for component in path.components() {
+        let part = component.as_os_str().to_string_lossy().to_lowercase();
+        tokens.extend(split_language_tokens(&part));
+    }
+
+    for token in tokens {
+        if let Some(code) = normalize_language_code(&token) {
+            return Some(code);
+        }
+    }
+
+    None
+}
+
+fn split_language_tokens(segment: &str) -> Vec<String> {
+    segment
+        .split(|c: char| c == '.' || c == '_' || c == '-' || c == ' ')
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn normalize_language_code(token: &str) -> Option<String> {
+    match token {
+        "en" | "eng" | "english" => Some("en".into()),
+        "cn" | "chinese" | "chs" | "zh" | "zhcn" | "zh_hans" | "zh-hans" => Some("zh-cn".into()),
+        "cht" | "zh_tw" | "zh-tw" | "traditionalchinese" => Some("zh-tw".into()),
+        "jp" | "jpn" | "ja" | "japanese" => Some("ja".into()),
+        "ru" | "rus" | "russian" => Some("ru".into()),
+        "fr" | "fra" | "french" => Some("fr".into()),
+        "de" | "ger" | "german" => Some("de".into()),
+        "es" | "spa" | "spanish" => Some("es".into()),
+        "pt" | "por" | "portuguese" => Some("pt".into()),
+        "pl" | "pol" | "polish" => Some("pl".into()),
+        "it" | "ita" | "italian" => Some("it".into()),
+        "ko" | "kor" | "korean" => Some("ko".into()),
+        _ => None,
+    }
 }
 
 fn file_name_to_string(path: &Path) -> Result<String, String> {

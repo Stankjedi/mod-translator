@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobContext } from '../context/JobContext'
 import type { JobState } from '../types/core'
@@ -21,8 +22,9 @@ const jobStateLabels: Record<JobState, string> = {
 
 function DashboardView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
-  const { jobsByMod, startJob, refreshJob } = useJobContext()
+  const { jobsByMod, refreshJob } = useJobContext()
   const [isJobActionBusy, setIsJobActionBusy] = useState(false)
+  const navigate = useNavigate()
 
   const totalLibraries = libraries.length
   const healthyLibraries = useMemo(
@@ -160,19 +162,18 @@ function DashboardView() {
 
   const handleJobAction = useCallback(async () => {
     if (!firstDetectedMod) return
-    setIsJobActionBusy(true)
-    try {
-      if (firstModJob) {
+    if (firstModJob) {
+      setIsJobActionBusy(true)
+      try {
         await refreshJob(firstDetectedMod.id)
-      } else {
-        await startJob(firstDetectedMod)
+      } finally {
+        setIsJobActionBusy(false)
       }
-    } catch (err) {
-      console.error(err)
-    } finally {
-      setIsJobActionBusy(false)
+      return
     }
-  }, [firstDetectedMod, firstModJob, refreshJob, startJob])
+
+    navigate(`/progress/${encodeURIComponent(firstDetectedMod.id)}`)
+  }, [firstDetectedMod, firstModJob, navigate, refreshJob])
 
   const quickActions = [
     {
