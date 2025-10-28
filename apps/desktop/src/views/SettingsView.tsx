@@ -47,7 +47,7 @@ function SettingsView() {
   )
   const { steamPath, detectSteamPath, scanLibrary, isScanning, libraries, error: libraryError } =
     useLibraryContext()
-  const [explicitPath, setExplicitPath] = useState(steamPath?.path ?? '')
+  const [explicitPath, setExplicitPath] = useState(steamPath ?? '')
   const [pathNote, setPathNote] = useState('')
   const [scanStatus, setScanStatus] = useState('')
   const [apiKeys, setApiKeys] = useState<ApiKeyMap>(() => loadApiKeys())
@@ -68,14 +68,14 @@ function SettingsView() {
   )
 
   useEffect(() => {
-    setExplicitPath(steamPath?.path ?? '')
+    setExplicitPath(steamPath ?? '')
 
     if (!steamPath) {
       setPathNote('')
       return
     }
 
-    const trimmed = steamPath.path?.trim()
+    const trimmed = steamPath.trim()
     if (trimmed) {
       setPathNote(formatDetectedNote(trimmed))
     } else {
@@ -85,23 +85,28 @@ function SettingsView() {
 
   const handleDetect = async () => {
     setScanStatus('')
-    const info = await detectSteamPath()
-    if (!info) {
+    try {
+      const detected = (await detectSteamPath())?.trim() ?? ''
+      setExplicitPath(detected)
+
+      if (detected) {
+        setPathNote(formatDetectedNote(detected))
+        setScanStatus(steamTexts.scanning)
+        try {
+          await scanLibrary(detected)
+          setScanStatus(steamTexts.noteDone)
+        } catch (error) {
+          console.error('failed to scan detected Steam path', error)
+          setScanStatus(steamTexts.noteError)
+        }
+      } else {
+        setPathNote(steamTexts.noteNotFound)
+        setScanStatus('')
+      }
+    } catch (error) {
+      console.error('failed to detect Steam path', error)
+      setPathNote(steamTexts.noteError)
       setScanStatus(steamTexts.noteError)
-      return
-    }
-
-    const detected = info.path?.trim()
-    setExplicitPath(detected ?? '')
-
-    if (detected) {
-      setPathNote(formatDetectedNote(detected))
-      setScanStatus(steamTexts.scanning)
-      const success = await scanLibrary(detected)
-      setScanStatus(success ? steamTexts.noteDone : steamTexts.noteError)
-    } else {
-      setPathNote(steamTexts.noteNotFound)
-      setScanStatus('')
     }
   }
 
@@ -115,8 +120,13 @@ function SettingsView() {
 
     setPathNote(formatDetectedNote(trimmed))
     setScanStatus(steamTexts.scanning)
-    const success = await scanLibrary(trimmed)
-    setScanStatus(success ? steamTexts.noteDone : steamTexts.noteError)
+    try {
+      await scanLibrary(trimmed)
+      setScanStatus(steamTexts.noteDone)
+    } catch (error) {
+      console.error('failed to scan Steam library', error)
+      setScanStatus(steamTexts.noteError)
+    }
   }
 
   const handleStartEditing = useCallback(

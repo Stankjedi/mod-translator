@@ -180,7 +180,11 @@ function DashboardView() {
       label: isScanning ? '스캔 중...' : '라이브러리 다시 스캔',
       description: 'Steam 경로의 libraryfolders.vdf를 다시 읽어서 모드 목록을 갱신합니다.',
       onClick: async () => {
-        await scanLibrary(steamPath?.path ?? undefined)
+        try {
+          await scanLibrary(steamPath ?? undefined)
+        } catch (error) {
+          console.error('대시보드에서 라이브러리 스캔 실패', error)
+        }
       },
       disabled: isScanning,
     },

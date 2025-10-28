@@ -154,7 +154,11 @@ function ModManagementView() {
           </select>
           <button
             type="button"
-            onClick={() => scanLibrary(steamPath?.path ?? undefined)}
+            onClick={() => {
+              scanLibrary(steamPath ?? undefined).catch((error) => {
+                console.error('모드 관리 화면에서 라이브러리 스캔 실패', error)
+              })
+            }}
             disabled={isScanning}
             className="inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-brand-600/40 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
