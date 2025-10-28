@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import type { ReactNode } from 'react'
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import {
@@ -18,6 +19,7 @@ interface SettingsState extends PersistedSettings {
 interface SettingsStoreValue extends SettingsState {
   setProviderEnabled: (provider: ProviderId, enabled: boolean) => void
   toggleProvider: (provider: ProviderId) => void
+  setActiveProvider: (provider: ProviderId) => void
   updateApiKey: (provider: ProviderId, value: string | null) => void
   setConcurrency: (value: number) => void
   setWorkerCount: (value: number) => void
@@ -49,6 +51,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     try {
       persistSettings({
         selectedProviders: state.selectedProviders,
+        activeProviderId: state.activeProviderId,
         concurrency: state.concurrency,
         workerCount: state.workerCount,
         bucketSize: state.bucketSize,
@@ -63,6 +66,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     }
   }, [
     state.selectedProviders,
+    state.activeProviderId,
     state.concurrency,
     state.workerCount,
     state.bucketSize,
@@ -82,12 +86,17 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         set.delete(provider)
       }
 
-      const nextProviders = PROVIDER_ORDER.filter((item) => set.has(item))
+      const ordered = PROVIDER_ORDER.filter((item) => set.has(item))
+      const nextProviders = ordered.length
+        ? ordered
+        : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders]
+      const nextActive = nextProviders.includes(prev.activeProviderId)
+        ? prev.activeProviderId
+        : nextProviders[0]
       return {
         ...prev,
-        selectedProviders: nextProviders.length
-          ? nextProviders
-          : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders],
+        selectedProviders: nextProviders,
+        activeProviderId: nextActive,
       }
     })
   }, [])
@@ -101,17 +110,35 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         } else {
           set.add(provider)
         }
-        const nextProviders = PROVIDER_ORDER.filter((item) => set.has(item))
+        const ordered = PROVIDER_ORDER.filter((item) => set.has(item))
+        const nextProviders = ordered.length
+          ? ordered
+          : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders]
+        const nextActive = nextProviders.includes(prev.activeProviderId)
+          ? prev.activeProviderId
+          : nextProviders[0]
         return {
           ...prev,
-          selectedProviders: nextProviders.length
-            ? nextProviders
-            : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders],
+          selectedProviders: nextProviders,
+          activeProviderId: nextActive,
         }
       })
     },
     [],
   )
+
+  const setActiveProvider = useCallback((provider: ProviderId) => {
+    setState((prev) => {
+      if (!prev.selectedProviders.includes(provider) || prev.activeProviderId === provider) {
+        return prev
+      }
+
+      return {
+        ...prev,
+        activeProviderId: provider,
+      }
+    })
+  }, [])
 
   const updateApiKey = useCallback((provider: ProviderId, value: string | null) => {
     let outcome: { success: boolean; error?: unknown } = { success: true }
@@ -176,6 +203,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       ...state,
       setProviderEnabled,
       toggleProvider,
+      setActiveProvider,
       updateApiKey,
       setConcurrency,
       setWorkerCount,
@@ -190,6 +218,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       state,
       setProviderEnabled,
       toggleProvider,
+      setActiveProvider,
       updateApiKey,
       setConcurrency,
       setWorkerCount,

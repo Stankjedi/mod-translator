@@ -16,7 +16,6 @@ import type {
   JobState,
   ModFileListing,
   ProviderId,
-  StartTranslationJobPayload,
   TranslationProgressEventPayload,
 } from '../types/core'
 import { useSettingsStore } from './SettingsStore'
@@ -41,7 +40,7 @@ const LANGUAGE_PRIORITY = [
 ]
 
 const PROVIDER_LABELS: Record<ProviderId, string> = {
-  gemini: 'Gemini',
+  gemini: '제미니',
   gpt: 'GPT',
   claude: 'Claude',
   grok: 'Grok',
@@ -242,7 +241,7 @@ const promoteNextJobState = (previous: JobStoreState): JobStoreState => {
 }
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
-  const { selectedProviders, apiKeys } = useSettingsStore()
+  const { activeProviderId, selectedProviders, apiKeys } = useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
@@ -277,94 +276,93 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const markCurrentJobCompleted = useCallback((message?: string | null, patch?: Partial<QueueJob>) => {
-    const entry = message ? createLogEntry('info', message) : null
-    setState((prev) => {
-      if (!prev.currentJob) return prev
-
-      const logs = entry ? [...prev.currentJob.logs, entry] : prev.currentJob.logs
-      const completedJob: QueueJob = {
-        ...prev.currentJob,
-        ...patch,
-        status: 'completed',
-        progress: 100,
-        cancelRequested: patch?.cancelRequested ?? prev.currentJob.cancelRequested,
-        logs,
-        lastUpdated: Date.now(),
-      }
-
-      const baseState: JobStoreState = {
-        ...prev,
-        currentJob: null,
-        completedJobs: [...prev.completedJobs, completedJob],
-      }
-
-      return promoteNextJobState(baseState)
-    })
-  }, [])
-
-  const markCurrentJobFailed = useCallback((message?: string | null, patch?: Partial<QueueJob>) => {
-    const entry = message ? createLogEntry('error', message) : null
-    setState((prev) => {
-      if (!prev.currentJob) return prev
-
-      const logs = entry ? [...prev.currentJob.logs, entry] : prev.currentJob.logs
-      const failedJob: QueueJob = {
-        ...prev.currentJob,
-        ...patch,
-        status: 'failed',
-        progress: patch?.progress ?? prev.currentJob.progress,
-        cancelRequested: patch?.cancelRequested ?? prev.currentJob.cancelRequested,
-        logs,
-        lastUpdated: Date.now(),
-      }
-
-      const baseState: JobStoreState = {
-        ...prev,
-        currentJob: null,
-        completedJobs: [...prev.completedJobs, failedJob],
-      }
-
-      return promoteNextJobState(baseState)
-    })
-  }, [])
-
-  const markCurrentJobCanceled = useCallback(
-    (message?: string | null, patch?: Partial<QueueJob>) => {
-      const entry = message ? createLogEntry('info', message) : null
+  const finalizeCurrentJobAndPromote = useCallback(
+    (
+      status: Extract<JobState, 'completed' | 'failed' | 'canceled'>,
+      options: {
+        message?: string | null
+        patch?: Partial<QueueJob>
+        level?: JobLogLevel
+      } = {},
+    ) => {
       setState((prev) => {
-        if (!prev.currentJob) return prev
+        if (!prev.currentJob) {
+          return prev
+        }
 
-        const logs = entry ? [...prev.currentJob.logs, entry] : prev.currentJob.logs
-        const canceledJob: QueueJob = {
+        const { patch, message, level } = options
+        const patchValues: Partial<QueueJob> = patch ?? {}
+        const normalizedMessage = message?.trim() ?? null
+        const logLevel: JobLogLevel = level ?? (status === 'failed' ? 'error' : 'info')
+        const baseLogs = prev.currentJob.logs
+        const logEntry = normalizedMessage ? createLogEntry(logLevel, normalizedMessage) : null
+
+        const archivedBase: QueueJob = {
           ...prev.currentJob,
-          ...patch,
-          status: 'canceled',
-          progress: patch?.progress ?? prev.currentJob.progress,
-          cancelRequested: patch?.cancelRequested ?? true,
-          logs,
+          ...patchValues,
+          status,
+          progress:
+            patchValues.progress ??
+            (status === 'completed' ? 100 : prev.currentJob.progress),
+          cancelRequested:
+            status === 'canceled'
+              ? true
+              : patchValues.cancelRequested ?? prev.currentJob.cancelRequested,
+          translatedCount:
+            patchValues.translatedCount ?? prev.currentJob.translatedCount,
+          totalCount: patchValues.totalCount ?? prev.currentJob.totalCount,
+          message: patchValues.message ?? normalizedMessage ?? prev.currentJob.message,
+          logs: baseLogs,
           lastUpdated: Date.now(),
         }
 
-        const baseState: JobStoreState = {
-          ...prev,
-          currentJob: null,
-          completedJobs: [...prev.completedJobs, canceledJob],
+        const archivedJob: QueueJob = {
+          ...archivedBase,
+          logs: logEntry ? [...archivedBase.logs, logEntry] : archivedBase.logs,
         }
 
-        return promoteNextJobState(baseState)
+        const [nextJob, ...restQueue] = prev.queue
+        const nextCurrent = nextJob ? prepareJobForActivation(nextJob) : null
+
+        return {
+          ...prev,
+          currentJob: nextCurrent,
+          queue: restQueue,
+          completedJobs: [...prev.completedJobs, archivedJob],
+        }
       })
     },
     [],
+  )
+
+  const markCurrentJobCompleted = useCallback(
+    (message?: string | null, patch?: Partial<QueueJob>) => {
+      finalizeCurrentJobAndPromote('completed', { message: message ?? null, patch, level: 'info' })
+    },
+    [finalizeCurrentJobAndPromote],
+  )
+
+  const markCurrentJobFailed = useCallback(
+    (message?: string | null, patch?: Partial<QueueJob>) => {
+      finalizeCurrentJobAndPromote('failed', { message: message ?? null, patch, level: 'error' })
+    },
+    [finalizeCurrentJobAndPromote],
+  )
+
+  const markCurrentJobCanceled = useCallback(
+    (message?: string | null, patch?: Partial<QueueJob>) => {
+      finalizeCurrentJobAndPromote('canceled', { message: message ?? null, patch, level: 'info' })
+    },
+    [finalizeCurrentJobAndPromote],
   )
 
   const enqueueJob = useCallback(
     (input: EnqueueJobInput): EnqueueJobResult => {
       let result: EnqueueJobResult | null = null
 
-      const primaryProvider = selectedProviders[0] ?? null
-      const providerLabel = primaryProvider ? PROVIDER_LABELS[primaryProvider] ?? primaryProvider.toUpperCase() : null
-      const providerApiKey = primaryProvider ? apiKeys[primaryProvider] ?? null : null
+      const providerId = activeProviderId ?? selectedProviders[0] ?? null
+      const providerLabel = providerId ? PROVIDER_LABELS[providerId] ?? providerId.toUpperCase() : null
+      const providerApiKey = providerId ? apiKeys[providerId] ?? null : null
 
       setState((prev) => {
         if (prev.currentJob && prev.currentJob.modId === input.modId) {
@@ -380,7 +378,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
       const job: QueueJob = {
         ...createJob(input),
-        providerId: primaryProvider,
+        providerId,
         providerLabel,
         providerApiKey: providerApiKey ?? null,
       }
@@ -434,7 +432,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     }
 
     return result
-  }, [apiKeys, selectedProviders])
+  }, [activeProviderId, apiKeys, selectedProviders])
 
   const cancelQueuedJob = useCallback((jobId: string) => {
     let cancelled = false
@@ -495,13 +493,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       return true
     }
 
-    const backendJobId = activeJob.backendJobId
-    if (!backendJobId) {
-      return true
-    }
-
     try {
-      await invoke('cancel_translation_job', { jobId: backendJobId })
+      await invoke('cancel_translation_job', { jobId: activeJob.jobId })
       return true
     } catch (error) {
       console.error('번역 작업 중단 요청에 실패했습니다.', error)
@@ -758,17 +751,24 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       const targetLanguage = options.targetLanguage ?? activeJob.targetLanguage ?? DEFAULT_TARGET_LANGUAGE
       const sourceLanguage = options.sourceLanguageGuess ?? activeJob.sourceLanguageGuess ?? null
 
-      const payload: StartTranslationJobPayload = {
-        jobId: activeJob.jobId,
-        provider: activeJob.providerId,
-        apiKey: activeJob.providerApiKey ?? null,
-        files: options.selectedFiles.map((path) => ({ path })),
-        sourceLang: sourceLanguage,
-        targetLang: targetLanguage,
+      const selectedSet = new Set(options.selectedFiles)
+      let filesPayload = (activeJob.files ?? [])
+        .filter((file) => selectedSet.has(file.path))
+        .map((file) => ({ path: file.path }))
+
+      if (!filesPayload.length) {
+        filesPayload = options.selectedFiles.map((path) => ({ path }))
       }
 
       try {
-        await invoke('start_translation_job', { payload })
+        await invoke('start_translation_job', {
+          jobId: activeJob.jobId,
+          provider: activeJob.providerId,
+          apiKey: activeJob.providerApiKey,
+          sourceLang: sourceLanguage,
+          targetLang: targetLanguage,
+          files: filesPayload,
+        })
       } catch (error) {
         throw error instanceof Error ? error : new Error(String(error))
       }

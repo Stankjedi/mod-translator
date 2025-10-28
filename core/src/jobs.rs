@@ -50,10 +50,24 @@ struct Segment {
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 pub fn start_translation_job(
     app: AppHandle,
-    payload: StartTranslationJobPayload,
+    jobId: String,
+    provider: String,
+    apiKey: Option<String>,
+    sourceLang: Option<String>,
+    targetLang: Option<String>,
+    files: Vec<TranslationFileInput>,
 ) -> Result<(), String> {
+    let payload = StartTranslationJobPayload {
+        job_id: jobId,
+        provider,
+        api_key: apiKey,
+        files,
+        source_lang: sourceLang,
+        target_lang: targetLang,
+    };
     if payload.files.is_empty() {
         return Err("번역할 파일을 하나 이상 선택해야 합니다.".into());
     }
@@ -132,16 +146,17 @@ pub fn start_translation_job(
 }
 
 #[tauri::command]
-pub fn cancel_translation_job(job_id: String) -> Result<(), String> {
+#[allow(non_snake_case)]
+pub fn cancel_translation_job(jobId: String) -> Result<(), String> {
     let guard = ACTIVE_JOBS
         .lock()
         .map_err(|_| "job registry lock poisoned".to_string())?;
 
-    if let Some(flag) = guard.get(&job_id) {
+    if let Some(flag) = guard.get(&jobId) {
         flag.store(true, Ordering::SeqCst);
         Ok(())
     } else {
-        Err(format!("job {job_id} not found"))
+        Err(format!("job {jobId} not found"))
     }
 }
 
