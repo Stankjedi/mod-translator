@@ -2,7 +2,7 @@ import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobStore } from '../context/JobStore'
-import Chip from '../components/Chip'
+import Chip from '../ui/Chip'
 
 const pipelineStages = [
   '워크샵 압축 해제',

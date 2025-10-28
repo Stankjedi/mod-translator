@@ -4,6 +4,7 @@ export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
 export interface PersistedSettings {
   selectedProviders: ProviderId[]
+  activeProviderId: ProviderId
   concurrency: number
   workerCount: number
   bucketSize: number
@@ -16,6 +17,7 @@ export interface PersistedSettings {
 
 export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   selectedProviders: ['gemini', 'gpt'],
+  activeProviderId: 'gemini',
   concurrency: 3,
   workerCount: 2,
   bucketSize: 5,
@@ -51,6 +53,20 @@ function sanitizeProviders(input: unknown): ProviderId[] {
   return normalized.length ? normalized : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders]
 }
 
+function sanitizeActiveProvider(
+  value: unknown,
+  selectedProviders: ProviderId[],
+): ProviderId {
+  if (typeof value === 'string') {
+    const normalized = value.toLowerCase()
+    if (selectedProviders.includes(normalized as ProviderId)) {
+      return normalized as ProviderId
+    }
+  }
+
+  return selectedProviders[0] ?? DEFAULT_PERSISTED_SETTINGS.activeProviderId
+}
+
 function sanitizeNumber(value: unknown, fallback: number, min: number) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) {
@@ -76,8 +92,14 @@ export function loadPersistedSettings(): PersistedSettings {
   try {
     const parsed = JSON.parse(raw) as Partial<PersistedSettings>
 
+    const selectedProviders = sanitizeProviders(parsed.selectedProviders)
+
     return {
-      selectedProviders: sanitizeProviders(parsed.selectedProviders),
+      selectedProviders,
+      activeProviderId: sanitizeActiveProvider(
+        parsed.activeProviderId,
+        selectedProviders,
+      ),
       concurrency: sanitizeNumber(parsed.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
       workerCount: sanitizeNumber(parsed.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
       bucketSize: sanitizeNumber(parsed.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),
@@ -110,10 +132,17 @@ export function persistSettings(settings: PersistedSettings) {
     throw new Error('localStorage is not available')
   }
 
+  const sanitizedProviders = sanitizeProviders(settings.selectedProviders)
+  const activeProviderId = sanitizeActiveProvider(
+    settings.activeProviderId,
+    sanitizedProviders,
+  )
+
   const payload: PersistedSettings = {
     ...DEFAULT_PERSISTED_SETTINGS,
     ...settings,
-    selectedProviders: sanitizeProviders(settings.selectedProviders),
+    selectedProviders: sanitizedProviders,
+    activeProviderId,
     concurrency: sanitizeNumber(settings.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
     workerCount: sanitizeNumber(settings.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
     bucketSize: sanitizeNumber(settings.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),

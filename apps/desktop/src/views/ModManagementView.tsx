@@ -3,7 +3,7 @@ import type { MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobStore } from '../context/JobStore'
-import Chip, { type ChipTone } from '../components/Chip'
+import Chip, { type ChipTone } from '../ui/Chip'
 import type { JobState, LibraryStatus } from '../types/core'
 
 const languageLabels: Record<string, string> = {

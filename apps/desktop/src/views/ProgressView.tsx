@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useJobStore, type JobFileEntry } from '../context/JobStore'
 import type { JobState, ProviderId } from '../types/core'
-import Chip, { type ChipTone } from '../components/Chip'
+import Chip, { type ChipTone } from '../ui/Chip'
 
 const statusLabels: Record<JobState, string> = {
   queued: '대기 중',
@@ -44,7 +44,7 @@ const languageBadges: Record<string, string> = {
 }
 
 const providerLabels: Record<ProviderId, string> = {
-  gemini: 'Gemini',
+  gemini: '제미니',
   gpt: 'GPT',
   claude: 'Claude',
   grok: 'Grok',
@@ -187,8 +187,9 @@ function ProgressView() {
   const showStopButton = currentJob.status === 'running' && clampedProgress < 100
   const stopButtonDisabled = currentJob.cancelRequested
   const stopButtonLabel = currentJob.cancelRequested ? '중단 요청됨…' : '중단'
-  const providerDisplay = currentJob.providerLabel
-    ?? (currentJob.providerId ? providerLabels[currentJob.providerId] ?? currentJob.providerId.toUpperCase() : null)
+  const providerDisplay = currentJob.providerId
+    ? providerLabels[currentJob.providerId] ?? currentJob.providerId.toUpperCase()
+    : currentJob.providerLabel
   const translatedSummary =
     currentJob.totalCount > 0
       ? `${currentJob.translatedCount} / ${currentJob.totalCount}개 번역됨`
