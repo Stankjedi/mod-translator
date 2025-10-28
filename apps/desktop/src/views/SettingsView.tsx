@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useI18n } from '../i18n/ko'
+import {
+  loadApiKeys,
+  maskApiKey,
+  persistApiKeys,
+  type ApiKeyMap,
+} from '../storage/apiKeyStorage'
 
 const providers = [
   {
@@ -29,8 +35,6 @@ const providers = [
   },
 ]
 
-const storageKey = 'mod-translator:apiKeys'
-
 function SettingsView() {
   const i18n = useI18n()
   const steamTexts = i18n.settings.steam
@@ -41,35 +45,27 @@ function SettingsView() {
         steamTexts.noteDetected.replace('{path}', path),
     [steamTexts.noteDetected],
   )
-  const { steamPath, detectSteamPath, scanLibrary, isScanning } = useLibraryContext()
+  const { steamPath, detectSteamPath, scanLibrary, isScanning, libraries, error: libraryError } =
+    useLibraryContext()
   const [explicitPath, setExplicitPath] = useState(steamPath?.path ?? '')
   const [pathNote, setPathNote] = useState('')
   const [scanStatus, setScanStatus] = useState('')
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>(() =>
-    providers.reduce((acc, provider) => {
-      acc[provider.id] = ''
-      return acc
-    }, {} as Record<string, string>),
-  )
+  const [apiKeys, setApiKeys] = useState<ApiKeyMap>(() => loadApiKeys())
+  const [editingProvider, setEditingProvider] = useState<string | null>(null)
+  const [draftApiKey, setDraftApiKey] = useState('')
   const [apiKeyMessage, setApiKeyMessage] = useState('')
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    try {
-      const stored = window.localStorage.getItem(storageKey)
-      if (!stored) {
-        return
-      }
-
-      const parsed = JSON.parse(stored) as Record<string, string>
-      setApiKeys((previous) => ({ ...previous, ...parsed }))
-    } catch (error) {
-      console.warn('failed to load API keys from storage', error)
-    }
-  }, [])
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null)
+  const libraryNotes = useMemo(
+    () =>
+      libraries.flatMap((library) =>
+        library.notes.map((note, index) => ({
+          id: `${library.path}:${index}`,
+          note,
+          path: library.path,
+        })),
+      ),
+    [libraries],
+  )
 
   useEffect(() => {
     setExplicitPath(steamPath?.path ?? '')
@@ -123,25 +119,75 @@ function SettingsView() {
     setScanStatus(success ? steamTexts.noteDone : steamTexts.noteError)
   }
 
-  const handleApiKeyChange = useCallback((providerId: string, value: string) => {
-    setApiKeys((previous) => ({ ...previous, [providerId]: value }))
-    setApiKeyMessage('')
+  const handleStartEditing = useCallback(
+    (providerId: string) => {
+      setEditingProvider(providerId)
+      setDraftApiKey(apiKeys[providerId] ?? '')
+      setApiKeyMessage('')
+      setApiKeyError(null)
+    },
+    [apiKeys],
+  )
+
+  const handleApiKeyChange = useCallback((value: string) => {
+    setDraftApiKey(value)
+    setApiKeyError(null)
   }, [])
 
-  const handleApiKeySave = useCallback(() => {
-    if (typeof window === 'undefined') {
-      setApiKeyMessage('API 키 저장이 지원되지 않는 환경입니다.')
-      return
-    }
+  const handleApiKeySave = useCallback(
+    (providerId: string, providerName: string) => {
+      const trimmed = draftApiKey.trim()
+      const nextKeys: ApiKeyMap = { ...apiKeys }
 
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(apiKeys))
-      setApiKeyMessage('API 키가 저장되었습니다.')
-    } catch (error) {
-      console.error('failed to persist API keys', error)
-      setApiKeyMessage('API 키 저장에 실패했습니다. 저장소 접근 권한을 확인하세요.')
-    }
-  }, [apiKeys])
+      if (trimmed) {
+        nextKeys[providerId] = trimmed
+      } else {
+        delete nextKeys[providerId]
+      }
+
+      try {
+        persistApiKeys(nextKeys)
+        setApiKeys(nextKeys)
+        setEditingProvider(null)
+        setDraftApiKey('')
+        setApiKeyMessage(`${providerName} API 키가 저장되었습니다.`)
+        setApiKeyError(null)
+      } catch (error) {
+        console.error('failed to persist API keys', error)
+        setApiKeyError('API 키 저장에 실패했습니다. 저장소 접근 권한을 확인하세요.')
+      }
+    },
+    [apiKeys, draftApiKey],
+  )
+
+  const handleApiKeyRemove = useCallback(
+    (providerId: string, providerName: string) => {
+      const nextKeys: ApiKeyMap = { ...apiKeys }
+      delete nextKeys[providerId]
+
+      try {
+        persistApiKeys(nextKeys)
+        setApiKeys(nextKeys)
+        if (editingProvider === providerId) {
+          setEditingProvider(null)
+          setDraftApiKey('')
+        }
+        setApiKeyMessage(`${providerName} API 키가 제거되었습니다.`)
+        setApiKeyError(null)
+      } catch (error) {
+        console.error('failed to remove API key', error)
+        setApiKeyError('API 키를 제거하는 중 문제가 발생했습니다. 다시 시도해 주세요.')
+      }
+    },
+    [apiKeys, editingProvider],
+  )
+
+  const handleApiKeyCancel = useCallback(() => {
+    setEditingProvider(null)
+    setDraftApiKey('')
+    setApiKeyMessage('')
+    setApiKeyError(null)
+  }, [])
 
   return (
     <div className="space-y-8">
@@ -183,33 +229,91 @@ function SettingsView() {
             각 제공자별 API 키를 직접 입력해 Rust 백엔드와의 연동을 준비하세요. 빈 값으로 저장하면 키가 제거됩니다.
           </p>
           <div className="mt-4 space-y-4">
-            {providers.map((provider) => (
-              <label key={provider.id} className="block text-sm text-slate-300">
-                <span className="mb-1 block font-medium text-white">{provider.name} API 키</span>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={apiKeys[provider.id] ?? ''}
-                  onChange={(event) => handleApiKeyChange(provider.id, event.target.value)}
-                  placeholder={`${provider.name} API 키를 입력하세요`}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  API 키는 로컬 장치에 암호화되지 않은 상태로 저장되므로 보안에 유의하세요.
-                </p>
-              </label>
-            ))}
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleApiKeySave}
-                className="inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-brand-600/40 transition hover:bg-brand-500"
-              >
-                API 키 저장
-              </button>
-              {apiKeyMessage && <p className="text-xs text-slate-400">{apiKeyMessage}</p>}
-            </div>
+            {providers.map((provider) => {
+              const storedValue = apiKeys[provider.id] ?? ''
+              const isEditing = editingProvider === provider.id
+              return (
+                <div
+                  key={provider.id}
+                  className="rounded-xl border border-slate-800/60 bg-slate-950/40 p-4"
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <span className="block text-sm font-medium text-white">
+                        {provider.name} API 키
+                      </span>
+                      <span className="text-xs text-slate-400">{provider.description}</span>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                      {isEditing ? (
+                        <>
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={draftApiKey}
+                            onChange={(event) => handleApiKeyChange(event.target.value)}
+                            placeholder={`${provider.name} API 키를 입력하세요`}
+                            className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500 sm:w-64"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleApiKeySave(provider.id, provider.name)}
+                              className="inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-brand-600/40 transition hover:bg-brand-500"
+                            >
+                              저장
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleApiKeyCancel}
+                              className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                            >
+                              취소
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-xs text-slate-400 sm:text-sm">
+                            {storedValue
+                              ? `저장된 키: ${maskApiKey(storedValue)}`
+                              : '저장된 키가 없습니다.'}
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditing(provider.id)}
+                              className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200"
+                            >
+                              {storedValue ? '수정' : '추가'}
+                            </button>
+                            {storedValue && (
+                              <button
+                                type="button"
+                                onClick={() => handleApiKeyRemove(provider.id, provider.name)}
+                                className="inline-flex items-center justify-center rounded-xl border border-rose-500/60 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:border-rose-400 hover:text-rose-100"
+                              >
+                                제거
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    API 키는 로컬 장치에 암호화되지 않은 상태로 저장되므로 보안에 유의하세요.
+                  </p>
+                </div>
+              )
+            })}
+            {(apiKeyMessage || apiKeyError) && (
+              <div className="space-y-1 text-xs">
+                {apiKeyMessage && <p className="text-slate-400">{apiKeyMessage}</p>}
+                {apiKeyError && <p className="text-rose-300">{apiKeyError}</p>}
+              </div>
+            )}
           </div>
         </section>
 
@@ -243,6 +347,22 @@ function SettingsView() {
                 {isScanning ? steamTexts.scanning : steamTexts.scan}
               </button>
             </div>
+            {libraryError && (
+              <p className="text-xs text-rose-300">{libraryError}</p>
+            )}
+            {libraryNotes.length > 0 && (
+              <div className="rounded-lg border border-slate-800/60 bg-slate-950/40 p-3 text-xs text-slate-300">
+                <p className="font-semibold text-slate-200">최근 스캔 메모</p>
+                <ul className="mt-1 space-y-1">
+                  {libraryNotes.map((item) => (
+                    <li key={item.id}>
+                      <span className="font-mono text-[11px] text-slate-500">{item.path}</span>{' '}
+                      {item.note}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         </section>
 

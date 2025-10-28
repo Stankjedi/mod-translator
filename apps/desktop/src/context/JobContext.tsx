@@ -8,12 +8,16 @@ import {
   useState,
 } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import type {
   ModSummary,
   TranslationJobRequest,
   TranslationJobStatus,
   TranslatorKind,
+  JobStatusUpdatedEvent,
 } from '../types/core'
+import { getStoredProviderAuth } from '../storage/apiKeyStorage'
 
 interface JobEntry {
   jobId: string
@@ -74,6 +78,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
         source_language_guess: options.sourceLanguageGuess,
         target_language: resolveTargetLanguage(options),
         selected_files: options.selectedFiles,
+        provider_auth: getStoredProviderAuth(),
       }
 
       const status = await invoke<TranslationJobStatus>('start_translation_job', {
@@ -151,6 +156,56 @@ export function JobProvider({ children }: { children: ReactNode }) {
       window.clearInterval(interval)
     }
   }, [activeJobs])
+
+  useEffect(() => {
+    if (!isTauri()) return undefined
+
+    let isCancelled = false
+    let unlisten: UnlistenFn | null = null
+
+    listen<JobStatusUpdatedEvent>('job-status-updated', (event) => {
+      const payload = event.payload
+      if (!payload) {
+        return
+      }
+
+      setJobsByMod((prev) => {
+        const existing = prev[payload.mod_id]
+        if (!existing) {
+          return {
+            ...prev,
+            [payload.mod_id]: {
+              jobId: payload.job_id,
+              modId: payload.mod_id,
+              status: payload.status,
+            },
+          }
+        }
+
+        return {
+          ...prev,
+          [payload.mod_id]: { ...existing, jobId: payload.job_id, status: payload.status },
+        }
+      })
+    })
+      .then((dispose) => {
+        if (isCancelled) {
+          dispose()
+        } else {
+          unlisten = dispose
+        }
+      })
+      .catch((error) => {
+        console.error('job status event listener 등록에 실패했습니다.', error)
+      })
+
+    return () => {
+      isCancelled = true
+      if (unlisten) {
+        unlisten()
+      }
+    }
+  }, [])
 
   const value = useMemo(
     () => ({
