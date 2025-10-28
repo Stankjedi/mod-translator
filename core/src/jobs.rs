@@ -297,19 +297,28 @@ impl WorkQueue {
         let queue_snapshot = self.queue_snapshot();
         let rate_snapshot = self.rate_limiter.snapshot();
 
-        if let Some(status) = self.statuses.get_mut(job_id) {
+        let (status_clone, is_terminal) = {
+            let status = match self.statuses.get_mut(job_id) {
+                Some(status) => status,
+                None => return (None, None),
+            };
+
             update(status);
-            status.queue = queue_snapshot;
-            status.rate_limiter = rate_snapshot;
+            status.queue = queue_snapshot.clone();
+            status.rate_limiter = rate_snapshot.clone();
+            let is_terminal = matches!(status.state, JobState::Completed | JobState::Failed);
             let status_clone = status.clone();
-            let payload = self.build_payload(&status_clone);
-            if matches!(status.state, JobState::Completed | JobState::Failed) {
-                self.job_mod_index.remove(job_id);
-            }
-            return (Some(status_clone), payload);
+
+            (status_clone, is_terminal)
+        };
+
+        if is_terminal {
+            self.job_mod_index.remove(job_id);
         }
 
-        (None, None)
+        let payload = self.build_payload(&status_clone);
+
+        (Some(status_clone), payload)
     }
 
     fn finish_job(&mut self, job_id: &str) -> Option<QueuedJob> {
@@ -344,18 +353,27 @@ impl WorkQueue {
         tokens: u32,
     ) -> (Duration, Option<JobStatusEventPayload>) {
         let wait = self.rate_limiter.reserve(tokens);
-        let mut payload = None;
-        if let Some(status) = self.statuses.get_mut(job_id) {
-            status.rate_limiter = self.rate_limiter.snapshot();
-            if wait > Duration::from_millis(0) {
-                status.message = Some(format!(
-                    "API 제한으로 인해 {}ms 대기 중입니다.",
-                    wait.as_millis()
-                ));
+        let rate_snapshot = self.rate_limiter.snapshot();
+
+        let status_clone = {
+            if let Some(status) = self.statuses.get_mut(job_id) {
+                status.rate_limiter = rate_snapshot.clone();
+                if wait > Duration::from_millis(0) {
+                    status.message = Some(format!(
+                        "API 제한으로 인해 {}ms 대기 중입니다.",
+                        wait.as_millis()
+                    ));
+                }
+                Some(status.clone())
+            } else {
+                None
             }
-            let status_clone = status.clone();
-            payload = self.build_payload(&status_clone);
-        }
+        };
+
+        let payload = status_clone
+            .as_ref()
+            .and_then(|status| self.build_payload(status));
+
         (wait, payload)
     }
 
@@ -379,7 +397,7 @@ impl WorkQueue {
 
 fn emit_job_status(handle: Option<AppHandle>, payload: JobStatusEventPayload) {
     if let Some(handle) = handle {
-        if let Err(err) = handle.emit_all("job-status-updated", payload) {
+        if let Err(err) = handle.emit("job-status-updated", payload) {
             warn!("failed to emit job status update: {}", err);
         }
     }
