@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
-import type { LibraryStatus } from '../types/core'
+import { useJobStore } from '../context/JobStore'
+import type { JobState, LibraryStatus } from '../types/core'
 
 const languageLabels: Record<string, string> = {
   en: '영어',
@@ -31,6 +32,7 @@ interface ModRow {
   warnings: string[]
   workshopRoot: string | null
   libraryPath: string
+  directory: string
   lastUpdated: string
 }
 
@@ -38,6 +40,12 @@ function ModManagementView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
   const [selectedGame, setSelectedGame] = useState<string>(ALL_GAMES)
   const [searchQuery, setSearchQuery] = useState('')
+  const { currentJob, queue, enqueueJob } = useJobStore()
+  const [pendingModId, setPendingModId] = useState<string | null>(null)
+  const [actionMessage, setActionMessage] = useState<{
+    type: 'success' | 'error'
+    text: string
+  } | null>(null)
   const navigate = useNavigate()
 
   const allMods = useMemo<ModRow[]>(() => {
@@ -59,6 +67,7 @@ function ModManagementView() {
             warnings: mod.warnings,
             workshopRoot: library.workshop_root,
             libraryPath: library.path,
+            directory: mod.directory,
             lastUpdated: mod.last_updated.iso_date,
           })
         }
@@ -120,6 +129,82 @@ function ModManagementView() {
     })
   }, [allMods, selectedGame, searchQuery])
 
+  const jobLookup = useMemo(() => {
+    const map = new Map<string, { status: JobState; position?: number; progress?: number }>()
+    if (currentJob) {
+      map.set(currentJob.modId, {
+        status: currentJob.status,
+        progress: Math.round(currentJob.progress),
+      })
+    }
+
+    queue.forEach((job, index) => {
+      map.set(job.modId, {
+        status: job.status,
+        position: index + 1,
+      })
+    })
+
+    return map
+  }, [currentJob, queue])
+
+  const handleEnqueue = useCallback(
+    (mod: ModRow) => {
+      setPendingModId(mod.id)
+      try {
+        const result = enqueueJob({
+          modId: mod.id,
+          workshopId: mod.id,
+          modName: mod.name,
+          gameName: mod.game,
+          installPath: mod.directory,
+        })
+
+        if (result.error === 'duplicate-active') {
+          setActionMessage({
+            type: 'error',
+            text: '이미 실행 중인 작업입니다. 진행 상황 탭에서 상태를 확인하세요.',
+          })
+          return
+        }
+
+        if (result.error === 'duplicate-queued') {
+          const position = jobLookup.get(mod.id)?.position ?? queue.findIndex((job) => job.modId === mod.id) + 1
+          setActionMessage({
+            type: 'error',
+            text:
+              position && position > 0
+                ? `이미 대기열 ${position}번에 예약된 작업입니다.`
+                : '이미 대기열에 있는 작업입니다.',
+          })
+          return
+        }
+
+        if (result.error === 'invalid-path') {
+          setActionMessage({
+            type: 'error',
+            text: '설치 경로를 찾을 수 없어 작업이 실패로 기록되었습니다. 라이브러리 경로를 확인하세요.',
+          })
+          return
+        }
+
+        setActionMessage({
+          type: 'success',
+          text: result.promoted
+            ? `${mod.name} 작업을 즉시 시작했습니다. 진행 상황 탭으로 이동합니다.`
+            : `${mod.name} 작업을 대기열에 추가했습니다.`,
+        })
+
+        if (result.promoted) {
+          navigate('/progress')
+        }
+      } finally {
+        setPendingModId(null)
+      }
+    },
+    [enqueueJob, jobLookup, navigate, queue],
+  )
+
   const hasAnyMods = allMods.length > 0
   const hasSearchQuery = searchQuery.trim().length > 0
 
@@ -167,6 +252,18 @@ function ModManagementView() {
         </div>
       </header>
 
+      {actionMessage && (
+        <div
+          className={`rounded-2xl border px-4 py-3 text-sm ${
+            actionMessage.type === 'success'
+              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+              : 'border-rose-500/40 bg-rose-500/10 text-rose-200'
+          }`}
+        >
+          {actionMessage.text}
+        </div>
+      )}
+
       <div className="overflow-hidden rounded-2xl border border-slate-800/60 bg-slate-900/60">
         {visibleMods.length ? (
           <table className="min-w-full divide-y divide-slate-800 text-sm text-slate-200">
@@ -187,68 +284,93 @@ function ModManagementView() {
                 <th scope="col" className="px-4 py-3 text-left">
                   경고 / 참고
                 </th>
+                <th scope="col" className="px-4 py-3 text-left">
+                  작업 제어
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
-              {visibleMods.map((mod, index) => (
-                <tr
-                  key={mod.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => navigate(`/progress/${encodeURIComponent(mod.id)}`)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      navigate(`/progress/${encodeURIComponent(mod.id)}`)
-                    }
-                  }}
-                  className="cursor-pointer hover:bg-slate-800/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500"
-                  aria-label={`${mod.name} 번역 진행 화면으로 이동`}
-                >
-                  <td className="px-4 py-4 font-medium text-white">
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-xs font-semibold text-slate-500">{index + 1}.</span>
-                      <span>{mod.name}</span>
-                    </div>
-                    <p className="mt-1 text-xs text-slate-400">마지막 업데이트: {mod.lastUpdated}</p>
-                    <p className="mt-1 text-[11px] text-slate-500">번역 진행 화면으로 이동하려면 클릭하세요.</p>
-                  </td>
-                  <td className="px-4 py-4 text-slate-300">
-                    <div className="font-medium text-white">{mod.game}</div>
-                    <p className="mt-1 text-xs text-slate-500">
-                      상태: {mod.status === 'healthy' ? '정상' : '경로 확인 필요'}
-                    </p>
-                  </td>
-                  <td className="px-4 py-4 text-slate-300">
-                    <div className="flex flex-wrap gap-2">
-                      {mod.languages.map((language) => (
-                        <span key={language} className="rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-300">
-                          {resolveLanguage(language)}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 text-xs text-slate-400">
-                    <p className="break-all font-medium text-white">{mod.libraryPath}</p>
-                    {mod.workshopRoot && (
-                      <p className="mt-1 text-[11px] text-slate-500">워크샵 루트: {mod.workshopRoot}</p>
-                    )}
-                  </td>
-                  <td className="px-4 py-4 text-xs text-slate-300">
-                    {mod.warnings.length ? (
-                      <ul className="space-y-1">
-                        {mod.warnings.map((warning) => (
-                          <li key={warning} className="rounded bg-slate-800/80 px-2 py-1 text-[11px] text-amber-300">
-                            {warning}
-                          </li>
+              {visibleMods.map((mod, index) => {
+                const jobInfo = jobLookup.get(mod.id)
+                const isCurrent = currentJob?.modId === mod.id
+                const isRunning = isCurrent && jobInfo?.status === 'running'
+                const isQueued = jobInfo?.status === 'queued'
+                const queuePosition = jobInfo?.position
+                const isPending = pendingModId === mod.id
+                const buttonDisabled = Boolean(isPending || isRunning || isQueued)
+                const buttonLabel = isPending
+                  ? '등록 중...'
+                  : isRunning
+                    ? '진행 중'
+                    : isQueued
+                      ? `대기 중${queuePosition ? ` (${queuePosition}번)` : ''}`
+                      : '번역 예약'
+                const statusNote = isRunning
+                  ? `실행 중 · ${jobInfo?.progress ?? 0}%`
+                  : isQueued
+                    ? `대기열 ${queuePosition ?? 0}번`
+                    : '대기열에 없음'
+
+                return (
+                  <tr key={mod.id} className="align-top transition hover:bg-slate-800/40">
+                    <td className="px-4 py-4 font-medium text-white">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-xs font-semibold text-slate-500">{index + 1}.</span>
+                        <span>{mod.name}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">마지막 업데이트: {mod.lastUpdated}</p>
+                      <p className="mt-1 text-[11px] text-slate-500">워크샵 ID: {mod.id}</p>
+                    </td>
+                    <td className="px-4 py-4 text-slate-300">
+                      <div className="font-medium text-white">{mod.game}</div>
+                      <p className="mt-1 text-xs text-slate-500">
+                        상태: {mod.status === 'healthy' ? '정상' : '경로 확인 필요'}
+                      </p>
+                    </td>
+                    <td className="px-4 py-4 text-slate-300">
+                      <div className="flex flex-wrap gap-2">
+                        {mod.languages.map((language) => (
+                          <span key={language} className="rounded-full bg-slate-800 px-2 py-1 text-xs text-slate-300">
+                            {resolveLanguage(language)}
+                          </span>
                         ))}
-                      </ul>
-                    ) : (
-                      <p className="text-slate-500">경고 없음</p>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-xs text-slate-400">
+                      <p className="break-all font-medium text-white">{mod.libraryPath}</p>
+                      {mod.workshopRoot && (
+                        <p className="mt-1 text-[11px] text-slate-500">워크샵 루트: {mod.workshopRoot}</p>
+                      )}
+                    </td>
+                    <td className="px-4 py-4 text-xs text-slate-300">
+                      {mod.warnings.length ? (
+                        <ul className="space-y-1">
+                          {mod.warnings.map((warning) => (
+                            <li key={warning} className="rounded bg-slate-800/80 px-2 py-1 text-[11px] text-amber-300">
+                              {warning}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-slate-500">경고 없음</p>
+                      )}
+                    </td>
+                    <td className="px-4 py-4 text-xs text-slate-300">
+                      <div className="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleEnqueue(mod)}
+                          disabled={buttonDisabled}
+                          className="inline-flex items-center justify-center rounded-full border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {buttonLabel}
+                        </button>
+                        <p className="text-[11px] text-slate-500">{statusNote}</p>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         ) : (
