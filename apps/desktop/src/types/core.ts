@@ -31,6 +31,7 @@ export interface ModSummary {
   id: string
   name: string
   game: string
+  directory: string
   installed_languages: string[]
   last_updated: FormattedTimestamp
   policy: PolicyProfile
@@ -63,9 +64,21 @@ export interface TranslationJobRequest {
   mod_id: string
   mod_name?: string | null
   translator: TranslatorKind
-  source_language: string
+  source_language_guess: string
   target_language: string
+  selected_files: string[]
   provider_auth?: ProviderAuth
+}
+
+export interface ModFileDescriptor {
+  path: string
+  translatable: boolean
+  auto_selected: boolean
+  language_hint: string | null
+}
+
+export interface ModFileListing {
+  files: ModFileDescriptor[]
 }
 
 export interface QueueSnapshot {

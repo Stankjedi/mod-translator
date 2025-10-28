@@ -69,8 +69,9 @@ pub struct TranslationJobRequest {
     pub mod_id: String,
     pub mod_name: Option<String>,
     pub translator: TranslatorKind,
-    pub source_language: String,
+    pub source_language_guess: String,
     pub target_language: String,
+    pub selected_files: Vec<String>,
     #[serde(default)]
     pub provider_auth: ProviderAuth,
 }
@@ -102,7 +103,7 @@ impl TranslationOrchestrator {
         let job_id = Uuid::new_v4().to_string();
         let mut translator = request.translator.build_with_auth(&request.provider_auth);
         let options = TranslateOptions {
-            source_lang: Some(request.source_language.clone()),
+            source_lang: Some(request.source_language_guess.clone()),
             target_lang: request.target_language.clone(),
             domain: Some(crate::ai::TranslationDomain::Ui),
             style: Some(crate::ai::TranslationStyle::Game),
@@ -129,8 +130,9 @@ impl TranslationOrchestrator {
             progress: 0.05,
             preview,
             message: Some(format!(
-                "{} 번역 작업이 큐에 등록되었습니다.",
-                job_display_name
+                "{} 번역 작업이 큐에 등록되었습니다 ({}개 파일).",
+                job_display_name,
+                request.selected_files.len()
             )),
             queue: QueueSnapshot {
                 queued: 0,
@@ -431,6 +433,10 @@ fn spawn_job_worker(job: QueuedJob) {
 pub fn start_translation_job(
     request: TranslationJobRequest,
 ) -> Result<TranslationJobStatus, String> {
+    if request.selected_files.is_empty() {
+        return Err("번역할 파일을 하나 이상 선택해야 합니다.".into());
+    }
+
     TranslationOrchestrator::new()
         .start_job(request)
         .map_err(|err| err.to_string())
