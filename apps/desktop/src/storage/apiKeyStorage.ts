@@ -1,5 +1,3 @@
-import type { ProviderAuth } from '../types/core'
-
 const STORAGE_KEY = 'mod_translator_api_keys_v1'
 
 export type ApiKeyMap = Partial<Record<string, string>>
@@ -74,12 +72,3 @@ export function maskApiKey(key: string | undefined | null): string {
   return `${head}${'*'.repeat(maskCount)}${tail}`
 }
 
-export function getStoredProviderAuth(): ProviderAuth {
-  const keys = loadApiKeys()
-  return {
-    gemini: keys.gemini ?? null,
-    gpt: keys.gpt ?? null,
-    claude: keys.claude ?? null,
-    grok: keys.grok ?? null,
-  }
-}
