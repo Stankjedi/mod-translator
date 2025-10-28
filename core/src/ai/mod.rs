@@ -1,5 +1,6 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -11,123 +12,222 @@ static PLACEHOLDER_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 #[derive(Debug, Error)]
 pub enum TranslationError {
-    #[error("translator reported an error: {0}")]
-    Failure(String),
-    #[error("output lost placeholders: {0:?}")]
+    #[error("provider error: {0}")]
+    Provider(String),
+    #[error("http error: {0}")]
+    Http(String),
+    #[error("placeholder mismatch: {0:?}")]
     PlaceholderMismatch(Vec<String>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TranslationDomain {
-    Ui,
-    Dialog,
-    System,
-    Log,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TranslationStyle {
-    Neutral,
-    Game,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TranslateOptions {
-    pub source_lang: Option<String>,
-    pub target_lang: String,
-    pub domain: Option<TranslationDomain>,
-    pub style: Option<TranslationStyle>,
-}
-
-impl TranslateOptions {
-    pub fn for_preview(source: &str, target: &str) -> Self {
-        Self {
-            source_lang: Some(source.to_string()),
-            target_lang: target.to_string(),
-            domain: Some(TranslationDomain::Ui),
-            style: Some(TranslationStyle::Game),
-        }
-    }
-}
-
-impl Default for TranslateOptions {
-    fn default() -> Self {
-        Self {
-            source_lang: Some("en".into()),
-            target_lang: "en".into(),
-            domain: Some(TranslationDomain::Ui),
-            style: Some(TranslationStyle::Neutral),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProviderAuth {
-    pub gemini: Option<String>,
-    pub gpt: Option<String>,
-    pub claude: Option<String>,
-    pub grok: Option<String>,
-}
-
-pub trait Translator: Send {
-    fn name(&self) -> &'static str;
-    fn translate_batch(
-        &mut self,
-        inputs: &[String],
-        options: &TranslateOptions,
-    ) -> Result<Vec<String>, TranslationError>;
-
-    fn translate_preview(
-        &mut self,
-        input: &str,
-        options: &TranslateOptions,
-    ) -> Result<String, TranslationError> {
-        let outputs = self.translate_batch(&[input.to_string()], options)?;
-        Ok(outputs.into_iter().next().unwrap_or_default())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TranslatorKind {
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderId {
     Gemini,
     Gpt,
     Claude,
     Grok,
 }
 
-impl TranslatorKind {
+impl ProviderId {
     pub fn label(&self) -> &'static str {
         match self {
-            TranslatorKind::Gemini => "Gemini",
-            TranslatorKind::Gpt => "GPT",
-            TranslatorKind::Claude => "Claude",
-            TranslatorKind::Grok => "Grok",
+            ProviderId::Gemini => "Gemini",
+            ProviderId::Gpt => "GPT",
+            ProviderId::Claude => "Claude",
+            ProviderId::Grok => "Grok",
         }
     }
+}
 
-    pub fn build(self) -> Box<dyn Translator> {
-        self.build_with_auth(&ProviderAuth::default())
-    }
+impl TryFrom<&str> for ProviderId {
+    type Error = ();
 
-    pub fn build_with_auth(self, auth: &ProviderAuth) -> Box<dyn Translator> {
-        match self {
-            TranslatorKind::Gemini => {
-                Box::new(GeminiTranslator::default().with_api_key(auth.gemini.clone()))
-            }
-            TranslatorKind::Gpt => {
-                Box::new(GptTranslator::default().with_api_key(auth.gpt.clone()))
-            }
-            TranslatorKind::Claude => {
-                Box::new(ClaudeTranslator::default().with_api_key(auth.claude.clone()))
-            }
-            TranslatorKind::Grok => {
-                Box::new(GrokTranslator::default().with_api_key(auth.grok.clone()))
-            }
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_lowercase().as_str() {
+            "gemini" => Ok(ProviderId::Gemini),
+            "gpt" => Ok(ProviderId::Gpt),
+            "claude" => Ok(ProviderId::Claude),
+            "grok" => Ok(ProviderId::Grok),
+            _ => Err(()),
         }
     }
+}
+
+impl From<reqwest::Error> for TranslationError {
+    fn from(value: reqwest::Error) -> Self {
+        TranslationError::Http(value.to_string())
+    }
+}
+
+impl From<serde_json::Error> for TranslationError {
+    fn from(value: serde_json::Error) -> Self {
+        TranslationError::Http(value.to_string())
+    }
+}
+
+pub async fn translate_text(
+    client: &Client,
+    provider: ProviderId,
+    api_key: &str,
+    input: &str,
+    source_lang: &str,
+    target_lang: &str,
+) -> Result<String, TranslationError> {
+    let normalized_input = input.trim();
+    if normalized_input.is_empty() {
+        return Ok(String::new());
+    }
+
+    let translated = match provider {
+        ProviderId::Gemini => {
+            translate_with_gemini(client, api_key, normalized_input, source_lang, target_lang)
+                .await?
+        }
+        ProviderId::Gpt => {
+            translate_with_gpt(client, api_key, normalized_input, source_lang, target_lang).await?
+        }
+        ProviderId::Claude | ProviderId::Grok => {
+            return Err(TranslationError::Provider(format!(
+                "{} provider is not implemented yet",
+                provider.label()
+            )))
+        }
+    };
+
+    ensure_placeholder_integrity(normalized_input, &translated)?;
+    Ok(translated.trim().to_string())
+}
+
+async fn translate_with_gemini(
+    client: &Client,
+    api_key: &str,
+    input: &str,
+    source_lang: &str,
+    target_lang: &str,
+) -> Result<String, TranslationError> {
+    let prompt = format!(
+        "Translate the following text from {source_lang} to {target_lang}. \
+Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they appear.\n\n{input}"
+    );
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    );
+    let response = client
+        .post(url)
+        .json(&serde_json::json!({
+            "contents": [{ "parts": [{ "text": prompt }] }]
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(TranslationError::Http(format!(
+            "Gemini API {}: {}",
+            status, body
+        )));
+    }
+
+    let parsed: GeminiResponse = response.json().await?;
+    let text = parsed
+        .candidates
+        .and_then(|mut candidates| candidates.into_iter().next())
+        .and_then(|candidate| candidate.content)
+        .and_then(|mut content| content.parts.and_then(|mut parts| parts.into_iter().next()))
+        .and_then(|part| part.text)
+        .ok_or_else(|| {
+            TranslationError::Provider("Gemini 응답에서 결과를 찾지 못했습니다.".into())
+        })?;
+
+    Ok(text)
+}
+
+async fn translate_with_gpt(
+    client: &Client,
+    api_key: &str,
+    input: &str,
+    source_lang: &str,
+    target_lang: &str,
+) -> Result<String, TranslationError> {
+    let prompt = format!(
+        "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders such as {{0}} or %1$s exactly as they appear. Return only the translated text.\n\n{input}"
+    );
+
+    let response = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a professional game localization translator. Preserve formatting and placeholders exactly."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.2
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(TranslationError::Http(format!(
+            "OpenAI API {}: {}",
+            status, body
+        )));
+    }
+
+    let parsed: OpenAiResponse = response.json().await?;
+    let text = parsed
+        .choices
+        .into_iter()
+        .find_map(|choice| choice.message.and_then(|message| message.content))
+        .ok_or_else(|| TranslationError::Provider("GPT 응답에서 결과를 찾지 못했습니다.".into()))?;
+
+    Ok(text)
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiResponse {
+    candidates: Option<Vec<GeminiCandidate>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiCandidate {
+    content: Option<GeminiContent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiContent {
+    parts: Option<Vec<GeminiPart>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiPart {
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiResponse {
+    choices: Vec<OpenAiChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoice {
+    message: Option<OpenAiMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiMessage {
+    content: Option<String>,
 }
 
 fn collect_placeholders(input: &str) -> Vec<String> {
@@ -172,231 +272,4 @@ fn ensure_placeholder_integrity(original: &str, translated: &str) -> Result<(), 
     }
 
     Ok(())
-}
-
-#[derive(Debug, Default)]
-pub struct GeminiTranslator {
-    invocation_count: u32,
-    api_key: Option<String>,
-}
-
-impl Translator for GeminiTranslator {
-    fn name(&self) -> &'static str {
-        "Gemini"
-    }
-
-    fn translate_batch(
-        &mut self,
-        inputs: &[String],
-        options: &TranslateOptions,
-    ) -> Result<Vec<String>, TranslationError> {
-        self.invocation_count += 1;
-        let mut outputs = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            let key_status = if self.api_key.is_some() {
-                "with-key"
-            } else {
-                "no-key"
-            };
-            let output = format!(
-                "[Gemini#{:03} {key_status}] {} -> {} ({:?}/{:?}): {}",
-                self.invocation_count,
-                options.source_lang.as_deref().unwrap_or("unknown"),
-                options.target_lang,
-                options.domain,
-                options.style,
-                input
-            );
-            ensure_placeholder_integrity(input, &output)?;
-            outputs.push(output);
-        }
-
-        Ok(outputs)
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct GptTranslator {
-    invocation_count: u32,
-    api_key: Option<String>,
-}
-
-impl Translator for GptTranslator {
-    fn name(&self) -> &'static str {
-        "GPT"
-    }
-
-    fn translate_batch(
-        &mut self,
-        inputs: &[String],
-        options: &TranslateOptions,
-    ) -> Result<Vec<String>, TranslationError> {
-        self.invocation_count += 1;
-        let mut outputs = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            let key_status = if self.api_key.is_some() {
-                "with-key"
-            } else {
-                "no-key"
-            };
-            let domain_label = options
-                .domain
-                .as_ref()
-                .map(|domain| format!("{:?}", domain))
-                .unwrap_or_else(|| "domain:none".into());
-            let output = format!(
-                "[GPT#{:03} {key_status}] {} -> {} [{}]: {}",
-                self.invocation_count,
-                options.source_lang.as_deref().unwrap_or("unknown"),
-                options.target_lang,
-                domain_label,
-                input
-            );
-            ensure_placeholder_integrity(input, &output)?;
-            outputs.push(output);
-        }
-
-        Ok(outputs)
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct ClaudeTranslator {
-    batches_processed: u32,
-    api_key: Option<String>,
-}
-
-impl Translator for ClaudeTranslator {
-    fn name(&self) -> &'static str {
-        "Claude"
-    }
-
-    fn translate_batch(
-        &mut self,
-        inputs: &[String],
-        options: &TranslateOptions,
-    ) -> Result<Vec<String>, TranslationError> {
-        self.batches_processed += 1;
-        let mut outputs = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            let key_status = if self.api_key.is_some() {
-                "with-key"
-            } else {
-                "no-key"
-            };
-            let output = format!(
-                "[Claude batch {} {key_status}] {} -> {} :: {}",
-                self.batches_processed,
-                options.source_lang.as_deref().unwrap_or("unknown"),
-                options.target_lang,
-                input
-            );
-            ensure_placeholder_integrity(input, &output)?;
-            outputs.push(output);
-        }
-
-        Ok(outputs)
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct GrokTranslator {
-    previews_generated: u32,
-    api_key: Option<String>,
-}
-
-impl Translator for GrokTranslator {
-    fn name(&self) -> &'static str {
-        "Grok"
-    }
-
-    fn translate_batch(
-        &mut self,
-        inputs: &[String],
-        options: &TranslateOptions,
-    ) -> Result<Vec<String>, TranslationError> {
-        self.previews_generated += 1;
-        let mut outputs = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            let key_status = if self.api_key.is_some() {
-                "with-key"
-            } else {
-                "no-key"
-            };
-            let output = format!(
-                "[Grok run {} {key_status}] {}>{}: {}",
-                self.previews_generated,
-                options.source_lang.as_deref().unwrap_or("unknown"),
-                options.target_lang,
-                input
-            );
-            ensure_placeholder_integrity(input, &output)?;
-            outputs.push(output);
-        }
-
-        Ok(outputs)
-    }
-}
-
-fn normalize_api_key(key: Option<String>) -> Option<String> {
-    key.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
-}
-
-impl ProviderAuth {
-    pub fn set_key(&mut self, provider_id: &str, key: Option<String>) {
-        let slot = match provider_id {
-            "gemini" => &mut self.gemini,
-            "gpt" => &mut self.gpt,
-            "claude" => &mut self.claude,
-            "grok" => &mut self.grok,
-            _ => return,
-        };
-
-        *slot = normalize_api_key(key);
-    }
-
-    pub fn key(&self, provider_id: &str) -> Option<&String> {
-        match provider_id {
-            "gemini" => self.gemini.as_ref(),
-            "gpt" => self.gpt.as_ref(),
-            "claude" => self.claude.as_ref(),
-            "grok" => self.grok.as_ref(),
-            _ => None,
-        }
-    }
-}
-
-impl GeminiTranslator {
-    pub fn with_api_key(mut self, key: Option<String>) -> Self {
-        self.api_key = normalize_api_key(key);
-        self
-    }
-}
-
-impl GptTranslator {
-    pub fn with_api_key(mut self, key: Option<String>) -> Self {
-        self.api_key = normalize_api_key(key);
-        self
-    }
-}
-
-impl ClaudeTranslator {
-    pub fn with_api_key(mut self, key: Option<String>) -> Self {
-        self.api_key = normalize_api_key(key);
-        self
-    }
-}
-
-impl GrokTranslator {
-    pub fn with_api_key(mut self, key: Option<String>) -> Self {
-        self.api_key = normalize_api_key(key);
-        self
-    }
 }

@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useJobStore, type JobFileEntry } from '../context/JobStore'
-import type { JobState } from '../types/core'
+import type { JobState, ProviderId } from '../types/core'
 import Chip, { type ChipTone } from '../components/Chip'
 
 const statusLabels: Record<JobState, string> = {
@@ -15,7 +15,7 @@ const statusLabels: Record<JobState, string> = {
 const statusTones: Record<JobState, ChipTone> = {
   queued: 'idle',
   running: 'primary',
-  completed: 'success',
+  completed: 'info',
   failed: 'danger',
   canceled: 'idle',
 }
@@ -41,6 +41,13 @@ const languageBadges: Record<string, string> = {
   pl: 'PL',
   it: 'IT',
   ko: 'KO',
+}
+
+const providerLabels: Record<ProviderId, string> = {
+  gemini: 'Gemini',
+  gpt: 'GPT',
+  claude: 'Claude',
+  grok: 'Grok',
 }
 
 const DEFAULT_SOURCE_LANGUAGE = 'en'
@@ -180,6 +187,12 @@ function ProgressView() {
   const showStopButton = currentJob.status === 'running' && clampedProgress < 100
   const stopButtonDisabled = currentJob.cancelRequested
   const stopButtonLabel = currentJob.cancelRequested ? '중단 요청됨…' : '중단'
+  const providerDisplay = currentJob.providerLabel
+    ?? (currentJob.providerId ? providerLabels[currentJob.providerId] ?? currentJob.providerId.toUpperCase() : null)
+  const translatedSummary =
+    currentJob.totalCount > 0
+      ? `${currentJob.translatedCount} / ${currentJob.totalCount}개 번역됨`
+      : null
 
   return (
     <div className="space-y-6">
@@ -230,14 +243,11 @@ function ProgressView() {
             </div>
             <span className="w-12 text-right text-slate-300">{clampedProgress}%</span>
           </div>
-          {currentJob.translator && (
-            <p className="text-xs text-slate-500">번역기: {currentJob.translator}</p>
+          {providerDisplay && (
+            <p className="text-xs text-slate-500">번역기: {providerDisplay}</p>
           )}
-          {currentJob.preview && (
-            <div className="rounded-lg border border-slate-800/60 bg-slate-950/40 p-3 text-xs text-slate-300">
-              <p className="font-semibold text-slate-200">미리보기</p>
-              <p className="mt-1 whitespace-pre-wrap text-slate-300">{currentJob.preview}</p>
-            </div>
+          {translatedSummary && (
+            <p className="text-xs text-slate-500">{translatedSummary}</p>
           )}
         </div>
       </section>

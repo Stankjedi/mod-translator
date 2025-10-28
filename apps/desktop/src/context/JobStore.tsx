@@ -6,27 +6,23 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import type {
-  JobStatusUpdatedEvent,
   JobState,
-  QueueSnapshot,
-  QualityGateSnapshot,
-  RateLimiterSnapshot,
   ModFileListing,
-  TranslationJobRequest,
-  TranslationJobStatus,
-  TranslatorKind,
+  ProviderId,
+  StartTranslationJobPayload,
+  TranslationProgressEventPayload,
 } from '../types/core'
-import { getStoredProviderAuth } from '../storage/apiKeyStorage'
+import { useSettingsStore } from './SettingsStore'
 
 const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
-const DEFAULT_TRANSLATOR: TranslatorKind = 'gpt'
 const DEFAULT_TARGET_LANGUAGE = 'ko'
 const DEFAULT_SOURCE_LANGUAGE = 'en'
 const LANGUAGE_PRIORITY = [
@@ -43,6 +39,13 @@ const LANGUAGE_PRIORITY = [
   'it',
   'ko',
 ]
+
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  gemini: 'Gemini',
+  gpt: 'GPT',
+  claude: 'Claude',
+  grok: 'Grok',
+}
 
 const createId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -78,12 +81,11 @@ export interface QueueJob {
   logs: JobLogEntry[]
   backendJobId: string | null
   message: string | null
-  preview: string | null
-  translator: string | null
-  queueSnapshot: QueueSnapshot | null
-  rateLimiter: RateLimiterSnapshot | null
-  qualityGates: QualityGateSnapshot | null
-  pipeline: TranslationJobStatus['pipeline'] | null
+  providerId: ProviderId | null
+  providerLabel: string | null
+  providerApiKey: string | null
+  translatedCount: number
+  totalCount: number
   selectedFiles: string[]
   sourceLanguageGuess: string | null
   targetLanguage: string | null
@@ -120,7 +122,6 @@ export interface StartTranslationOptions {
   selectedFiles: string[]
   sourceLanguageGuess: string | null
   targetLanguage?: string
-  translator?: TranslatorKind
 }
 
 interface JobStoreValue {
@@ -136,7 +137,7 @@ interface JobStoreValue {
   cancelQueuedJob: (jobId: string) => boolean
   loadFilesForCurrentJob: () => Promise<void>
   toggleCurrentJobFileSelection: (path: string) => void
-  startTranslationForCurrentJob: (options: StartTranslationOptions) => Promise<TranslationJobStatus>
+  startTranslationForCurrentJob: (options: StartTranslationOptions) => Promise<void>
   requestCancelCurrentJob: () => Promise<boolean>
 }
 
@@ -180,16 +181,12 @@ const prepareJobForActivation = (job: QueueJob): QueueJob => ({
   progress: 0,
   backendJobId: null,
   message: null,
-  preview: null,
-  translator: null,
-  queueSnapshot: null,
-  rateLimiter: null,
-  qualityGates: null,
-  pipeline: null,
   logs: [],
   selectedFiles: [],
   sourceLanguageGuess: null,
   targetLanguage: job.targetLanguage ?? DEFAULT_TARGET_LANGUAGE,
+  translatedCount: 0,
+  totalCount: 0,
   lastUpdated: Date.now(),
   files: null,
   filesLoading: false,
@@ -209,12 +206,11 @@ const createJob = (input: EnqueueJobInput): QueueJob => ({
   logs: [],
   backendJobId: null,
   message: null,
-  preview: null,
-  translator: null,
-  queueSnapshot: null,
-  rateLimiter: null,
-  qualityGates: null,
-  pipeline: null,
+  providerId: null,
+  providerLabel: null,
+  providerApiKey: null,
+  translatedCount: 0,
+  totalCount: 0,
   selectedFiles: [],
   sourceLanguageGuess: null,
   targetLanguage: DEFAULT_TARGET_LANGUAGE,
@@ -246,11 +242,17 @@ const promoteNextJobState = (previous: JobStoreState): JobStoreState => {
 }
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
+  const { selectedProviders, apiKeys } = useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
     completedJobs: [],
   })
+  const activeJobIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    activeJobIdRef.current = state.currentJob?.jobId ?? null
+  }, [state.currentJob?.jobId])
 
   const promoteNextJob = useCallback(() => {
     setState((prev) => promoteNextJobState(prev))
@@ -356,14 +358,19 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  const enqueueJob = useCallback((input: EnqueueJobInput): EnqueueJobResult => {
-    let result: EnqueueJobResult | null = null
+  const enqueueJob = useCallback(
+    (input: EnqueueJobInput): EnqueueJobResult => {
+      let result: EnqueueJobResult | null = null
 
-    setState((prev) => {
-      if (prev.currentJob && prev.currentJob.modId === input.modId) {
-        result = { job: prev.currentJob, promoted: false, error: 'duplicate-active' }
-        return prev
-      }
+      const primaryProvider = selectedProviders[0] ?? null
+      const providerLabel = primaryProvider ? PROVIDER_LABELS[primaryProvider] ?? primaryProvider.toUpperCase() : null
+      const providerApiKey = primaryProvider ? apiKeys[primaryProvider] ?? null : null
+
+      setState((prev) => {
+        if (prev.currentJob && prev.currentJob.modId === input.modId) {
+          result = { job: prev.currentJob, promoted: false, error: 'duplicate-active' }
+          return prev
+        }
 
       const duplicateQueued = prev.queue.find((job) => job.modId === input.modId)
       if (duplicateQueued) {
@@ -371,7 +378,12 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         return prev
       }
 
-      const job = createJob(input)
+      const job: QueueJob = {
+        ...createJob(input),
+        providerId: primaryProvider,
+        providerLabel,
+        providerApiKey: providerApiKey ?? null,
+      }
       const trimmedPath = job.installPath.trim()
 
       if (!trimmedPath) {
@@ -422,7 +434,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     }
 
     return result
-  }, [])
+  }, [apiKeys, selectedProviders])
 
   const cancelQueuedJob = useCallback((jobId: string) => {
     let cancelled = false
@@ -735,113 +747,58 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         throw new Error('번역할 파일을 하나 이상 선택해 주세요.')
       }
 
-      const translator = options.translator ?? DEFAULT_TRANSLATOR
-      const targetLanguage = options.targetLanguage ?? DEFAULT_TARGET_LANGUAGE
-
-      const request: TranslationJobRequest = {
-        mod_id: activeJob.modId,
-        mod_name: activeJob.modName,
-        translator,
-        source_language_guess: options.sourceLanguageGuess ?? null,
-        target_language: targetLanguage,
-        selected_files: options.selectedFiles,
-        provider_auth: getStoredProviderAuth(),
+      if (!activeJob.providerId) {
+        throw new Error('사용할 번역기를 설정한 뒤 다시 시도해 주세요.')
       }
 
-      const status = await invoke<TranslationJobStatus>('start_translation_job', {
-        request,
-      })
-
-      const progress = clampProgress(Math.round(status.progress * 100))
-
-      if (status.state === 'canceled') {
-        markCurrentJobCanceled(status.message ?? null, {
-          backendJobId: status.job_id,
-          translator: status.translator,
-          message: status.message,
-          preview: status.preview,
-          queueSnapshot: status.queue,
-          rateLimiter: status.rate_limiter,
-          qualityGates: status.quality_gates,
-          pipeline: status.pipeline,
-          progress,
-          cancelRequested: status.cancel_requested,
-          targetLanguage,
-        })
-        return status
+      if (!activeJob.providerApiKey) {
+        throw new Error('선택한 번역기의 API 키를 설정해 주세요.')
       }
 
-      if (status.state === 'completed') {
-        markCurrentJobCompleted(status.message ?? null, {
-          backendJobId: status.job_id,
-          translator: status.translator,
-          message: status.message,
-          preview: status.preview,
-          queueSnapshot: status.queue,
-          rateLimiter: status.rate_limiter,
-          qualityGates: status.quality_gates,
-          pipeline: status.pipeline,
-          progress,
-          cancelRequested: status.cancel_requested,
-          targetLanguage,
-        })
-        return status
+      const targetLanguage = options.targetLanguage ?? activeJob.targetLanguage ?? DEFAULT_TARGET_LANGUAGE
+      const sourceLanguage = options.sourceLanguageGuess ?? activeJob.sourceLanguageGuess ?? null
+
+      const payload: StartTranslationJobPayload = {
+        jobId: activeJob.jobId,
+        provider: activeJob.providerId,
+        apiKey: activeJob.providerApiKey ?? null,
+        files: options.selectedFiles.map((path) => ({ path })),
+        sourceLang: sourceLanguage,
+        targetLang: targetLanguage,
       }
 
-      if (status.state === 'failed') {
-        markCurrentJobFailed(status.message ?? null, {
-          backendJobId: status.job_id,
-          translator: status.translator,
-          message: status.message,
-          preview: status.preview,
-          queueSnapshot: status.queue,
-          rateLimiter: status.rate_limiter,
-          qualityGates: status.quality_gates,
-          pipeline: status.pipeline,
-          progress,
-          cancelRequested: status.cancel_requested,
-          targetLanguage,
-        })
-        return status
+      try {
+        await invoke('start_translation_job', { payload })
+      } catch (error) {
+        throw error instanceof Error ? error : new Error(String(error))
       }
-
-      const trimmedMessage = status.message?.trim()
-      const logEntry = trimmedMessage ? createLogEntry('info', trimmedMessage) : null
 
       setState((prev) => {
         if (!prev.currentJob || prev.currentJob.jobId !== activeJob.jobId) {
           return prev
         }
 
-        const logs = logEntry ? [...prev.currentJob.logs, logEntry] : prev.currentJob.logs
-
         return {
           ...prev,
           currentJob: {
             ...prev.currentJob,
-            backendJobId: status.job_id,
-            translator: status.translator,
-            message: status.message,
-            preview: status.preview,
-            queueSnapshot: status.queue,
-            rateLimiter: status.rate_limiter,
-            qualityGates: status.quality_gates,
-            pipeline: status.pipeline,
-            progress,
-            status: status.state,
-            cancelRequested: status.cancel_requested,
+            backendJobId: activeJob.jobId,
+            message: '번역을 준비하는 중입니다.',
+            status: 'running',
+            progress: 0,
+            cancelRequested: false,
             selectedFiles: [...options.selectedFiles],
-            sourceLanguageGuess: options.sourceLanguageGuess ?? null,
+            sourceLanguageGuess: sourceLanguage,
             targetLanguage,
-            logs,
+            translatedCount: 0,
+            totalCount: 0,
+            logs: [...prev.currentJob.logs],
             lastUpdated: Date.now(),
           },
         }
       })
-
-      return status
     },
-    [markCurrentJobCanceled, markCurrentJobCompleted, markCurrentJobFailed, state.currentJob],
+    [state.currentJob],
   )
 
   useEffect(() => {
@@ -850,93 +807,74 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     let dispose: UnlistenFn | null = null
 
-    listen<JobStatusUpdatedEvent>('job-status-updated', (event) => {
+    listen<TranslationProgressEventPayload>('translation-progress', (event) => {
       if (cancelled) return
       const payload = event.payload
       if (!payload) return
 
-      const status = payload.status
-      const progress = clampProgress(Math.round(status.progress * 100))
-      const trimmedMessage = status.message?.trim()
-      const logLevel: JobLogLevel = status.state === 'failed' ? 'error' : 'info'
-      const logEntry = trimmedMessage ? createLogEntry(logLevel, trimmedMessage) : null
+      if (activeJobIdRef.current && activeJobIdRef.current !== payload.jobId) {
+        return
+      }
 
-      if (status.state === 'completed') {
-        markCurrentJobCompleted(status.message ?? null, {
-          backendJobId: payload.job_id,
-          translator: status.translator,
-          message: status.message,
-          preview: status.preview,
-          queueSnapshot: status.queue,
-          rateLimiter: status.rate_limiter,
-          qualityGates: status.quality_gates,
-          pipeline: status.pipeline,
+      const progress = clampProgress(Math.round(payload.progress))
+      const trimmedLog = payload.log?.trim() ?? null
+      const logLevel: JobLogLevel = payload.state === 'failed' ? 'error' : 'info'
+
+      if (payload.state === 'completed') {
+        const finalMessage = trimmedLog ?? '번역이 완료되었습니다.'
+        markCurrentJobCompleted(finalMessage, {
           progress,
-          cancelRequested: status.cancel_requested,
+          message: finalMessage,
+          translatedCount: payload.translatedCount,
+          totalCount: payload.totalCount,
+          cancelRequested: false,
         })
         return
       }
 
-      if (status.state === 'failed') {
-        markCurrentJobFailed(status.message ?? null, {
-          backendJobId: payload.job_id,
-          translator: status.translator,
-          message: status.message,
-          preview: status.preview,
-          queueSnapshot: status.queue,
-          rateLimiter: status.rate_limiter,
-          qualityGates: status.quality_gates,
-          pipeline: status.pipeline,
+      if (payload.state === 'failed') {
+        const combinedMessage = [payload.error, trimmedLog]
+          .filter((value): value is string => Boolean(value))
+          .join('\n') || '번역 중 오류가 발생했습니다.'
+        markCurrentJobFailed(combinedMessage, {
           progress,
-          cancelRequested: status.cancel_requested,
+          message: combinedMessage,
+          translatedCount: payload.translatedCount,
+          totalCount: payload.totalCount,
+          cancelRequested: false,
         })
         return
       }
 
-      if (status.state === 'canceled') {
-        markCurrentJobCanceled(status.message ?? null, {
-          backendJobId: payload.job_id,
-          translator: status.translator,
-          message: status.message,
-          preview: status.preview,
-          queueSnapshot: status.queue,
-          rateLimiter: status.rate_limiter,
-          qualityGates: status.quality_gates,
-          pipeline: status.pipeline,
+      if (payload.state === 'canceled') {
+        const cancelMessage = trimmedLog ?? '작업이 중단되었습니다.'
+        markCurrentJobCanceled(cancelMessage, {
           progress,
-          cancelRequested: status.cancel_requested,
+          message: cancelMessage,
+          translatedCount: payload.translatedCount,
+          totalCount: payload.totalCount,
+          cancelRequested: true,
         })
         return
       }
 
       setState((prev) => {
-        if (!prev.currentJob) return prev
-
-        const sameMod = prev.currentJob.modId === payload.mod_id
-        const sameBackendJob =
-          !prev.currentJob.backendJobId || prev.currentJob.backendJobId === payload.job_id
-
-        if (!sameMod || !sameBackendJob) {
+        if (!prev.currentJob || prev.currentJob.jobId !== payload.jobId) {
           return prev
         }
 
+        const logEntry = trimmedLog ? createLogEntry(logLevel, trimmedLog) : null
         const logs = logEntry ? [...prev.currentJob.logs, logEntry] : prev.currentJob.logs
 
         return {
           ...prev,
           currentJob: {
             ...prev.currentJob,
-            backendJobId: payload.job_id ?? prev.currentJob.backendJobId,
-            translator: status.translator ?? prev.currentJob.translator,
-            message: status.message,
-            preview: status.preview,
-            queueSnapshot: status.queue,
-            rateLimiter: status.rate_limiter,
-            qualityGates: status.quality_gates,
-            pipeline: status.pipeline,
             progress,
-            status: status.state,
-            cancelRequested: status.cancel_requested,
+            status: payload.state,
+            message: trimmedLog ?? prev.currentJob.message,
+            translatedCount: payload.translatedCount,
+            totalCount: payload.totalCount,
             logs,
             lastUpdated: Date.now(),
           },
@@ -951,7 +889,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         }
       })
       .catch((error) => {
-        console.error('job-status-updated 이벤트 등록에 실패했습니다.', error)
+        console.error('translation-progress 이벤트 등록에 실패했습니다.', error)
       })
 
     return () => {

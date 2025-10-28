@@ -20,13 +20,6 @@ export interface PolicyProfile {
   notes: string[]
 }
 
-export interface ProviderAuth {
-  gemini?: string | null
-  gpt?: string | null
-  claude?: string | null
-  grok?: string | null
-}
-
 export interface ModSummary {
   id: string
   name: string
@@ -58,16 +51,31 @@ export interface SteamPathResponse {
 
 export type JobState = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
 
-export type TranslatorKind = 'gemini' | 'gpt' | 'claude' | 'grok'
+export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
-export interface TranslationJobRequest {
-  mod_id: string
-  mod_name: string
-  translator: TranslatorKind
-  source_language_guess: string | null
-  target_language: string
-  selected_files: string[]
-  provider_auth: ProviderAuth
+export interface TranslationFileDescriptor {
+  path: string
+}
+
+export interface StartTranslationJobPayload {
+  jobId: string
+  provider: ProviderId
+  apiKey: string | null
+  files: TranslationFileDescriptor[]
+  sourceLang: string | null
+  targetLang: string | null
+}
+
+export type TranslationProgressState = JobState
+
+export interface TranslationProgressEventPayload {
+  jobId: string
+  state: TranslationProgressState
+  progress: number
+  translatedCount: number
+  totalCount: number
+  log?: string | null
+  error?: string | null
 }
 
 export interface ModFileDescriptor {
@@ -81,66 +89,4 @@ export interface ModFileListing {
   files: ModFileDescriptor[]
 }
 
-export interface QueueSnapshot {
-  queued: number
-  running: number
-  concurrent_workers: number
-}
-
-export interface RateLimiterSnapshot {
-  bucket_capacity: number
-  tokens_available: number
-  refill_interval_ms: number
-}
-
-export interface QualityGateSnapshot {
-  placeholder_guard: boolean
-  format_validator: boolean
-  sample_rate: number
-}
-
-export type StageStrategy =
-  | 'enumerate'
-  | 'detect'
-  | 'parse'
-  | 'translate'
-  | 'validate'
-  | 'repackage'
-
-export interface PipelineStage {
-  name: string
-  description: string
-  strategy: StageStrategy
-}
-
-export interface ValidatorSpec {
-  name: string
-  description: string
-}
-
-export interface PipelinePlan {
-  target: string
-  stages: PipelineStage[]
-  validators: ValidatorSpec[]
-  skip_rules: string[]
-}
-
-export interface TranslationJobStatus {
-  job_id: string
-  translator: string
-  state: JobState
-  progress: number
-  preview: string | null
-  message: string | null
-  queue: QueueSnapshot
-  rate_limiter: RateLimiterSnapshot
-  quality_gates: QualityGateSnapshot
-  pipeline: PipelinePlan
-  cancel_requested: boolean
-}
-
-export interface JobStatusUpdatedEvent {
-  job_id: string
-  mod_id: string
-  status: TranslationJobStatus
-}
+// Legacy pipeline-related types removed in favor of streaming progress events.

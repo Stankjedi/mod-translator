@@ -142,13 +142,13 @@ function AppShell() {
 
 function App() {
   return (
-    <LibraryProvider>
-      <JobStoreProvider>
-        <SettingsStoreProvider>
+    <SettingsStoreProvider>
+      <LibraryProvider>
+        <JobStoreProvider>
           <AppShell />
-        </SettingsStoreProvider>
-      </JobStoreProvider>
-    </LibraryProvider>
+        </JobStoreProvider>
+      </LibraryProvider>
+    </SettingsStoreProvider>
   )
 }
 
