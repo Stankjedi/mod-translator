@@ -13,20 +13,24 @@ export function loadApiKeys(): ApiKeyMap {
     return {}
   }
 
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) {
-      return {}
-    }
+  const raw = window.localStorage.getItem(STORAGE_KEY)
+  if (!raw) {
+    return {}
+  }
 
-    const parsed = JSON.parse(raw) as Record<string, string>
-    return Object.fromEntries(
-      Object.entries(parsed)
-        .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
-        .map(([key, value]) => [key, value.trim()]),
-    )
-  } catch (error) {
-    console.warn('API 키를 불러오는 중 문제가 발생했습니다.', error)
+  try {
+    const parsed = JSON.parse(raw) as Record<string, string | undefined>
+
+    return Object.entries(parsed).reduce((acc, [provider, value]) => {
+      if (typeof value === 'string') {
+        const cleaned = value.trim()
+        if (cleaned.length > 0) {
+          acc[provider] = cleaned
+        }
+      }
+      return acc
+    }, {} as ApiKeyMap)
+  } catch {
     return {}
   }
 }
@@ -36,9 +40,15 @@ export function persistApiKeys(map: ApiKeyMap) {
     throw new Error('localStorage is not available')
   }
 
-  const sanitizedEntries = Object.entries(map)
-    .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
-    .map(([key, value]) => [key, value.trim()])
+  const sanitizedEntries = Object.entries(map).reduce<[string, string][]>((acc, [key, value]) => {
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (trimmed.length > 0) {
+        acc.push([key, trimmed])
+      }
+    }
+    return acc
+  }, [])
 
   try {
     if (sanitizedEntries.length === 0) {
@@ -52,20 +62,16 @@ export function persistApiKeys(map: ApiKeyMap) {
   }
 }
 
-export function maskApiKey(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return ''
+export function maskApiKey(key: string | undefined | null): string {
+  if (!key || key.length === 0) return ''
+  if (key.length <= 8) {
+    if (key.length <= 2) return '*'.repeat(key.length)
+    return key[0] + '*'.repeat(key.length - 2) + key[key.length - 1]
   }
-
-  if (trimmed.length <= 4) {
-    return `${trimmed}${'*'.repeat(4)}`
-  }
-
-  const prefix = trimmed.slice(0, 4)
-  const suffix = trimmed.slice(-2)
-  const maskLength = Math.max(trimmed.length - 6, 4)
-  return `${prefix}${'*'.repeat(maskLength)}${suffix}`
+  const head = key.slice(0, 4)
+  const tail = key.slice(-2)
+  const maskCount = Math.max(1, key.length - 6)
+  return `${head}${'*'.repeat(maskCount)}${tail}`
 }
 
 export function getStoredProviderAuth(): ProviderAuth {

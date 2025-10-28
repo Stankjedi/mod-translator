@@ -71,11 +71,13 @@ export function JobProvider({ children }: { children: ReactNode }) {
         }
       }
 
+      const sourceLanguageGuess = options.sourceLanguageGuess.trim()
+
       const request: TranslationJobRequest = {
         mod_id: mod.id,
         mod_name: mod.name,
         translator: resolveTranslator(options),
-        source_language_guess: options.sourceLanguageGuess,
+        source_language_guess: sourceLanguageGuess.length ? sourceLanguageGuess : null,
         target_language: resolveTargetLanguage(options),
         selected_files: options.selectedFiles,
         provider_auth: getStoredProviderAuth(),

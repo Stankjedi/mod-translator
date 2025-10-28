@@ -62,12 +62,12 @@ export type TranslatorKind = 'gemini' | 'gpt' | 'claude' | 'grok'
 
 export interface TranslationJobRequest {
   mod_id: string
-  mod_name?: string | null
+  mod_name: string
   translator: TranslatorKind
-  source_language_guess: string
+  source_language_guess: string | null
   target_language: string
   selected_files: string[]
-  provider_auth?: ProviderAuth
+  provider_auth: ProviderAuth
 }
 
 export interface ModFileDescriptor {

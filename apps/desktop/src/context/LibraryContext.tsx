@@ -15,19 +15,14 @@ import type {
   SteamPathResponse,
 } from '../types/core'
 
-export interface SteamPathInfo {
-  path: string | null
-  note: string
-}
-
 interface LibraryContextValue {
   policyBanner: PolicyBanner | null
   libraries: LibraryEntry[]
   isScanning: boolean
-  scanLibrary: (explicitPath?: string) => Promise<boolean>
+  scanLibrary: (explicitPath?: string) => Promise<void>
   error: string | null
-  steamPath: SteamPathInfo | null
-  detectSteamPath: () => Promise<SteamPathInfo | null>
+  steamPath: string | null
+  detectSteamPath: () => Promise<string | null>
 }
 
 const LibraryContext = createContext<LibraryContextValue | undefined>(undefined)
@@ -39,30 +34,23 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [libraries, setLibraries] = useState<LibraryEntry[]>([])
   const [isScanning, setIsScanning] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [steamPath, setSteamPath] = useState<SteamPathInfo | null>(null)
+  const [steamPath, setSteamPath] = useState<string | null>(null)
 
   const detectSteamPath = useCallback(async () => {
     if (!isTauri()) {
-      const fallback: SteamPathInfo = {
-        path: null,
-        note: '이 기능은 데스크톱(Tauri) 환경에서만 사용할 수 있습니다.',
-      }
-      setSteamPath(fallback)
+      setSteamPath(null)
       setError('로컬 애플리케이션에서 실행 중인지 확인해 주세요.')
-      return fallback
+      return null
     }
 
     try {
       const response = await invoke<SteamPathResponse>('detect_steam_path')
-      const info: SteamPathInfo = {
-        path: response.path,
-        note: response.note,
-      }
-      setSteamPath(info)
+      setSteamPath(response.path ?? null)
       setError(null)
-      return info
+      return response.path ?? null
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      setSteamPath(null)
       setError(message)
       return null
     }
@@ -73,8 +61,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       if (!isTauri()) {
         setLibraries([])
         setPolicyBanner(null)
-        setError('라이브러리 스캔은 Tauri 환경에서만 지원됩니다.')
-        return false
+        const message = '라이브러리 스캔은 Tauri 환경에서만 지원됩니다.'
+        setError(message)
+        throw new Error(message)
       }
 
       setIsScanning(true)
@@ -85,12 +74,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         setLibraries(response.libraries)
         setPolicyBanner(response.policy_banner)
         setError(null)
-        return true
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         setError(message)
         setLibraries([])
-        return false
+        throw err instanceof Error ? err : new Error(message)
       } finally {
         setIsScanning(false)
       }
@@ -100,9 +88,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     ;(async () => {
-      const info = await detectSteamPath()
-      if (info?.path) {
-        await scanLibrary(info.path)
+      const path = await detectSteamPath()
+      if (path) {
+        try {
+          await scanLibrary(path)
+        } catch (error) {
+          console.error('자동 스캔 중 오류가 발생했습니다.', error)
+        }
       }
     })()
   }, [detectSteamPath, scanLibrary])
