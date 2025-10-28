@@ -17,6 +17,7 @@ import type {
   QueueSnapshot,
   QualityGateSnapshot,
   RateLimiterSnapshot,
+  ModFileListing,
   TranslationJobRequest,
   TranslationJobStatus,
   TranslatorKind,
@@ -27,6 +28,21 @@ const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in 
 
 const DEFAULT_TRANSLATOR: TranslatorKind = 'gpt'
 const DEFAULT_TARGET_LANGUAGE = 'ko'
+const DEFAULT_SOURCE_LANGUAGE = 'en'
+const LANGUAGE_PRIORITY = [
+  'en',
+  'zh-cn',
+  'zh-tw',
+  'ja',
+  'ru',
+  'fr',
+  'de',
+  'es',
+  'pt',
+  'pl',
+  'it',
+  'ko',
+]
 
 const createId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -40,6 +56,14 @@ export interface JobLogEntry {
   level: JobLogLevel
   message: string
   timestamp: number
+}
+
+export interface JobFileEntry {
+  path: string
+  translatable: boolean
+  autoSelected: boolean
+  languageHint: string | null
+  selected: boolean
 }
 
 export interface QueueJob {
@@ -64,6 +88,9 @@ export interface QueueJob {
   sourceLanguageGuess: string | null
   targetLanguage: string | null
   lastUpdated: number
+  files: JobFileEntry[] | null
+  filesLoading: boolean
+  fileError: string | null
 }
 
 interface JobStoreState {
@@ -104,11 +131,9 @@ interface JobStoreValue {
   appendLog: (message: string, level?: JobLogLevel) => void
   markCurrentJobCompleted: (message?: string | null, patch?: Partial<QueueJob>) => void
   markCurrentJobFailed: (message?: string | null, patch?: Partial<QueueJob>) => void
-  setCurrentJobSelection: (
-    selectedFiles: string[],
-    sourceLanguageGuess: string | null,
-    targetLanguage?: string | null,
-  ) => void
+  cancelQueuedJob: (jobId: string) => boolean
+  loadFilesForCurrentJob: () => Promise<void>
+  toggleCurrentJobFileSelection: (path: string) => void
   startTranslationForCurrentJob: (options: StartTranslationOptions) => Promise<TranslationJobStatus>
 }
 
@@ -128,6 +153,24 @@ const createLogEntry = (level: JobLogLevel, message: string): JobLogEntry => ({
   timestamp: Date.now(),
 })
 
+const guessSourceLanguageFromFiles = (entries: JobFileEntry[]): string => {
+  const hints = entries
+    .map((entry) => entry.languageHint?.toLowerCase())
+    .filter((hint): hint is string => Boolean(hint))
+
+  for (const candidate of LANGUAGE_PRIORITY) {
+    if (hints.includes(candidate)) {
+      return candidate
+    }
+  }
+
+  if (hints.length > 0) {
+    return hints[0]
+  }
+
+  return DEFAULT_SOURCE_LANGUAGE
+}
+
 const prepareJobForActivation = (job: QueueJob): QueueJob => ({
   ...job,
   status: 'running',
@@ -145,6 +188,9 @@ const prepareJobForActivation = (job: QueueJob): QueueJob => ({
   sourceLanguageGuess: null,
   targetLanguage: job.targetLanguage ?? DEFAULT_TARGET_LANGUAGE,
   lastUpdated: Date.now(),
+  files: null,
+  filesLoading: false,
+  fileError: null,
 })
 
 const createJob = (input: EnqueueJobInput): QueueJob => ({
@@ -169,6 +215,9 @@ const createJob = (input: EnqueueJobInput): QueueJob => ({
   sourceLanguageGuess: null,
   targetLanguage: DEFAULT_TARGET_LANGUAGE,
   lastUpdated: Date.now(),
+  files: null,
+  filesLoading: false,
+  fileError: null,
 })
 
 const promoteNextJobState = (previous: JobStoreState): JobStoreState => {
@@ -189,14 +238,6 @@ const promoteNextJobState = (previous: JobStoreState): JobStoreState => {
     currentJob: prepareJobForActivation(nextJob),
     queue: rest,
   }
-}
-
-const arraysEqual = (a: string[], b: string[]) => {
-  if (a.length !== b.length) return false
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) return false
-  }
-  return true
 }
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
@@ -279,35 +320,6 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const setCurrentJobSelection = useCallback(
-    (selectedFiles: string[], sourceLanguageGuess: string | null, targetLanguage?: string | null) => {
-      setState((prev) => {
-        if (!prev.currentJob) return prev
-        const normalizedGuess = sourceLanguageGuess ?? null
-        const normalizedTarget = targetLanguage ?? null
-        if (
-          arraysEqual(prev.currentJob.selectedFiles, selectedFiles) &&
-          prev.currentJob.sourceLanguageGuess === normalizedGuess &&
-          prev.currentJob.targetLanguage === normalizedTarget
-        ) {
-          return prev
-        }
-
-        return {
-          ...prev,
-          currentJob: {
-            ...prev.currentJob,
-            selectedFiles,
-            sourceLanguageGuess: normalizedGuess,
-            targetLanguage: normalizedTarget,
-            lastUpdated: Date.now(),
-          },
-        }
-      })
-    },
-    [],
-  )
-
   const enqueueJob = useCallback((input: EnqueueJobInput): EnqueueJobResult => {
     let result: EnqueueJobResult | null = null
 
@@ -375,6 +387,240 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
     return result
   }, [])
+
+  const cancelQueuedJob = useCallback((jobId: string) => {
+    let cancelled = false
+    setState((prev) => {
+      const index = prev.queue.findIndex((job) => job.jobId === jobId)
+      if (index === -1) {
+        return prev
+      }
+
+      const job = prev.queue[index]
+      const canceledJob: QueueJob = {
+        ...job,
+        status: 'canceled',
+        lastUpdated: Date.now(),
+      }
+
+      cancelled = true
+
+      return {
+        ...prev,
+        queue: [...prev.queue.slice(0, index), ...prev.queue.slice(index + 1)],
+        completedJobs: [...prev.completedJobs, canceledJob],
+      }
+    })
+
+    return cancelled
+  }, [])
+
+  const toggleCurrentJobFileSelection = useCallback((path: string) => {
+    setState((prev) => {
+      if (!prev.currentJob || !prev.currentJob.files) {
+        return prev
+      }
+
+      const index = prev.currentJob.files.findIndex((file) => file.path === path)
+      if (index === -1) {
+        return prev
+      }
+
+      const target = prev.currentJob.files[index]
+      const nextSelected = !target.selected
+
+      const nextFiles = [
+        ...prev.currentJob.files.slice(0, index),
+        { ...target, selected: nextSelected },
+        ...prev.currentJob.files.slice(index + 1),
+      ]
+
+      const selectedEntries = nextFiles.filter((entry) => entry.selected)
+      const selectedFiles = selectedEntries.map((entry) => entry.path)
+      const sourceLanguageGuess = selectedEntries.length
+        ? guessSourceLanguageFromFiles(selectedEntries)
+        : DEFAULT_SOURCE_LANGUAGE
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          files: nextFiles,
+          selectedFiles,
+          sourceLanguageGuess,
+          lastUpdated: Date.now(),
+        },
+      }
+    })
+  }, [])
+
+  const loadFilesForCurrentJob = useCallback(async () => {
+    const activeJob = state.currentJob
+    if (!activeJob) {
+      return
+    }
+
+    const jobId = activeJob.jobId
+    const trimmedPath = activeJob.installPath.trim()
+
+    if (!trimmedPath) {
+      const message = '모드 설치 경로를 확인할 수 없어 작업이 실패했습니다.'
+      let shouldFail = true
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
+          shouldFail = false
+          return prev
+        }
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            filesLoading: false,
+            fileError: message,
+            lastUpdated: Date.now(),
+          },
+        }
+      })
+
+      if (shouldFail) {
+        markCurrentJobFailed(message)
+      }
+      return
+    }
+
+    if (!isTauri()) {
+      const message = '파일 목록은 데스크톱 환경에서만 확인할 수 있습니다.'
+      let shouldFail = true
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
+          shouldFail = false
+          return prev
+        }
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            filesLoading: false,
+            fileError: message,
+            lastUpdated: Date.now(),
+          },
+        }
+      })
+
+      if (shouldFail) {
+        markCurrentJobFailed(message)
+      }
+      return
+    }
+
+    let shouldFetch = true
+    setState((prev) => {
+      if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
+        shouldFetch = false
+        return prev
+      }
+
+      if (prev.currentJob.filesLoading) {
+        shouldFetch = false
+        return prev
+      }
+
+      if (prev.currentJob.files && !prev.currentJob.fileError) {
+        shouldFetch = false
+        return prev
+      }
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          filesLoading: true,
+          fileError: null,
+        },
+      }
+    })
+
+    if (!shouldFetch) {
+      return
+    }
+
+    try {
+      const listing = await invoke<ModFileListing>('list_mod_files', {
+        modDirectory: trimmedPath,
+      })
+
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
+          return prev
+        }
+
+        const existingSelection = prev.currentJob.selectedFiles
+        const selectionSet = new Set(
+          existingSelection.length
+            ? existingSelection
+            : listing.files
+                .filter((entry) => entry.translatable && entry.auto_selected)
+                .map((entry) => entry.path),
+        )
+
+        const files: JobFileEntry[] = listing.files.map((entry) => ({
+          path: entry.path,
+          translatable: entry.translatable,
+          autoSelected: entry.auto_selected,
+          languageHint: entry.language_hint,
+          selected: selectionSet.has(entry.path),
+        }))
+
+        const selectedEntries = files.filter((entry) => entry.selected)
+        const selectedFiles = selectedEntries.map((entry) => entry.path)
+        const sourceLanguageGuess = selectedEntries.length
+          ? guessSourceLanguageFromFiles(selectedEntries)
+          : DEFAULT_SOURCE_LANGUAGE
+        const targetLanguage = prev.currentJob.targetLanguage ?? DEFAULT_TARGET_LANGUAGE
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            files,
+            filesLoading: false,
+            fileError: null,
+            selectedFiles,
+            sourceLanguageGuess,
+            targetLanguage,
+            lastUpdated: Date.now(),
+          },
+        }
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      let shouldFail = true
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
+          shouldFail = false
+          return prev
+        }
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            filesLoading: false,
+            fileError: message,
+            lastUpdated: Date.now(),
+          },
+        }
+      })
+
+      if (shouldFail) {
+        markCurrentJobFailed('파일을 불러오지 못했습니다. 모드 경로나 설치 여부를 확인해 주세요.', {
+          message,
+        })
+      }
+    }
+  }, [markCurrentJobFailed, state.currentJob])
 
   const startTranslationForCurrentJob = useCallback(
     async (options: StartTranslationOptions) => {
@@ -589,7 +835,9 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       appendLog,
       markCurrentJobCompleted,
       markCurrentJobFailed,
-      setCurrentJobSelection,
+      cancelQueuedJob,
+      loadFilesForCurrentJob,
+      toggleCurrentJobFileSelection,
       startTranslationForCurrentJob,
     }),
     [
@@ -601,7 +849,9 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       appendLog,
       markCurrentJobCompleted,
       markCurrentJobFailed,
-      setCurrentJobSelection,
+      cancelQueuedJob,
+      loadFilesForCurrentJob,
+      toggleCurrentJobFileSelection,
       startTranslationForCurrentJob,
     ],
   )
