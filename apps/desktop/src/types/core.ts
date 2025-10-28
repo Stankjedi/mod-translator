@@ -136,6 +136,7 @@ export interface TranslationJobStatus {
   rate_limiter: RateLimiterSnapshot
   quality_gates: QualityGateSnapshot
   pipeline: PipelinePlan
+  cancel_requested: boolean
 }
 
 export interface JobStatusUpdatedEvent {

@@ -2,21 +2,22 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useJobStore, type JobFileEntry } from '../context/JobStore'
 import type { JobState } from '../types/core'
+import Chip, { type ChipTone } from '../components/Chip'
 
-const stateLabels: Record<JobState, string> = {
+const statusLabels: Record<JobState, string> = {
   queued: '대기 중',
-  running: '실행 중',
-  completed: '완료',
+  running: '번역 중',
+  completed: '완료됨',
   failed: '실패',
-  canceled: '취소됨',
+  canceled: '중단됨',
 }
 
-const stateClasses: Record<JobState, string> = {
-  queued: 'bg-slate-800 text-slate-300',
-  running: 'bg-brand-500/20 text-brand-200',
-  completed: 'bg-emerald-500/20 text-emerald-200',
-  failed: 'bg-rose-500/20 text-rose-100',
-  canceled: 'bg-slate-700/60 text-slate-300',
+const statusTones: Record<JobState, ChipTone> = {
+  queued: 'idle',
+  running: 'primary',
+  completed: 'success',
+  failed: 'danger',
+  canceled: 'idle',
 }
 
 const progressClasses: Record<JobState, string> = {
@@ -62,9 +63,11 @@ function ProgressView() {
     loadFilesForCurrentJob,
     toggleCurrentJobFileSelection,
     startTranslationForCurrentJob,
+    requestCancelCurrentJob,
   } = useJobStore()
   const [selectionError, setSelectionError] = useState<string | null>(null)
   const [isStarting, setIsStarting] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
   const activeJobId = currentJob?.jobId ?? null
   const shouldLoadFiles = Boolean(
     activeJobId && !currentJob?.files && !currentJob?.filesLoading && !currentJob?.fileError,
@@ -73,6 +76,7 @@ function ProgressView() {
   useEffect(() => {
     setSelectionError(null)
     setIsStarting(false)
+    setCancelError(null)
   }, [activeJobId])
 
   useEffect(() => {
@@ -109,7 +113,7 @@ function ProgressView() {
 
   const handleStart = useCallback(async () => {
     if (!currentJob) return
-    if (fileLoading || isJobExecuting || isStarting) {
+    if (fileLoading || isJobExecuting || isStarting || currentJob.cancelRequested) {
       return
     }
     if (!selectedFilePaths.length) {
@@ -136,6 +140,14 @@ function ProgressView() {
     }
   }, [appendLog, currentJob, fileLoading, isJobExecuting, isStarting, markCurrentJobFailed, selectedFilePaths, sourceLanguageGuess, startTranslationForCurrentJob])
 
+  const handleStop = useCallback(async () => {
+    setCancelError(null)
+    const result = await requestCancelCurrentJob()
+    if (!result) {
+      setCancelError('작업 중단 요청에 실패했습니다. 잠시 후 다시 시도해 주세요.')
+    }
+  }, [requestCancelCurrentJob])
+
   if (!currentJob) {
     return (
       <div className="mx-auto flex max-w-3xl flex-col items-center justify-center gap-6 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-10 text-center text-slate-300">
@@ -153,11 +165,21 @@ function ProgressView() {
     )
   }
 
-  const stateClass = stateClasses[currentJob.status]
+  const statusLabel =
+    currentJob.cancelRequested && currentJob.status === 'running'
+      ? '중단 요청됨'
+      : statusLabels[currentJob.status]
+  const statusTone =
+    currentJob.cancelRequested && currentJob.status === 'running'
+      ? 'warning'
+      : statusTones[currentJob.status]
   const progressBarClass = progressClasses[currentJob.status]
   const clampedProgress = Math.max(0, Math.min(100, Math.round(currentJob.progress)))
-  const disableSelection = fileLoading || isJobExecuting || isStarting
+  const disableSelection = fileLoading || isJobExecuting || isStarting || currentJob.cancelRequested
   const startDisabled = disableSelection || !selectedFilePaths.length
+  const showStopButton = currentJob.status === 'running' && clampedProgress < 100
+  const stopButtonDisabled = currentJob.cancelRequested
+  const stopButtonLabel = currentJob.cancelRequested ? '중단 요청됨…' : '중단'
 
   return (
     <div className="space-y-6">
@@ -167,10 +189,21 @@ function ProgressView() {
           <p className="text-sm text-slate-400">
             현재 활성화된 작업에 대한 진행률과 로그를 표시합니다. 대기 중인 작업은 자동으로 이어집니다.
           </p>
+          {cancelError && <p className="mt-2 text-xs text-rose-300">{cancelError}</p>}
         </div>
-        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${stateClass}`}>
-          {stateLabels[currentJob.status]}
-        </span>
+        <div className="flex items-center gap-3">
+          <Chip label={statusLabel} tone={statusTone} />
+          {showStopButton && (
+            <button
+              type="button"
+              onClick={handleStop}
+              disabled={stopButtonDisabled}
+              className="inline-flex items-center justify-center rounded-full bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-rose-600/30 transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {stopButtonLabel}
+            </button>
+          )}
+        </div>
       </header>
 
       <section className="space-y-4 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6 shadow-inner shadow-black/30">

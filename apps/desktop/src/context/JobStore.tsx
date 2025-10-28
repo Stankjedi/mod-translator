@@ -91,6 +91,7 @@ export interface QueueJob {
   files: JobFileEntry[] | null
   filesLoading: boolean
   fileError: string | null
+  cancelRequested: boolean
 }
 
 interface JobStoreState {
@@ -131,10 +132,12 @@ interface JobStoreValue {
   appendLog: (message: string, level?: JobLogLevel) => void
   markCurrentJobCompleted: (message?: string | null, patch?: Partial<QueueJob>) => void
   markCurrentJobFailed: (message?: string | null, patch?: Partial<QueueJob>) => void
+  markCurrentJobCanceled: (message?: string | null, patch?: Partial<QueueJob>) => void
   cancelQueuedJob: (jobId: string) => boolean
   loadFilesForCurrentJob: () => Promise<void>
   toggleCurrentJobFileSelection: (path: string) => void
   startTranslationForCurrentJob: (options: StartTranslationOptions) => Promise<TranslationJobStatus>
+  requestCancelCurrentJob: () => Promise<boolean>
 }
 
 const JobStoreContext = createContext<JobStoreValue | undefined>(undefined)
@@ -191,6 +194,7 @@ const prepareJobForActivation = (job: QueueJob): QueueJob => ({
   files: null,
   filesLoading: false,
   fileError: null,
+  cancelRequested: false,
 })
 
 const createJob = (input: EnqueueJobInput): QueueJob => ({
@@ -218,6 +222,7 @@ const createJob = (input: EnqueueJobInput): QueueJob => ({
   files: null,
   filesLoading: false,
   fileError: null,
+  cancelRequested: false,
 })
 
 const promoteNextJobState = (previous: JobStoreState): JobStoreState => {
@@ -281,6 +286,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         ...patch,
         status: 'completed',
         progress: 100,
+        cancelRequested: patch?.cancelRequested ?? prev.currentJob.cancelRequested,
         logs,
         lastUpdated: Date.now(),
       }
@@ -306,6 +312,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         ...patch,
         status: 'failed',
         progress: patch?.progress ?? prev.currentJob.progress,
+        cancelRequested: patch?.cancelRequested ?? prev.currentJob.cancelRequested,
         logs,
         lastUpdated: Date.now(),
       }
@@ -319,6 +326,35 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       return promoteNextJobState(baseState)
     })
   }, [])
+
+  const markCurrentJobCanceled = useCallback(
+    (message?: string | null, patch?: Partial<QueueJob>) => {
+      const entry = message ? createLogEntry('info', message) : null
+      setState((prev) => {
+        if (!prev.currentJob) return prev
+
+        const logs = entry ? [...prev.currentJob.logs, entry] : prev.currentJob.logs
+        const canceledJob: QueueJob = {
+          ...prev.currentJob,
+          ...patch,
+          status: 'canceled',
+          progress: patch?.progress ?? prev.currentJob.progress,
+          cancelRequested: patch?.cancelRequested ?? true,
+          logs,
+          lastUpdated: Date.now(),
+        }
+
+        const baseState: JobStoreState = {
+          ...prev,
+          currentJob: null,
+          completedJobs: [...prev.completedJobs, canceledJob],
+        }
+
+        return promoteNextJobState(baseState)
+      })
+    },
+    [],
+  )
 
   const enqueueJob = useCallback((input: EnqueueJobInput): EnqueueJobResult => {
     let result: EnqueueJobResult | null = null
@@ -401,6 +437,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         ...job,
         status: 'canceled',
         lastUpdated: Date.now(),
+        cancelRequested: false,
       }
 
       cancelled = true
@@ -414,6 +451,67 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
     return cancelled
   }, [])
+
+  const requestCancelCurrentJob = useCallback(async () => {
+    const activeJob = state.currentJob
+    if (!activeJob) {
+      return false
+    }
+
+    if (activeJob.cancelRequested) {
+      return true
+    }
+
+    setState((prev) => {
+      if (!prev.currentJob || prev.currentJob.jobId !== activeJob.jobId) {
+        return prev
+      }
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          cancelRequested: true,
+          lastUpdated: Date.now(),
+        },
+      }
+    })
+
+    appendLog('현재 작업 중단을 요청했습니다.')
+
+    if (!isTauri()) {
+      return true
+    }
+
+    const backendJobId = activeJob.backendJobId
+    if (!backendJobId) {
+      return true
+    }
+
+    try {
+      await invoke('cancel_translation_job', { jobId: backendJobId })
+      return true
+    } catch (error) {
+      console.error('번역 작업 중단 요청에 실패했습니다.', error)
+      appendLog('작업 중단 요청에 실패했습니다. 다시 시도해 주세요.', 'error')
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.jobId !== activeJob.jobId) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            cancelRequested: false,
+            lastUpdated: Date.now(),
+          },
+        }
+      })
+
+      return false
+    }
+  }, [appendLog, state.currentJob])
 
   const toggleCurrentJobFileSelection = useCallback((path: string) => {
     setState((prev) => {
@@ -656,6 +754,23 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
       const progress = clampProgress(Math.round(status.progress * 100))
 
+      if (status.state === 'canceled') {
+        markCurrentJobCanceled(status.message ?? null, {
+          backendJobId: status.job_id,
+          translator: status.translator,
+          message: status.message,
+          preview: status.preview,
+          queueSnapshot: status.queue,
+          rateLimiter: status.rate_limiter,
+          qualityGates: status.quality_gates,
+          pipeline: status.pipeline,
+          progress,
+          cancelRequested: status.cancel_requested,
+          targetLanguage,
+        })
+        return status
+      }
+
       if (status.state === 'completed') {
         markCurrentJobCompleted(status.message ?? null, {
           backendJobId: status.job_id,
@@ -667,6 +782,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           qualityGates: status.quality_gates,
           pipeline: status.pipeline,
           progress,
+          cancelRequested: status.cancel_requested,
           targetLanguage,
         })
         return status
@@ -683,6 +799,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           qualityGates: status.quality_gates,
           pipeline: status.pipeline,
           progress,
+          cancelRequested: status.cancel_requested,
           targetLanguage,
         })
         return status
@@ -712,6 +829,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             pipeline: status.pipeline,
             progress,
             status: status.state,
+            cancelRequested: status.cancel_requested,
             selectedFiles: [...options.selectedFiles],
             sourceLanguageGuess: options.sourceLanguageGuess ?? null,
             targetLanguage,
@@ -723,7 +841,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
       return status
     },
-    [markCurrentJobCompleted, markCurrentJobFailed, state.currentJob],
+    [markCurrentJobCanceled, markCurrentJobCompleted, markCurrentJobFailed, state.currentJob],
   )
 
   useEffect(() => {
@@ -754,6 +872,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           qualityGates: status.quality_gates,
           pipeline: status.pipeline,
           progress,
+          cancelRequested: status.cancel_requested,
         })
         return
       }
@@ -769,6 +888,23 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           qualityGates: status.quality_gates,
           pipeline: status.pipeline,
           progress,
+          cancelRequested: status.cancel_requested,
+        })
+        return
+      }
+
+      if (status.state === 'canceled') {
+        markCurrentJobCanceled(status.message ?? null, {
+          backendJobId: payload.job_id,
+          translator: status.translator,
+          message: status.message,
+          preview: status.preview,
+          queueSnapshot: status.queue,
+          rateLimiter: status.rate_limiter,
+          qualityGates: status.quality_gates,
+          pipeline: status.pipeline,
+          progress,
+          cancelRequested: status.cancel_requested,
         })
         return
       }
@@ -800,6 +936,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             pipeline: status.pipeline,
             progress,
             status: status.state,
+            cancelRequested: status.cancel_requested,
             logs,
             lastUpdated: Date.now(),
           },
@@ -823,7 +960,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         dispose()
       }
     }
-  }, [markCurrentJobCompleted, markCurrentJobFailed])
+  }, [markCurrentJobCanceled, markCurrentJobCompleted, markCurrentJobFailed])
 
   const value = useMemo<JobStoreValue>(
     () => ({
@@ -835,10 +972,12 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       appendLog,
       markCurrentJobCompleted,
       markCurrentJobFailed,
+      markCurrentJobCanceled,
       cancelQueuedJob,
       loadFilesForCurrentJob,
       toggleCurrentJobFileSelection,
       startTranslationForCurrentJob,
+      requestCancelCurrentJob,
     }),
     [
       state.currentJob,
@@ -849,10 +988,12 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       appendLog,
       markCurrentJobCompleted,
       markCurrentJobFailed,
+      markCurrentJobCanceled,
       cancelQueuedJob,
       loadFilesForCurrentJob,
       toggleCurrentJobFileSelection,
       startTranslationForCurrentJob,
+      requestCancelCurrentJob,
     ],
   )
 

@@ -1,37 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useI18n } from '../i18n/ko'
-import {
-  loadApiKeys,
-  maskApiKey,
-  persistApiKeys,
-  type ApiKeyMap,
-} from '../storage/apiKeyStorage'
+import { maskApiKey } from '../storage/apiKeyStorage'
+import { useSettingsStore, type ProviderId } from '../context/SettingsStore'
 
-const providers = [
+const providers: Array<{ id: ProviderId; name: string; description: string }> = [
   {
     id: 'gemini',
     name: '제미니',
     description: 'Google 기반 컨텍스트 확장 모델을 사용합니다.',
-    defaultChecked: true,
   },
   {
     id: 'gpt',
     name: 'gpt',
     description: '긴 컨텍스트와 안정적인 번역 품질을 제공합니다.',
-    defaultChecked: true,
   },
   {
     id: 'claude',
     name: '클로드',
     description: '대사 중심 콘텐츠에 적합한 Anthropic 어댑터입니다.',
-    defaultChecked: false,
   },
   {
     id: 'grok',
     name: '그록',
     description: '신속한 반복 실험에 적합한 실험적 제공자입니다.',
-    defaultChecked: false,
   },
 ]
 
@@ -50,11 +42,33 @@ function SettingsView() {
   const [explicitPath, setExplicitPath] = useState(steamPath ?? '')
   const [pathNote, setPathNote] = useState('')
   const [scanStatus, setScanStatus] = useState('')
-  const [apiKeys, setApiKeys] = useState<ApiKeyMap>(() => loadApiKeys())
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [draftApiKey, setDraftApiKey] = useState('')
   const [apiKeyMessage, setApiKeyMessage] = useState('')
   const [apiKeyError, setApiKeyError] = useState<string | null>(null)
+  const [apiKeyStatus, setApiKeyStatus] = useState<Record<string, 'saved' | 'removed'>>({})
+  const {
+    selectedProviders,
+    apiKeys,
+    setProviderEnabled,
+    updateApiKey,
+    concurrency,
+    workerCount,
+    bucketSize,
+    refillMs,
+    enableBackendLogging,
+    enforcePlaceholderGuard,
+    prioritizeDllResources,
+    enableQualitySampling,
+    setConcurrency,
+    setWorkerCount,
+    setBucketSize,
+    setRefillMs,
+    setEnableBackendLogging,
+    setEnforcePlaceholderGuard,
+    setPrioritizeDllResources,
+    setEnableQualitySampling,
+  } = useSettingsStore()
   const libraryNotes = useMemo(
     () =>
       libraries.flatMap((library) =>
@@ -135,6 +149,11 @@ function SettingsView() {
       setDraftApiKey(apiKeys[providerId] ?? '')
       setApiKeyMessage('')
       setApiKeyError(null)
+      setApiKeyStatus((prev) => {
+        const next = { ...prev }
+        delete next[providerId]
+        return next
+      })
     },
     [apiKeys],
   )
@@ -147,49 +166,39 @@ function SettingsView() {
   const handleApiKeySave = useCallback(
     (providerId: string, providerName: string) => {
       const trimmed = draftApiKey.trim()
-      const nextKeys: ApiKeyMap = { ...apiKeys }
-
-      if (trimmed) {
-        nextKeys[providerId] = trimmed
-      } else {
-        delete nextKeys[providerId]
-      }
 
       try {
-        persistApiKeys(nextKeys)
-        setApiKeys(nextKeys)
+        updateApiKey(providerId as ProviderId, trimmed)
         setEditingProvider(null)
         setDraftApiKey('')
         setApiKeyMessage(`${providerName} API 키가 저장되었습니다.`)
         setApiKeyError(null)
+        setApiKeyStatus((prev) => ({ ...prev, [providerId]: 'saved' }))
       } catch (error) {
         console.error('failed to persist API keys', error)
         setApiKeyError('API 키 저장에 실패했습니다. 저장소 접근 권한을 확인하세요.')
       }
     },
-    [apiKeys, draftApiKey],
+    [draftApiKey, updateApiKey],
   )
 
   const handleApiKeyRemove = useCallback(
     (providerId: string, providerName: string) => {
-      const nextKeys: ApiKeyMap = { ...apiKeys }
-      delete nextKeys[providerId]
-
       try {
-        persistApiKeys(nextKeys)
-        setApiKeys(nextKeys)
+        updateApiKey(providerId as ProviderId, null)
         if (editingProvider === providerId) {
           setEditingProvider(null)
           setDraftApiKey('')
         }
         setApiKeyMessage(`${providerName} API 키가 제거되었습니다.`)
         setApiKeyError(null)
+        setApiKeyStatus((prev) => ({ ...prev, [providerId]: 'removed' }))
       } catch (error) {
         console.error('failed to remove API key', error)
         setApiKeyError('API 키를 제거하는 중 문제가 발생했습니다. 다시 시도해 주세요.')
       }
     },
-    [apiKeys, editingProvider],
+    [editingProvider, updateApiKey],
   )
 
   const handleApiKeyCancel = useCallback(() => {
@@ -220,7 +229,8 @@ function SettingsView() {
               >
                 <input
                   type="checkbox"
-                  defaultChecked={provider.defaultChecked}
+                  checked={selectedProviders.includes(provider.id)}
+                  onChange={(event) => setProviderEnabled(provider.id, event.target.checked)}
                   className="h-4 w-4 rounded border-slate-700 bg-slate-900"
                   value={provider.id}
                 />
@@ -290,22 +300,35 @@ function SettingsView() {
                               ? `저장된 키: ${maskApiKey(storedValue)}`
                               : '저장된 키가 없습니다.'}
                           </p>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleStartEditing(provider.id)}
-                              className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200"
-                            >
-                              {storedValue ? '수정' : '추가'}
-                            </button>
-                            {storedValue && (
+                          <div className="flex items-center gap-3">
+                            <div className="flex gap-2">
                               <button
                                 type="button"
-                                onClick={() => handleApiKeyRemove(provider.id, provider.name)}
-                                className="inline-flex items-center justify-center rounded-xl border border-rose-500/60 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:border-rose-400 hover:text-rose-100"
+                                onClick={() => handleStartEditing(provider.id)}
+                                className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200"
                               >
-                                제거
+                                {storedValue ? '수정' : '추가'}
                               </button>
+                              {storedValue && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleApiKeyRemove(provider.id, provider.name)}
+                                  className="inline-flex items-center justify-center rounded-xl border border-rose-500/60 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:border-rose-400 hover:text-rose-100"
+                                >
+                                  제거
+                                </button>
+                              )}
+                            </div>
+                            {apiKeyStatus[provider.id] && (
+                              <span
+                                className={`text-[11px] ${
+                                  apiKeyStatus[provider.id] === 'saved'
+                                    ? 'text-emerald-300'
+                                    : 'text-slate-400'
+                                }`}
+                              >
+                                {apiKeyStatus[provider.id] === 'saved' ? '저장됨' : '제거됨'}
+                              </span>
                             )}
                           </div>
                         </>
@@ -384,8 +407,9 @@ function SettingsView() {
               <span>{limitTexts.concurrency}</span>
               <input
                 type="number"
-                defaultValue={3}
+                value={concurrency}
                 min={1}
+                onChange={(event) => setConcurrency(Number(event.target.value))}
                 className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
               />
               <p className="text-xs text-slate-500">{limitTexts.hints.concurrency}</p>
@@ -394,8 +418,9 @@ function SettingsView() {
               <span>{limitTexts.workers}</span>
               <input
                 type="number"
-                defaultValue={2}
+                value={workerCount}
                 min={1}
+                onChange={(event) => setWorkerCount(Number(event.target.value))}
                 className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
               />
               <p className="text-xs text-slate-500">{limitTexts.hints.workers}</p>
@@ -404,8 +429,9 @@ function SettingsView() {
               <span>{limitTexts.bucket}</span>
               <input
                 type="number"
-                defaultValue={5}
+                value={bucketSize}
                 min={1}
+                onChange={(event) => setBucketSize(Number(event.target.value))}
                 className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
               />
               <p className="text-xs text-slate-500">{limitTexts.hints.bucket}</p>
@@ -414,9 +440,10 @@ function SettingsView() {
               <span>{limitTexts.refillMs}</span>
               <input
                 type="number"
-                defaultValue={750}
+                value={refillMs}
                 min={100}
                 step={50}
+                onChange={(event) => setRefillMs(Number(event.target.value))}
                 className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
               />
               <p className="text-xs text-slate-500">{limitTexts.hints.refillMs}</p>
@@ -429,19 +456,39 @@ function SettingsView() {
           <div className="mt-4 space-y-4 text-sm text-slate-300">
             <label className="flex items-center justify-between gap-3">
               <span>백엔드 상세 로그 남기기</span>
-              <input type="checkbox" className="h-4 w-4 rounded border-slate-700 bg-slate-900" />
+              <input
+                type="checkbox"
+                checked={enableBackendLogging}
+                onChange={(event) => setEnableBackendLogging(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
             </label>
             <label className="flex items-center justify-between gap-3">
               <span>플레이스홀더 일치 검증 강제</span>
-              <input type="checkbox" defaultChecked className="h-4 w-4 rounded border-slate-700 bg-slate-900" />
+              <input
+                type="checkbox"
+                checked={enforcePlaceholderGuard}
+                onChange={(event) => setEnforcePlaceholderGuard(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
             </label>
             <label className="flex items-center justify-between gap-3">
               <span>DLL 리소스 우선 처리 (Mono.Cecil)</span>
-              <input type="checkbox" defaultChecked className="h-4 w-4 rounded border-slate-700 bg-slate-900" />
+              <input
+                type="checkbox"
+                checked={prioritizeDllResources}
+                onChange={(event) => setPrioritizeDllResources(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
             </label>
             <label className="flex items-center justify-between gap-3">
               <span>품질 샘플링(5%) 수행</span>
-              <input type="checkbox" defaultChecked className="h-4 w-4 rounded border-slate-700 bg-slate-900" />
+              <input
+                type="checkbox"
+                checked={enableQualitySampling}
+                onChange={(event) => setEnableQualitySampling(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
             </label>
           </div>
         </section>

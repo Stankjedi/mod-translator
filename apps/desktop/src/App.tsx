@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { LibraryProvider, useLibraryContext } from './context/LibraryContext'
 import { JobStoreProvider } from './context/JobStore'
+import { SettingsStoreProvider } from './context/SettingsStore'
 import DashboardView from './views/DashboardView'
 import ModManagementView from './views/ModManagementView'
 import ProgressView from './views/ProgressView'
@@ -143,7 +144,9 @@ function App() {
   return (
     <LibraryProvider>
       <JobStoreProvider>
-        <AppShell />
+        <SettingsStoreProvider>
+          <AppShell />
+        </SettingsStoreProvider>
       </JobStoreProvider>
     </LibraryProvider>
   )

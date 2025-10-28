@@ -3,6 +3,7 @@ import type { MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobStore } from '../context/JobStore'
+import Chip, { type ChipTone } from '../components/Chip'
 import type { JobState, LibraryStatus } from '../types/core'
 
 const languageLabels: Record<string, string> = {
@@ -292,6 +293,7 @@ function ModManagementView() {
                 const isCurrent = currentJob?.modId === mod.id
                 const isRunning = isCurrent && jobInfo?.status === 'running'
                 const isQueued = jobInfo?.status === 'queued'
+                const isCancelRequested = isCurrent && currentJob?.cancelRequested
                 const queuePosition = jobInfo?.position
                 const statusNote = isRunning
                   ? `실행 중 · ${jobInfo?.progress ?? 0}%`
@@ -301,11 +303,23 @@ function ModManagementView() {
                       : '대기열 정보 없음'
                     : '대기열에 없음'
                 const jobId = jobInfo?.jobId
-                const badgeLabel = isRunning
-                  ? '진행 중'
-                  : isQueued
-                    ? `대기 중${queuePosition ? ` ${queuePosition}번` : ''}`
-                    : '예약 가능'
+                const badgeLabel = isCancelRequested
+                  ? '중단 요청됨'
+                  : isRunning
+                    ? '진행 중'
+                    : isQueued
+                      ? `대기 중${queuePosition ? ` ${queuePosition}번` : ''}`
+                      : '예약 가능'
+                const badgeTone: ChipTone = isCancelRequested
+                  ? 'warning'
+                  : isRunning
+                    ? 'primary'
+                    : isQueued
+                      ? 'info'
+                      : 'idle'
+                const note = isCancelRequested
+                  ? `사용자 중단 요청 진행 중 · ${jobInfo?.progress ?? 0}%`
+                  : statusNote
 
                 return (
                   <tr
@@ -357,10 +371,8 @@ function ModManagementView() {
                     </td>
                     <td className="px-4 py-4 text-xs text-slate-300">
                       <div className="flex flex-col gap-2">
-                        <span className="inline-flex w-fit items-center rounded-full border border-slate-700 px-3 py-1 text-[11px] font-semibold text-slate-200">
-                          {badgeLabel}
-                        </span>
-                        <p className="text-[11px] text-slate-500">{statusNote}</p>
+                        <Chip label={badgeLabel} tone={badgeTone} />
+                        <p className="text-[11px] text-slate-500">{note}</p>
                         {isQueued && jobId && (
                           <button
                             type="button"

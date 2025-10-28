@@ -17,6 +17,7 @@ pub fn run() {
             mod_translator_core::scan_steam_library,
             mod_translator_core::list_mod_files,
             mod_translator_core::start_translation_job,
+            mod_translator_core::cancel_translation_job,
             mod_translator_core::get_translation_job_status
         ])
         .run(tauri::generate_context!())
