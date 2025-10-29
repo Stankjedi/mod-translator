@@ -412,7 +412,7 @@ async fn run_translation_job(
                     file_errors.push(TranslationFileErrorEntry {
                         file_path: segment.relative_path.clone(),
                         message: file_message.clone(),
-                        code: Some("TRANSLATE_FAILED".into()),
+                        code: Some(error_code_for(&error).into()),
                     });
                     emit_progress(
                         &app,
@@ -756,12 +756,33 @@ fn percentage(processed: u32, total: u32) -> f32 {
     ((processed as f32) / (total as f32) * 100.0).clamp(0.0, 100.0)
 }
 
+fn error_code_for(error: &TranslationError) -> &'static str {
+    match error {
+        TranslationError::InvalidApiKey { .. } => "INVALID_API_KEY",
+        TranslationError::ModelForbiddenOrNotFound { .. } => "MODEL_FORBIDDEN",
+        TranslationError::QuotaOrPlanError { .. } => "QUOTA_OR_PLAN",
+        TranslationError::NetworkOrHttp { .. } => "NETWORK_ERROR",
+        TranslationError::PlaceholderMismatch(_) => "PLACEHOLDER_MISMATCH",
+    }
+}
+
 fn format_translation_error(segment: &Segment, error: &TranslationError) -> String {
     let location = format!("{} {}행", segment.relative_path, segment.line_number);
     match error {
-        TranslationError::ModelNotFound { model_id, .. } => format!(
-            "{location} 번역 중 선택한 모델 '{model_id}'을(를) 사용할 수 없습니다. 제공자가 404를 반환했습니다."
-        ),
+        TranslationError::InvalidApiKey { message, .. } => {
+            format!("{location} 번역 중 API 키가 거부되었습니다: {message}")
+        }
+        TranslationError::ModelForbiddenOrNotFound {
+            model_id, message, ..
+        } => {
+            format!("{location} 번역 중 모델 '{model_id}'을(를) 사용할 수 없습니다: {message}")
+        }
+        TranslationError::QuotaOrPlanError { message, .. } => {
+            format!("{location} 번역 중 요금제/할당량 제한으로 실패했습니다: {message}")
+        }
+        TranslationError::NetworkOrHttp { message, .. } => {
+            format!("{location} 번역 중 네트워크 오류가 발생했습니다: {message}")
+        }
         TranslationError::PlaceholderMismatch(missing) => {
             if missing.is_empty() {
                 format!("{location} 번역 중 자리표시자 검증에 실패했습니다.")
@@ -769,17 +790,25 @@ fn format_translation_error(segment: &Segment, error: &TranslationError) -> Stri
                 format!("{location} 번역 중 자리표시자 누락: {}", missing.join(", "))
             }
         }
-        TranslationError::Provider(message) | TranslationError::Http(message) => {
-            format!("{location} 번역 중 오류 발생: {}", message)
-        }
     }
 }
 
 fn format_file_error_message(segment: &Segment, error: &TranslationError) -> String {
     match error {
-        TranslationError::ModelNotFound { model_id, .. } => format!(
-            "The selected model '{model_id}' is not available for this API key or API version (provider returned 404)."
-        ),
-        _ => format_translation_error(segment, error),
+        TranslationError::ModelForbiddenOrNotFound {
+            model_id, message, ..
+        } => {
+            format!("The selected model '{model_id}' is not available for this API key: {message}",)
+        }
+        TranslationError::InvalidApiKey { message, .. } => {
+            format!("The API key was rejected by the provider: {message}")
+        }
+        TranslationError::QuotaOrPlanError { message, .. } => {
+            format!("Translation failed due to plan or quota limits: {message}")
+        }
+        TranslationError::NetworkOrHttp { message, .. } => {
+            format!("Translation request failed due to a network or HTTP error: {message}")
+        }
+        TranslationError::PlaceholderMismatch(_) => format_translation_error(segment, error),
     }
 }

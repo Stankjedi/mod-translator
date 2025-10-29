@@ -3,6 +3,7 @@ const STORAGE_KEY = 'mod_translator_settings_v1'
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
 export type ProviderModelMap = Record<ProviderId, string>
+export type ProviderModelListMap = Record<ProviderId, string[]>
 
 export const PROVIDER_MODEL_OPTIONS: Record<ProviderId, string[]> = {
   gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
@@ -18,10 +19,18 @@ export const DEFAULT_PROVIDER_MODELS: ProviderModelMap = {
   grok: 'grok-2-1212',
 }
 
+const DEFAULT_VERIFIED_MODELS: ProviderModelListMap = {
+  gemini: [],
+  gpt: [],
+  claude: [],
+  grok: [],
+}
+
 export interface PersistedSettings {
   selectedProviders: ProviderId[]
   activeProviderId: ProviderId
   providerModels: ProviderModelMap
+  verifiedModels: ProviderModelListMap
   concurrency: number
   workerCount: number
   bucketSize: number
@@ -36,6 +45,7 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   selectedProviders: ['gemini', 'gpt', 'claude', 'grok'],
   activeProviderId: 'gemini',
   providerModels: { ...DEFAULT_PROVIDER_MODELS },
+  verifiedModels: { ...DEFAULT_VERIFIED_MODELS },
   concurrency: 3,
   workerCount: 2,
   bucketSize: 5,
@@ -89,6 +99,31 @@ function sanitizeProviderModels(value: unknown): ProviderModelMap {
   return defaults
 }
 
+function sanitizeVerifiedModels(value: unknown): ProviderModelListMap {
+  const defaults = { ...DEFAULT_VERIFIED_MODELS }
+  if (!value || typeof value !== 'object') {
+    return defaults
+  }
+
+  const entries = value as Record<string, unknown>
+  ;(Object.keys(defaults) as ProviderId[]).forEach((provider) => {
+    const raw = entries[provider]
+    if (!Array.isArray(raw)) {
+      return
+    }
+    const normalized = Array.from(
+      new Set(
+        raw
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter((item): item is string => Boolean(item)),
+      ),
+    ).sort((a, b) => a.localeCompare(b))
+    defaults[provider] = normalized
+  })
+
+  return defaults
+}
+
 function sanitizeActiveProvider(
   value: unknown,
   selectedProviders: ProviderId[],
@@ -130,6 +165,7 @@ export function loadPersistedSettings(): PersistedSettings {
 
     const selectedProviders = sanitizeProviders(parsed.selectedProviders)
     const providerModels = sanitizeProviderModels(parsed.providerModels)
+    const verifiedModels = sanitizeVerifiedModels(parsed.verifiedModels)
 
     return {
       selectedProviders,
@@ -138,6 +174,7 @@ export function loadPersistedSettings(): PersistedSettings {
         selectedProviders,
       ),
       providerModels,
+      verifiedModels,
       concurrency: sanitizeNumber(parsed.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
       workerCount: sanitizeNumber(parsed.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
       bucketSize: sanitizeNumber(parsed.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),
@@ -176,6 +213,19 @@ export function persistSettings(settings: PersistedSettings) {
     sanitizedProviders,
   )
   const providerModels = sanitizeProviderModels(settings.providerModels)
+  const verifiedModels = sanitizeVerifiedModels(settings.verifiedModels)
+
+  ;(Object.keys(providerModels) as ProviderId[]).forEach((provider) => {
+    const verifiedList = verifiedModels[provider] ?? []
+    const current = providerModels[provider]
+    if (verifiedList.length === 0) {
+      providerModels[provider] = DEFAULT_PROVIDER_MODELS[provider]
+      return
+    }
+    if (!verifiedList.includes(current)) {
+      providerModels[provider] = verifiedList[0] ?? DEFAULT_PROVIDER_MODELS[provider]
+    }
+  })
 
   const payload: PersistedSettings = {
     ...DEFAULT_PERSISTED_SETTINGS,
@@ -183,6 +233,7 @@ export function persistSettings(settings: PersistedSettings) {
     selectedProviders: sanitizedProviders,
     activeProviderId,
     providerModels,
+    verifiedModels,
     concurrency: sanitizeNumber(settings.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
     workerCount: sanitizeNumber(settings.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
     bucketSize: sanitizeNumber(settings.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),

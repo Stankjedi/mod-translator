@@ -266,7 +266,7 @@ function ProgressView() {
     if (!providerId || !isKnownProviderId(providerId)) {
       return null
     }
-    const status: KeyValidationState = keyValidation[providerId] ?? 'unknown'
+    const status: KeyValidationState | null = keyValidation[providerId] ?? null
     if (status === 'valid') {
       return null
     }
@@ -278,7 +278,7 @@ function ProgressView() {
         return `${providerName} API 키가 "권한 없음" 상태입니다. 계정 권한을 조정한 뒤 다시 시도하세요.`
       case 'network_error':
         return `${providerName} API 키 상태를 확인하지 못했습니다(네트워크 오류). 오프라인 상태에서는 번역이 실패할 수 있습니다.`
-      case 'unknown':
+      case null:
       default:
         return `${providerName} API 키 상태가 확인되지 않았습니다. 설정 화면에서 "키 정상" 상태인지 확인한 뒤 번역을 시작하세요.`
     }

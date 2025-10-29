@@ -26,16 +26,11 @@ interface SettingsState extends PersistedSettings {
   apiKeys: ApiKeyMap
 }
 
-export type KeyValidationState =
-  | 'unknown'
-  | 'valid'
-  | 'unauthorized'
-  | 'forbidden'
-  | 'network_error'
+export type KeyValidationState = 'valid' | 'unauthorized' | 'forbidden' | 'network_error'
 
 interface SettingsStoreValue extends SettingsState {
   providerModelOptions: Record<ProviderId, string[]>
-  keyValidation: Record<ProviderId, KeyValidationState>
+  keyValidation: Record<ProviderId, KeyValidationState | null>
   validationInFlight: Record<ProviderId, boolean>
   modelDiscoveryState: Record<ProviderId, ProviderModelDiscoveryState>
   providerModelNotices: Record<ProviderId, string | null>
@@ -45,7 +40,11 @@ interface SettingsStoreValue extends SettingsState {
   setProviderModel: (provider: ProviderId, modelId: string) => void
   updateApiKey: (provider: ProviderId, value: string | null) => void
   refreshProviderModels: (provider: ProviderId, apiKeyOverride?: string) => Promise<void>
-  revalidateProviderKey: (provider: ProviderId, apiKeyOverride?: string) => Promise<KeyValidationState>
+  revalidateProviderKey: (
+    provider: ProviderId,
+    apiKeyOverride?: string,
+    modelOverride?: string,
+  ) => Promise<KeyValidationState>
   setConcurrency: (value: number) => void
   setWorkerCount: (value: number) => void
   setBucketSize: (value: number) => void
@@ -72,6 +71,30 @@ const SettingsStoreContext = createContext<SettingsStoreValue | undefined>(undef
 
 const PROVIDER_ORDER: ProviderId[] = ['gemini', 'gpt', 'claude', 'grok']
 
+function normalizeModelList(models: string[]): string[] {
+  const normalized = Array.from(
+    new Set(
+      models
+        .map((model) => (typeof model === 'string' ? model.trim() : ''))
+        .filter((model): model is string => Boolean(model)),
+    ),
+  )
+  normalized.sort((a, b) => a.localeCompare(b))
+  return normalized
+}
+
+function mergeModelOptions(primary: string[] | undefined, fallback: string[]): string[] {
+  const normalizedPrimary = normalizeModelList(primary ?? [])
+  const normalizedFallback = normalizeModelList(fallback)
+  const extras = normalizedFallback.filter((model) => !normalizedPrimary.includes(model))
+  return [...normalizedPrimary, ...extras]
+}
+
+function arraysEqual(a: string[], b: string[]) {
+  if (a.length !== b.length) return false
+  return a.every((value, index) => value === b[index])
+}
+
 const clampPositiveInteger = (value: number, minimum: number) => {
   if (!Number.isFinite(value)) return minimum
   return Math.max(minimum, Math.round(value))
@@ -84,16 +107,16 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     apiKeys: loadApiKeys(),
   }))
   const [providerModelOptions, setProviderModelOptions] = useState<Record<ProviderId, string[]>>({
-    gemini: [...PROVIDER_MODEL_OPTIONS.gemini],
-    gpt: [...PROVIDER_MODEL_OPTIONS.gpt],
-    claude: [...PROVIDER_MODEL_OPTIONS.claude],
-    grok: [...PROVIDER_MODEL_OPTIONS.grok],
+    gemini: mergeModelOptions(state.verifiedModels.gemini, PROVIDER_MODEL_OPTIONS.gemini),
+    gpt: mergeModelOptions(state.verifiedModels.gpt, PROVIDER_MODEL_OPTIONS.gpt),
+    claude: mergeModelOptions(state.verifiedModels.claude, PROVIDER_MODEL_OPTIONS.claude),
+    grok: mergeModelOptions(state.verifiedModels.grok, PROVIDER_MODEL_OPTIONS.grok),
   })
-  const [keyValidation, setKeyValidation] = useState<Record<ProviderId, KeyValidationState>>({
-    gemini: 'unknown',
-    gpt: 'unknown',
-    claude: 'unknown',
-    grok: 'unknown',
+  const [keyValidation, setKeyValidation] = useState<Record<ProviderId, KeyValidationState | null>>({
+    gemini: null,
+    gpt: null,
+    claude: null,
+    grok: null,
   })
   const [validationInFlight, setValidationInFlight] = useState<Record<ProviderId, boolean>>({
     gemini: false,
@@ -116,7 +139,10 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     grok: null,
   })
   const validationLocks = useRef<
-    Record<ProviderId, { promise: Promise<ProviderValidationResponse>; key: string } | null>
+    Record<
+      ProviderId,
+      { promise: Promise<ProviderValidationResponse>; key: string; model: string } | null
+    >
   >({
     gemini: null,
     gpt: null,
@@ -125,12 +151,17 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
   })
 
   const runValidation = useCallback(
-    async (provider: ProviderId, apiKeyOverride?: string): Promise<ProviderValidationResponse> => {
+    async (
+      provider: ProviderId,
+      apiKeyOverride?: string,
+      modelOverride?: string,
+    ): Promise<ProviderValidationResponse> => {
       const trimmed = (apiKeyOverride ?? state.apiKeys[provider] ?? '').trim()
+      const modelHint = (modelOverride ?? state.providerModels[provider] ?? '').trim()
 
       const lock = validationLocks.current[provider]
       if (lock) {
-        if (lock.key === trimmed) {
+        if (lock.key === trimmed && lock.model === modelHint) {
           return lock.promise
         }
         await lock.promise
@@ -154,6 +185,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
           const response = await invoke<ProviderValidationResponse>('validate_api_key_and_list_models', {
             provider,
             apiKey: trimmed,
+            modelHint: modelHint || undefined,
           })
           return response
         } catch (error) {
@@ -162,7 +194,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         }
       })()
 
-      validationLocks.current[provider] = { promise: task, key: trimmed }
+      validationLocks.current[provider] = { promise: task, key: trimmed, model: modelHint }
 
       const result = await task
 
@@ -174,19 +206,53 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
 
       return result
     },
-    [setValidationInFlight, state.apiKeys],
+    [setValidationInFlight, state.apiKeys, state.providerModels],
   )
+
+  useEffect(() => {
+    setProviderModelOptions((prev) => {
+      const next: Record<ProviderId, string[]> = {
+        gemini: mergeModelOptions(state.verifiedModels.gemini, PROVIDER_MODEL_OPTIONS.gemini),
+        gpt: mergeModelOptions(state.verifiedModels.gpt, PROVIDER_MODEL_OPTIONS.gpt),
+        claude: mergeModelOptions(state.verifiedModels.claude, PROVIDER_MODEL_OPTIONS.claude),
+        grok: mergeModelOptions(state.verifiedModels.grok, PROVIDER_MODEL_OPTIONS.grok),
+      }
+
+      const changed = (Object.keys(next) as ProviderId[]).some((provider) => {
+        const previous = prev[provider] ?? []
+        const current = next[provider]
+        return !arraysEqual(previous, current)
+      })
+
+      return changed ? next : prev
+    })
+  }, [state.verifiedModels])
+
+  useEffect(() => {
+    setModelDiscoveryState((prev) => {
+      let changed = false
+      const next: Record<ProviderId, ProviderModelDiscoveryState> = { ...prev }
+
+      ;(Object.keys(state.verifiedModels) as ProviderId[]).forEach((provider) => {
+        const hasVerified = (state.verifiedModels[provider] ?? []).length > 0
+        if (!hasVerified) {
+          return
+        }
+        const current = prev[provider]
+        if (!current || current.source !== 'live' || current.networkError) {
+          next[provider] = { source: 'live', networkError: false }
+          changed = true
+        }
+      })
+
+      return changed ? next : prev
+    })
+  }, [state.verifiedModels])
 
   const applyValidationResult = useCallback(
     (provider: ProviderId, response: ProviderValidationResponse) => {
       const fallback = [...PROVIDER_MODEL_OPTIONS[provider]]
-      const normalized = Array.from(
-        new Set(response.models.map((model) => (typeof model === 'string' ? model.trim() : '')).filter(Boolean)),
-      )
-      if (normalized.length > 0) {
-        normalized.sort((a, b) => a.localeCompare(b))
-      }
-      const options = normalized.length > 0 ? normalized : fallback
+      const normalized = normalizeModelList(response.models)
       const status = response.validationStatus
 
       setKeyValidation((prev) => ({
@@ -194,61 +260,119 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         [provider]: status,
       }))
 
+      let mergedVerified: string[] = []
+      let combinedOptions: string[] = mergeModelOptions([], fallback)
+      let nextModelValue: string | null = null
+      let forbiddenModel: string | null = null
+
+      setState((prev) => {
+        const currentVerified = prev.verifiedModels[provider] ?? []
+        const currentModel = prev.providerModels[provider] ?? ''
+
+        let nextVerified = currentVerified
+        let nextModel = currentModel
+
+        if (status === 'valid' && normalized.length > 0) {
+          const merged = normalizeModelList([...currentVerified, ...normalized])
+          nextVerified = merged
+        }
+
+        const allowedOptions = mergeModelOptions(nextVerified, fallback)
+        if (status === 'forbidden' && currentModel && !nextVerified.includes(currentModel)) {
+          forbiddenModel = currentModel
+        }
+
+        if (status === 'valid' && normalized.length > 0 && !nextVerified.includes(nextModel)) {
+          nextModel = allowedOptions[0] ?? ''
+        }
+
+        if (!allowedOptions.includes(nextModel)) {
+          nextModel = allowedOptions[0] ?? ''
+        }
+
+        const verifiedChanged = !arraysEqual(nextVerified, currentVerified)
+        const modelChanged = nextModel !== currentModel
+
+        mergedVerified = nextVerified
+        combinedOptions = allowedOptions
+        nextModelValue = nextModel
+
+        if (!verifiedChanged && !modelChanged) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          providerModels: modelChanged
+            ? {
+                ...prev.providerModels,
+                [provider]: nextModel,
+              }
+            : prev.providerModels,
+          verifiedModels: verifiedChanged
+            ? {
+                ...prev.verifiedModels,
+                [provider]: nextVerified,
+              }
+            : prev.verifiedModels,
+        }
+      })
+
+      setProviderModelOptions((prev) => ({
+        ...prev,
+        [provider]: combinedOptions,
+      }))
+
       setModelDiscoveryState((prev) => ({
         ...prev,
         [provider]: {
-          source: normalized.length > 0 ? 'live' : 'fallback',
+          source: mergedVerified.length > 0 ? 'live' : 'fallback',
           networkError: status === 'network_error',
         },
       }))
 
-      setProviderModelOptions((prev) => ({
-        ...prev,
-        [provider]: options,
-      }))
+      setProviderModelNotices((prev) => {
+        if (status === 'valid') {
+          if (prev[provider] === null) {
+            return prev
+          }
+          return {
+            ...prev,
+            [provider]: null,
+          }
+        }
 
-      let autoSelection: { next: string; previous: string } | null = null
-      setState((prev) => {
-        const current = prev.providerModels[provider] ?? ''
-        if (options.includes(current)) {
+        if (status === 'forbidden') {
+          const modelName = forbiddenModel ?? nextModelValue ?? ''
+          const notice = modelName
+            ? `${modelName} 모델은 현재 API 키로 사용할 수 없습니다. 다른 모델을 선택해 주세요.`
+            : '선택한 모델을 사용할 수 없습니다. 다른 모델을 선택해 주세요.'
+          return {
+            ...prev,
+            [provider]: notice,
+          }
+        }
+
+        if (prev[provider] === null) {
           return prev
         }
-        const nextModel = options[0] ?? ''
-        if (!nextModel || current === nextModel) {
-          return prev
+
+        if (status === 'unauthorized' || status === 'network_error') {
+          return {
+            ...prev,
+            [provider]: null,
+          }
         }
-        autoSelection = { next: nextModel, previous: current }
-        return {
-          ...prev,
-          providerModels: {
-            ...prev.providerModels,
-            [provider]: nextModel,
-          },
-        }
+
+        return prev
       })
-
-      if (autoSelection) {
-        const { next, previous } = autoSelection
-        const message = previous
-          ? `${previous || '이전'} 모델을 사용할 수 없어 ${next} 모델로 자동 변경했습니다.`
-          : `${next} 모델이 자동으로 선택되었습니다.`
-        setProviderModelNotices((prev) => ({
-          ...prev,
-          [provider]: message,
-        }))
-      } else if (status === 'valid') {
-        setProviderModelNotices((prev) => ({
-          ...prev,
-          [provider]: null,
-        }))
-      }
     },
-    [setKeyValidation, setModelDiscoveryState, setProviderModelNotices, setProviderModelOptions],
+    [setModelDiscoveryState, setProviderModelNotices, setProviderModelOptions, setState],
   )
 
   const revalidateProviderKey = useCallback(
-    async (provider: ProviderId, apiKeyOverride?: string) => {
-      const result = await runValidation(provider, apiKeyOverride)
+    async (provider: ProviderId, apiKeyOverride?: string, modelOverride?: string) => {
+      const result = await runValidation(provider, apiKeyOverride, modelOverride)
       applyValidationResult(provider, result)
       return result.validationStatus
     },
@@ -403,15 +527,15 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
           delete nextKeys[provider]
         }
 
-      try {
-        persistApiKeys(nextKeys)
-        outcome = { success: true }
-        return { ...prev, apiKeys: nextKeys }
-      } catch (error) {
-        outcome = { success: false, error }
-        return prev
-      }
-    })
+        try {
+          persistApiKeys(nextKeys)
+          outcome = { success: true }
+          return { ...prev, apiKeys: nextKeys }
+        } catch (error) {
+          outcome = { success: false, error }
+          return prev
+        }
+      })
 
       if (!outcome.success) {
         throw outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error))
