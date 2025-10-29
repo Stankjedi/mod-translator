@@ -84,6 +84,7 @@ export interface TranslationJob {
   files: JobFileEntry[] | null
   filesLoading: boolean
   fileError: string | null
+  fileErrors: Record<string, string>
   selectedFiles: string[]
   sourceLanguageGuess: string
   targetLanguage: string
@@ -177,6 +178,58 @@ const guessSourceLanguageFromFiles = (entries: JobFileEntry[]): string => {
   return DEFAULT_SOURCE_LANGUAGE
 }
 
+const collectFileErrorUpdates = (
+  payload: TranslationProgressEventPayload,
+): { name: string; message: string | null }[] => {
+  const updates: { name: string; message: string | null }[] = []
+
+  if (typeof payload.fileName === 'string' && payload.fileName) {
+    updates.push({ name: payload.fileName, message: payload.fileError ?? null })
+  }
+
+  if (Array.isArray(payload.fileErrors)) {
+    for (const entry of payload.fileErrors) {
+      if (entry && typeof entry.fileName === 'string' && entry.fileName) {
+        updates.push({ name: entry.fileName, message: entry.fileError ?? null })
+      }
+    }
+  }
+
+  return updates
+}
+
+const applyFileErrorUpdates = (
+  job: TranslationJob,
+  payload: TranslationProgressEventPayload,
+): Record<string, string> => {
+  const updates = collectFileErrorUpdates(payload)
+  if (!updates.length) {
+    return job.fileErrors
+  }
+
+  let mutated = false
+  const next = { ...job.fileErrors }
+
+  for (const { name, message } of updates) {
+    if (!name) {
+      continue
+    }
+
+    if (message && message.trim()) {
+      const trimmedMessage = message.trim()
+      if (next[name] !== trimmedMessage) {
+        next[name] = trimmedMessage
+        mutated = true
+      }
+    } else if (Object.prototype.hasOwnProperty.call(next, name)) {
+      delete next[name]
+      mutated = true
+    }
+  }
+
+  return mutated ? next : job.fileErrors
+}
+
 const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   ...job,
   status: 'pending',
@@ -188,6 +241,7 @@ const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   files: null,
   filesLoading: false,
   fileError: null,
+  fileErrors: {},
   selectedFiles: [...job.selectedFiles],
 })
 
@@ -214,6 +268,7 @@ const createJob = (
   files: null,
   filesLoading: false,
   fileError: null,
+  fileErrors: {},
   selectedFiles: [],
   sourceLanguageGuess: DEFAULT_SOURCE_LANGUAGE,
   targetLanguage: DEFAULT_TARGET_LANGUAGE,
@@ -228,16 +283,19 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     completedJobs: [],
   })
   const activeJobIdRef = useRef<string | null>(null)
+  const currentJobRef = useRef<TranslationJob | null>(null)
 
   useEffect(() => {
     activeJobIdRef.current = state.currentJob?.id ?? null
-  }, [state.currentJob?.id])
+    currentJobRef.current = state.currentJob
+  }, [state.currentJob])
 
   const finalizeCurrentJobAndPromote = useCallback(
     (
       nextState: Extract<JobState, 'completed' | 'failed' | 'canceled'>,
       finalLogEntry: JobLogEntry | null,
       finalStats: FinalizeStats,
+      fileErrorsSnapshot: Record<string, string>,
     ) => {
       setState((prev) => {
         if (!prev.currentJob) {
@@ -254,6 +312,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           logs: finalLogEntry
             ? [...prev.currentJob.logs, finalLogEntry]
             : prev.currentJob.logs,
+          fileErrors: { ...fileErrorsSnapshot },
           completedAt: Date.now(),
         }
 
@@ -707,6 +766,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           const logs = trimmedLog
             ? [...prev.currentJob.logs, createLogEntry('info', trimmedLog)]
             : prev.currentJob.logs
+          const fileErrors = applyFileErrorUpdates(prev.currentJob, payload)
 
           return {
             ...prev,
@@ -717,6 +777,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               translatedCount: payload.translatedCount,
               totalCount: payload.totalCount,
               logs,
+              fileErrors,
             },
           }
         })
@@ -733,12 +794,21 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             ? '번역 중 오류가 발생했습니다.'
             : '작업이 중단되었습니다.')
         const finalLogEntry = text ? createLogEntry(level, text) : null
+        const currentJob = currentJobRef.current
+        let fileErrorsSnapshot: Record<string, string> = {}
+        if (currentJob && currentJob.id === payload.jobId) {
+          const updatedFileErrors = applyFileErrorUpdates(currentJob, payload)
+          if (updatedFileErrors !== currentJob.fileErrors) {
+            currentJobRef.current = { ...currentJob, fileErrors: updatedFileErrors }
+          }
+          fileErrorsSnapshot = { ...updatedFileErrors }
+        }
 
         finalizeCurrentJobAndPromote(payload.state, finalLogEntry, {
           progress: clampProgress(Math.round(payload.progress)),
           translatedCount: payload.translatedCount,
           totalCount: payload.totalCount,
-        })
+        }, fileErrorsSnapshot)
       }
     },
     [finalizeCurrentJobAndPromote],
