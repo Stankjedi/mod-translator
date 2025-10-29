@@ -25,8 +25,6 @@ pub enum TranslationError {
 pub enum ProviderId {
     Gemini,
     Gpt,
-    Claude,
-    Grok,
 }
 
 impl ProviderId {
@@ -34,8 +32,6 @@ impl ProviderId {
         match self {
             ProviderId::Gemini => "Gemini",
             ProviderId::Gpt => "GPT",
-            ProviderId::Claude => "Claude",
-            ProviderId::Grok => "Grok",
         }
     }
 }
@@ -47,8 +43,6 @@ impl TryFrom<&str> for ProviderId {
         match value.to_lowercase().as_str() {
             "gemini" => Ok(ProviderId::Gemini),
             "gpt" => Ok(ProviderId::Gpt),
-            "claude" => Ok(ProviderId::Claude),
-            "grok" => Ok(ProviderId::Grok),
             _ => Err(()),
         }
     }
@@ -86,12 +80,6 @@ pub async fn translate_text(
         }
         ProviderId::Gpt => {
             translate_with_gpt(client, api_key, normalized_input, source_lang, target_lang).await?
-        }
-        ProviderId::Claude | ProviderId::Grok => {
-            return Err(TranslationError::Provider(format!(
-                "{} provider is not implemented yet",
-                provider.label()
-            )))
         }
     };
 
