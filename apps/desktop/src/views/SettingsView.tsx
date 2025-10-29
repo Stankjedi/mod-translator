@@ -15,6 +15,16 @@ const providers: Array<{ id: ProviderId; name: string; description: string }> = 
     name: 'GPT',
     description: '긴 컨텍스트와 안정적인 번역 품질을 제공합니다.',
   },
+  {
+    id: 'claude',
+    name: '클로드',
+    description: 'Anthropic의 분석 중심 모델로 세밀한 표현에 강합니다.',
+  },
+  {
+    id: 'grok',
+    name: '그록',
+    description: 'xAI 모델을 통해 빠른 응답과 유연한 문체를 제공합니다.',
+  },
 ]
 
 function SettingsView() {

@@ -42,6 +42,8 @@ const LANGUAGE_PRIORITY = [
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   gemini: '제미니',
   gpt: 'GPT',
+  claude: '클로드',
+  grok: '그록',
 }
 
 const createId = () =>

@@ -25,6 +25,8 @@ pub enum TranslationError {
 pub enum ProviderId {
     Gemini,
     Gpt,
+    Claude,
+    Grok,
 }
 
 impl ProviderId {
@@ -32,6 +34,8 @@ impl ProviderId {
         match self {
             ProviderId::Gemini => "Gemini",
             ProviderId::Gpt => "GPT",
+            ProviderId::Claude => "Claude",
+            ProviderId::Grok => "Grok",
         }
     }
 }
@@ -43,6 +47,8 @@ impl TryFrom<&str> for ProviderId {
         match value.to_lowercase().as_str() {
             "gemini" => Ok(ProviderId::Gemini),
             "gpt" => Ok(ProviderId::Gpt),
+            "claude" => Ok(ProviderId::Claude),
+            "grok" => Ok(ProviderId::Grok),
             _ => Err(()),
         }
     }
@@ -80,6 +86,13 @@ pub async fn translate_text(
         }
         ProviderId::Gpt => {
             translate_with_gpt(client, api_key, normalized_input, source_lang, target_lang).await?
+        }
+        ProviderId::Claude => {
+            translate_with_claude(client, api_key, normalized_input, source_lang, target_lang)
+                .await?
+        }
+        ProviderId::Grok => {
+            translate_with_grok(client, api_key, normalized_input, source_lang, target_lang).await?
         }
     };
 
@@ -183,6 +196,110 @@ async fn translate_with_gpt(
     Ok(text)
 }
 
+async fn translate_with_claude(
+    client: &Client,
+    api_key: &str,
+    input: &str,
+    source_lang: &str,
+    target_lang: &str,
+) -> Result<String, TranslationError> {
+    let prompt = format!(
+        "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders exactly as they appear, including tokens like {{0}} or %1$s. Return only the translated text.\n\n{input}"
+    );
+
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-sonnet-20240620",
+            "max_tokens": 1024,
+            "system": "You are a professional game localization translator. Preserve formatting and placeholders exactly.",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.2
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(TranslationError::Http(format!(
+            "Claude API {}: {}",
+            status, body
+        )));
+    }
+
+    let parsed: AnthropicResponse = response.json().await?;
+    let text = parsed
+        .content
+        .unwrap_or_default()
+        .into_iter()
+        .find_map(|block| block.text)
+        .ok_or_else(|| {
+            TranslationError::Provider("Claude 응답에서 결과를 찾지 못했습니다.".into())
+        })?;
+
+    Ok(text)
+}
+
+async fn translate_with_grok(
+    client: &Client,
+    api_key: &str,
+    input: &str,
+    source_lang: &str,
+    target_lang: &str,
+) -> Result<String, TranslationError> {
+    let prompt = format!(
+        "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders such as {{0}} or %1$s exactly as they appear. Return only the translated text.\n\n{input}"
+    );
+
+    let response = client
+        .post("https://api.x.ai/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": "grok-2-1212",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a professional game localization translator. Preserve formatting and placeholders exactly."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.2
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(TranslationError::Http(format!(
+            "Grok API {}: {}",
+            status, body
+        )));
+    }
+
+    let parsed: OpenAiResponse = response.json().await?;
+    let text = parsed
+        .choices
+        .into_iter()
+        .find_map(|choice| choice.message.and_then(|message| message.content))
+        .ok_or_else(|| {
+            TranslationError::Provider("Grok 응답에서 결과를 찾지 못했습니다.".into())
+        })?;
+
+    Ok(text)
+}
+
 #[derive(Debug, Deserialize)]
 struct GeminiResponse {
     candidates: Option<Vec<GeminiCandidate>>,
@@ -216,6 +333,17 @@ struct OpenAiChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiMessage {
     content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicResponse {
+    content: Option<Vec<AnthropicContentBlock>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicContentBlock {
+    #[serde(default)]
+    text: Option<String>,
 }
 
 fn collect_placeholders(input: &str) -> Vec<String> {
