@@ -6,6 +6,11 @@ import {
   type JobFileEntry,
   providerLabelFor,
 } from '../context/JobStore'
+import {
+  useSettingsStore,
+  type KeyValidationState,
+  type ProviderId,
+} from '../context/SettingsStore'
 import type { JobState } from '../types/core'
 import Chip, { type ChipTone } from '../ui/Chip'
 
@@ -59,6 +64,12 @@ const DEFAULT_TARGET_LANGUAGE = 'ko'
 const EMPTY_JOB_FILES: JobFileEntry[] = []
 const EMPTY_SELECTED_FILES: string[] = []
 
+const KNOWN_PROVIDERS: ProviderId[] = ['gemini', 'gpt', 'claude', 'grok']
+
+function isKnownProviderId(value: string): value is ProviderId {
+  return KNOWN_PROVIDERS.includes(value as ProviderId)
+}
+
 function resolveLanguageLabel(code: string) {
   const normalized = code.toLowerCase()
   return languageBadges[normalized] ?? normalized.toUpperCase()
@@ -76,7 +87,9 @@ function ProgressView() {
     requestCancelCurrentJob,
     updateCurrentJobTargetLanguage,
     updateCurrentJobOutputOverride,
+    dismissCurrentJob,
   } = useJobStore()
+  const { keyValidation } = useSettingsStore()
   const [selectionError, setSelectionError] = useState<string | null>(null)
   const [isStarting, setIsStarting] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
@@ -245,6 +258,32 @@ function ProgressView() {
     }
   }, [])
 
+  const startWarning = useMemo(() => {
+    if (!currentJob || currentJob.status !== 'pending') {
+      return null
+    }
+    const providerId = currentJob.providerId
+    if (!providerId || !isKnownProviderId(providerId)) {
+      return null
+    }
+    const status: KeyValidationState = keyValidation[providerId] ?? 'unknown'
+    if (status === 'valid') {
+      return null
+    }
+    const providerName = providerLabelFor(providerId)
+    switch (status) {
+      case 'unauthorized':
+        return `${providerName} API 키가 "인증 실패" 상태입니다. 설정에서 키를 다시 확인하지 않으면 번역이 401 오류로 중단될 수 있습니다.`
+      case 'forbidden':
+        return `${providerName} API 키가 "권한 없음" 상태입니다. 계정 권한을 조정한 뒤 다시 시도하세요.`
+      case 'network_error':
+        return `${providerName} API 키 상태를 확인하지 못했습니다(네트워크 오류). 오프라인 상태에서는 번역이 실패할 수 있습니다.`
+      case 'unknown':
+      default:
+        return `${providerName} API 키 상태가 확인되지 않았습니다. 설정 화면에서 "키 정상" 상태인지 확인한 뒤 번역을 시작하세요.`
+    }
+  }, [currentJob, keyValidation])
+
   if (!currentJob) {
     return (
       <div className="mx-auto flex max-w-3xl flex-col items-center justify-center gap-6 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-10 text-center text-slate-300">
@@ -272,10 +311,21 @@ function ProgressView() {
       : statusTones[currentJob.status]
   const progressBarClass = progressClasses[currentJob.status]
   const clampedProgress = Math.max(0, Math.min(100, Math.round(currentJob.progress)))
-  const disableSelection = fileLoading || isJobExecuting || isStarting || currentJob.cancelRequested
+  const isTerminalState =
+    currentJob.status === 'completed' ||
+    currentJob.status === 'failed' ||
+    currentJob.status === 'canceled' ||
+    currentJob.status === 'partial_success'
+  const disableSelection =
+    fileLoading ||
+    isJobExecuting ||
+    isStarting ||
+    currentJob.cancelRequested ||
+    currentJob.status !== 'pending'
   const startDisabled =
     disableSelection || currentJob.status !== 'pending' || !selectedFilePaths.length
   const showStopButton = currentJob.status === 'running'
+  const showDismissButton = isTerminalState
   const stopButtonDisabled = currentJob.cancelRequested || currentJob.status !== 'running'
   const stopButtonLabel = currentJob.cancelRequested ? '중단 요청됨…' : '중단'
   const providerDisplay = providerLabelFor(currentJob.providerId)
@@ -297,7 +347,7 @@ function ProgressView() {
         <div>
           <h2 className="text-xl font-semibold text-white">번역 진행 상황</h2>
           <p className="text-sm text-slate-400">
-            현재 활성화된 작업에 대한 진행률과 로그를 표시합니다. 대기 중인 작업은 자동으로 이어집니다.
+            현재 활성화된 작업에 대한 진행률과 로그를 표시합니다. 현재 작업을 닫으면 대기열에 있는 다음 작업이 준비됩니다.
           </p>
           {cancelError && <p className="mt-2 text-xs text-rose-300">{cancelError}</p>}
         </div>
@@ -313,6 +363,15 @@ function ProgressView() {
               className="inline-flex items-center justify-center rounded-full bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-rose-600/30 transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {stopButtonLabel}
+            </button>
+          )}
+          {showDismissButton && (
+            <button
+              type="button"
+              onClick={dismissCurrentJob}
+              className="inline-flex items-center justify-center rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-brand-400 hover:text-white"
+            >
+              작업 닫기
             </button>
           )}
         </div>
@@ -464,6 +523,9 @@ function ProgressView() {
                     />
                   </label>
                 </div>
+                {startWarning && (
+                  <p className="text-[11px] text-rose-200 sm:text-xs">{startWarning}</p>
+                )}
                 <button
                   type="button"
                   onClick={handleStart}

@@ -156,6 +156,7 @@ interface JobStoreValue {
   requestCancelCurrentJob: () => Promise<boolean>
   updateCurrentJobTargetLanguage: (value: string) => void
   updateCurrentJobOutputOverride: (value: string) => void
+  dismissCurrentJob: () => void
 }
 
 const JobStoreContext = createContext<JobStoreValue | undefined>(undefined)
@@ -172,6 +173,11 @@ const createLogEntry = (level: JobLogLevel, text: string): JobLogEntry => ({
   text,
   level,
 })
+
+const isTerminalStatus = (
+  status: JobState,
+): status is Extract<JobState, 'completed' | 'failed' | 'canceled' | 'partial_success'> =>
+  status === 'completed' || status === 'failed' || status === 'canceled' || status === 'partial_success'
 
 const guessSourceLanguageFromFiles = (entries: JobFileEntry[]): string => {
   const hints = entries
@@ -345,7 +351,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [providerModels])
 
-  const finalizeCurrentJobAndPromote = useCallback(
+  const finalizeCurrentJob = useCallback(
     (
       nextState: Extract<JobState, 'completed' | 'failed' | 'canceled' | 'partial_success'>,
       finalLogEntry: JobLogEntry | null,
@@ -378,19 +384,18 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           completedAt: Date.now(),
         }
 
-        const [nextJob, ...restQueue] = prev.queue
-        let newCurrentJob: TranslationJob | null = null
+        const existingIndex = prev.completedJobs.findIndex((job) => job.id === finishedJob.id)
+        const completedJobs =
+          existingIndex === -1
+            ? [...prev.completedJobs, finishedJob]
+            : prev.completedJobs.map((job, index) => (index === existingIndex ? finishedJob : job))
 
-        if (nextJob) {
-          newCurrentJob = prepareJobForActivation(nextJob)
-        }
-
-        activeJobIdRef.current = newCurrentJob?.id ?? null
+        activeJobIdRef.current = finishedJob.id
 
         return {
-          currentJob: newCurrentJob,
-          queue: restQueue,
-          completedJobs: [...prev.completedJobs, finishedJob],
+          ...prev,
+          currentJob: finishedJob,
+          completedJobs,
         }
       })
     },
@@ -658,7 +663,11 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
   const toggleCurrentJobFileSelection = useCallback((path: string) => {
     setState((prev) => {
-      if (!prev.currentJob || !prev.currentJob.files) {
+      if (
+        !prev.currentJob ||
+        prev.currentJob.status !== 'pending' ||
+        !prev.currentJob.files
+      ) {
         return prev
       }
 
@@ -935,7 +944,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         const sanitizedLog = containsSensitiveData ? '' : trimmedLog
         const text = sanitizedLog || fallbackText
         const finalLogEntry = text ? createLogEntry(level, text) : null
-        finalizeCurrentJobAndPromote(
+        finalizeCurrentJob(
           status,
           finalLogEntry,
           {
@@ -949,8 +958,31 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         )
       }
     },
-    [finalizeCurrentJobAndPromote],
+    [finalizeCurrentJob],
   )
+
+  const dismissCurrentJob = useCallback(() => {
+    setState((prev) => {
+      if (!prev.currentJob || !isTerminalStatus(prev.currentJob.status)) {
+        return prev
+      }
+
+      const [nextJob, ...restQueue] = prev.queue
+      let nextCurrent: TranslationJob | null = null
+
+      if (nextJob) {
+        nextCurrent = prepareJobForActivation(nextJob)
+      }
+
+      activeJobIdRef.current = nextCurrent?.id ?? null
+
+      return {
+        ...prev,
+        currentJob: nextCurrent,
+        queue: restQueue,
+      }
+    })
+  }, [])
 
   useEffect(() => {
     if (!isTauri()) {
@@ -1000,6 +1032,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       requestCancelCurrentJob,
       updateCurrentJobTargetLanguage,
       updateCurrentJobOutputOverride,
+      dismissCurrentJob,
     }),
     [
       state.currentJob,
@@ -1014,6 +1047,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       requestCancelCurrentJob,
       updateCurrentJobTargetLanguage,
       updateCurrentJobOutputOverride,
+      dismissCurrentJob,
     ],
   )
 

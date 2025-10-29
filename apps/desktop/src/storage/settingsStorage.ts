@@ -81,7 +81,7 @@ function sanitizeProviderModels(value: unknown): ProviderModelMap {
   (Object.keys(defaults) as ProviderId[]).forEach((provider) => {
     const raw = entries[provider]
     const normalized = typeof raw === 'string' ? raw.trim() : ''
-    if (normalized && PROVIDER_MODEL_OPTIONS[provider].includes(normalized)) {
+    if (normalized) {
       defaults[provider] = normalized
     }
   })
