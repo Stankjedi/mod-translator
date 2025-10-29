@@ -4,8 +4,9 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
@@ -16,7 +17,8 @@ static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationFileInput {
-    pub path: String,
+    pub relative_path: String,
+    pub mod_install_path: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -28,23 +30,38 @@ pub struct StartTranslationJobPayload {
     pub files: Vec<TranslationFileInput>,
     pub source_lang: Option<String>,
     pub target_lang: Option<String>,
+    pub output_override_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationProgressEventPayload {
     pub job_id: String,
-    pub state: String,
-    pub progress: f32,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_pct: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub log: Option<String>,
-    pub translated_count: u32,
-    pub total_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translated_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_success: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_errors: Option<Vec<TranslationFileErrorEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_written: Option<LastWrittenInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastWrittenInfo {
+    pub source_relative_path: String,
+    pub output_absolute_path: String,
+    pub output_relative_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,9 +75,21 @@ pub struct TranslationFileErrorEntry {
 
 #[derive(Debug)]
 struct Segment {
-    file_path: String,
+    file_index: usize,
+    relative_path: String,
     line_index: usize,
+    line_number: usize,
     text: String,
+    prefix: String,
+    suffix: String,
+}
+
+struct FileContext {
+    relative_path: String,
+    mod_install_path: PathBuf,
+    lines: Vec<String>,
+    translated_lines: Vec<Option<String>>,
+    had_trailing_newline: bool,
 }
 
 #[tauri::command]
@@ -73,6 +102,7 @@ pub fn start_translation_job(
     sourceLang: Option<String>,
     targetLang: Option<String>,
     files: Vec<TranslationFileInput>,
+    outputOverrideDir: Option<String>,
 ) -> Result<(), String> {
     let payload = StartTranslationJobPayload {
         job_id: jobId,
@@ -81,6 +111,7 @@ pub fn start_translation_job(
         files,
         source_lang: sourceLang,
         target_lang: targetLang,
+        output_override_dir: outputOverrideDir,
     };
     if payload.files.is_empty() {
         return Err("번역할 파일을 하나 이상 선택해야 합니다.".into());
@@ -93,14 +124,15 @@ pub fn start_translation_job(
                 &app,
                 TranslationProgressEventPayload {
                     job_id: payload.job_id.clone(),
-                    state: "failed".into(),
-                    progress: 0.0,
+                    status: "failed".into(),
+                    progress_pct: Some(0.0),
                     log: Some(format!("지원하지 않는 번역기: {}", payload.provider)),
-                    translated_count: 0,
-                    total_count: 0,
+                    translated_count: Some(0),
+                    total_count: Some(0),
                     file_name: None,
                     file_success: None,
                     file_errors: None,
+                    last_written: None,
                 },
             );
             return Err(format!("지원하지 않는 번역기: {}", payload.provider));
@@ -113,14 +145,15 @@ pub fn start_translation_job(
             &app,
             TranslationProgressEventPayload {
                 job_id: payload.job_id.clone(),
-                state: "failed".into(),
-                progress: 0.0,
+                status: "failed".into(),
+                progress_pct: Some(0.0),
                 log: Some("API 키가 설정되지 않았습니다.".into()),
-                translated_count: 0,
-                total_count: 0,
+                translated_count: Some(0),
+                total_count: Some(0),
                 file_name: None,
                 file_success: None,
                 file_errors: None,
+                last_written: None,
             },
         );
         return Err("선택한 번역기의 API 키를 설정해 주세요.".into());
@@ -198,226 +231,491 @@ async fn run_translation_job(
 ) {
     let source_lang = payload.source_lang.as_deref().unwrap_or("auto").to_string();
     let target_lang = payload.target_lang.as_deref().unwrap_or("ko").to_string();
+    let override_root = payload
+        .output_override_dir
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
 
-    let mut segments = Vec::new();
-    let mut last_file_name: Option<String> = None;
-    let mut last_file_success: Option<bool> = None;
+    let mut file_contexts: Vec<FileContext> = Vec::new();
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut file_errors: Vec<TranslationFileErrorEntry> = Vec::new();
+
     for file in &payload.files {
-        let path = PathBuf::from(&file.path);
-        let content = match fs::read_to_string(&path) {
+        let relative_path = PathBuf::from(&file.relative_path);
+        let mod_root_raw = PathBuf::from(&file.mod_install_path);
+        let mod_root = mod_root_raw.canonicalize().unwrap_or(mod_root_raw.clone());
+        let source_file_path = mod_root.join(&relative_path);
+
+        let content = match fs::read_to_string(&source_file_path) {
             Ok(value) => value,
             Err(err) => {
-                let message = format!("{} 파일을 읽는 중 오류가 발생했습니다: {}", file.path, err);
-                last_file_name = Some(file.path.clone());
-                last_file_success = Some(false);
-                let error_entry = TranslationFileErrorEntry {
-                    file_path: file.path.clone(),
-                    message: message.clone(),
-                    code: None,
-                };
-                emit_progress(
-                    &app,
-                    TranslationProgressEventPayload {
-                        job_id: payload.job_id.clone(),
-                        state: "failed".into(),
-                        progress: 0.0,
-                        log: Some(message),
-                        translated_count: 0,
-                        total_count: 0,
-                        file_name: last_file_name.clone(),
-                        file_success: last_file_success,
-                        file_errors: Some(vec![error_entry]),
-                    },
+                let message = format!(
+                    "Failed to read {}: {}",
+                    source_file_path.to_string_lossy(),
+                    err
                 );
-                return;
+                file_errors.push(TranslationFileErrorEntry {
+                    file_path: file.relative_path.clone(),
+                    message,
+                    code: Some("READ_FAILED".into()),
+                });
+                continue;
             }
         };
 
-        for (index, line) in content.lines().enumerate() {
+        let had_trailing_newline = content.ends_with('\n');
+        let lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+
+        let mut context = FileContext {
+            relative_path: file.relative_path.clone(),
+            mod_install_path: mod_root,
+            lines,
+            translated_lines: Vec::new(),
+            had_trailing_newline,
+        };
+        context.translated_lines = vec![None; context.lines.len()];
+
+        let file_index = file_contexts.len();
+        for (line_index, line) in context.lines.iter().enumerate() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
+
+            let prefix_len = line.find(trimmed).unwrap_or(0);
+            let suffix_start = prefix_len + trimmed.len();
+            let prefix = line[..prefix_len].to_string();
+            let suffix = line[suffix_start..].to_string();
+
             segments.push(Segment {
-                file_path: file.path.clone(),
-                line_index: index + 1,
+                file_index,
+                relative_path: context.relative_path.clone(),
+                line_index,
+                line_number: line_index + 1,
                 text: trimmed.to_string(),
+                prefix,
+                suffix,
             });
         }
+
+        file_contexts.push(context);
     }
 
-    let total_segments = segments.len();
+    let total_segments = segments.len() as u32;
+    let mut processed_segments: u32 = 0;
+    let mut last_file_name: Option<String> = None;
+    let mut last_file_success: Option<bool> = None;
+
     emit_progress(
         &app,
         TranslationProgressEventPayload {
             job_id: payload.job_id.clone(),
-            state: "running".into(),
-            progress: 0.0,
+            status: "running".into(),
+            progress_pct: Some(0.0),
             log: Some("번역을 준비하는 중입니다.".into()),
-            translated_count: 0,
-            total_count: total_segments as u32,
-            file_name: last_file_name.clone(),
-            file_success: last_file_success,
-            file_errors: None,
+            translated_count: Some(0),
+            total_count: Some(total_segments),
+            file_name: None,
+            file_success: None,
+            file_errors: clone_errors(&file_errors),
+            last_written: None,
         },
     );
 
-    if total_segments == 0 {
-        emit_progress(
-            &app,
-            TranslationProgressEventPayload {
-                job_id: payload.job_id.clone(),
-                state: "completed".into(),
-                progress: 100.0,
-            log: Some("번역할 문자열이 없습니다.".into()),
-            translated_count: 0,
-            total_count: 0,
-            file_name: last_file_name.clone(),
-            file_success: last_file_success,
-            file_errors: None,
-        },
-    );
-    return;
-}
-
-    let client = match Client::builder().build() {
-        Ok(client) => client,
-        Err(err) => {
-            emit_progress(
-                &app,
-                TranslationProgressEventPayload {
-                    job_id: payload.job_id.clone(),
-                    state: "failed".into(),
-                    progress: 0.0,
-                log: Some("HTTP 클라이언트를 초기화하지 못했습니다.".into()),
-                translated_count: 0,
-                total_count: 0,
-                file_name: last_file_name.clone(),
-                file_success: last_file_success,
-                file_errors: None,
-            },
-        );
-        return;
-    }
-    };
-
-    let total_segments = total_segments as u32;
-    for (index, segment) in segments.iter().enumerate() {
-        let processed = index as u32;
-        if cancel_flag.load(Ordering::SeqCst) {
-            emit_progress(
-                &app,
-                TranslationProgressEventPayload {
-                    job_id: payload.job_id.clone(),
-                    state: "canceled".into(),
-                    progress: percentage(processed, total_segments),
-                log: Some("사용자가 작업을 중단했습니다.".into()),
-                translated_count: processed,
-                total_count: total_segments,
-                file_name: last_file_name.clone(),
-                file_success: last_file_success,
-                file_errors: None,
-            },
-        );
-        return;
-    }
-
-        let translated = match translate_text(
-            &client,
-            provider,
-            &api_key,
-            &segment.text,
-            &source_lang,
-            &target_lang,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(error) => {
-                let message = format_translation_error(segment, error);
-                let progress = percentage(processed, total_segments);
-                last_file_name = Some(segment.file_path.clone());
-                last_file_success = Some(false);
-                let error_entry = TranslationFileErrorEntry {
-                    file_path: segment.file_path.clone(),
-                    message: message.clone(),
-                    code: None,
-                };
+    if total_segments > 0 {
+        let client = match Client::builder().build() {
+            Ok(client) => client,
+            Err(_err) => {
                 emit_progress(
                     &app,
                     TranslationProgressEventPayload {
                         job_id: payload.job_id.clone(),
-                        state: "failed".into(),
-                        progress,
-                        log: Some(message),
-                        translated_count: processed,
-                        total_count: total_segments,
+                        status: "failed".into(),
+                        progress_pct: Some(0.0),
+                        log: Some("HTTP 클라이언트를 초기화하지 못했습니다.".into()),
+                        translated_count: Some(0),
+                        total_count: Some(total_segments),
                         file_name: last_file_name.clone(),
                         file_success: last_file_success,
-                        file_errors: Some(vec![error_entry]),
+                        file_errors: clone_errors(&file_errors),
+                        last_written: None,
                     },
                 );
                 return;
             }
         };
 
-        last_file_name = Some(segment.file_path.clone());
-        last_file_success = Some(true);
+        for (index, segment) in segments.iter().enumerate() {
+            let processed = index as u32;
 
-        let progress = percentage(processed + 1, total_segments);
-        emit_progress(
-            &app,
-            TranslationProgressEventPayload {
-                job_id: payload.job_id.clone(),
-                state: "running".into(),
-                progress,
-                log: Some(format!(
-                    "{} {}행 번역 완료",
-                    segment.file_path, segment.line_index
-                )),
-                translated_count: processed + 1,
-                total_count: total_segments,
-                file_name: last_file_name.clone(),
-                file_success: last_file_success,
-                file_errors: None,
-            },
-        );
+            if cancel_flag.load(Ordering::SeqCst) {
+                emit_progress(
+                    &app,
+                    TranslationProgressEventPayload {
+                        job_id: payload.job_id.clone(),
+                        status: "canceled".into(),
+                        progress_pct: Some(percentage(processed, total_segments)),
+                        log: Some("사용자가 작업을 중단했습니다.".into()),
+                        translated_count: Some(processed),
+                        total_count: Some(total_segments),
+                        file_name: last_file_name.clone(),
+                        file_success: last_file_success,
+                        file_errors: clone_errors(&file_errors),
+                        last_written: None,
+                    },
+                );
+                return;
+            }
 
-        if cancel_flag.load(Ordering::SeqCst) {
+            let translated = match translate_text(
+                &client,
+                provider,
+                &api_key,
+                &segment.text,
+                &source_lang,
+                &target_lang,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let message = format_translation_error(segment, error);
+                    last_file_name = Some(segment.relative_path.clone());
+                    last_file_success = Some(false);
+                    file_errors.push(TranslationFileErrorEntry {
+                        file_path: segment.relative_path.clone(),
+                        message: message.clone(),
+                        code: Some("TRANSLATE_FAILED".into()),
+                    });
+                    emit_progress(
+                        &app,
+                        TranslationProgressEventPayload {
+                            job_id: payload.job_id.clone(),
+                            status: "failed".into(),
+                            progress_pct: Some(percentage(processed, total_segments)),
+                            log: Some(message),
+                            translated_count: Some(processed),
+                            total_count: Some(total_segments),
+                            file_name: last_file_name.clone(),
+                            file_success: last_file_success,
+                            file_errors: clone_errors(&file_errors),
+                            last_written: None,
+                        },
+                    );
+                    return;
+                }
+            };
+
+            if let Some(context) = file_contexts.get_mut(segment.file_index) {
+                if segment.line_index < context.translated_lines.len() {
+                    let replacement = format!("{}{}{}", segment.prefix, translated, segment.suffix);
+                    context.translated_lines[segment.line_index] = Some(replacement);
+                }
+            }
+
+            processed_segments = processed + 1;
+            last_file_name = Some(segment.relative_path.clone());
+            last_file_success = Some(true);
+
             emit_progress(
                 &app,
                 TranslationProgressEventPayload {
                     job_id: payload.job_id.clone(),
-                    state: "canceled".into(),
-                    progress,
-                    log: Some("사용자가 작업을 중단했습니다.".into()),
-                translated_count: processed + 1,
-                total_count: total_segments,
+                    status: "running".into(),
+                    progress_pct: Some(percentage(processed_segments, total_segments)),
+                    log: Some(format!(
+                        "{} {}행 번역 완료",
+                        segment.relative_path, segment.line_number
+                    )),
+                    translated_count: Some(processed_segments),
+                    total_count: Some(total_segments),
+                    file_name: last_file_name.clone(),
+                    file_success: last_file_success,
+                    file_errors: clone_errors(&file_errors),
+                    last_written: None,
+                },
+            );
+        }
+    }
+
+    if cancel_flag.load(Ordering::SeqCst) {
+        emit_progress(
+            &app,
+            TranslationProgressEventPayload {
+                job_id: payload.job_id.clone(),
+                status: "canceled".into(),
+                progress_pct: Some(percentage(processed_segments, total_segments)),
+                log: Some("사용자가 작업을 중단했습니다.".into()),
+                translated_count: Some(processed_segments),
+                total_count: Some(total_segments),
                 file_name: last_file_name.clone(),
                 file_success: last_file_success,
-                file_errors: None,
+                file_errors: clone_errors(&file_errors),
+                last_written: None,
             },
         );
         return;
     }
 
-        let _ = translated; // Placeholder for future persistence.
+    for context in &mut file_contexts {
+        if cancel_flag.load(Ordering::SeqCst) {
+            emit_progress(
+                &app,
+                TranslationProgressEventPayload {
+                    job_id: payload.job_id.clone(),
+                    status: "canceled".into(),
+                    progress_pct: Some(percentage(processed_segments, total_segments)),
+                    log: Some("사용자가 작업을 중단했습니다.".into()),
+                    translated_count: Some(processed_segments),
+                    total_count: Some(total_segments),
+                    file_name: last_file_name.clone(),
+                    file_success: last_file_success,
+                    file_errors: clone_errors(&file_errors),
+                    last_written: None,
+                },
+            );
+            return;
+        }
+
+        let output_relative = derive_output_relative_path(&context.relative_path, &target_lang);
+        let base_root = override_root
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| context.mod_install_path.clone());
+        let output_absolute_path = base_root.join(&output_relative);
+
+        if let Some(parent_dir) = output_absolute_path.parent() {
+            if let Err(err) = fs::create_dir_all(parent_dir) {
+                let message = format!(
+                    "Failed to write {}: {}",
+                    output_absolute_path.to_string_lossy(),
+                    err
+                );
+                last_file_name = Some(context.relative_path.clone());
+                last_file_success = Some(false);
+                file_errors.push(TranslationFileErrorEntry {
+                    file_path: context.relative_path.clone(),
+                    message: message.clone(),
+                    code: Some("WRITE_FAILED".into()),
+                });
+                emit_progress(
+                    &app,
+                    TranslationProgressEventPayload {
+                        job_id: payload.job_id.clone(),
+                        status: "running".into(),
+                        progress_pct: Some(percentage(processed_segments, total_segments)),
+                        log: Some(message),
+                        translated_count: Some(processed_segments),
+                        total_count: Some(total_segments),
+                        file_name: last_file_name.clone(),
+                        file_success: last_file_success,
+                        file_errors: clone_errors(&file_errors),
+                        last_written: None,
+                    },
+                );
+                continue;
+            }
+        }
+
+        let contents = render_translated_file(context);
+        if let Err(err) = fs::write(&output_absolute_path, contents) {
+            let message = format!(
+                "Failed to write {}: {}",
+                output_absolute_path.to_string_lossy(),
+                err
+            );
+            last_file_name = Some(context.relative_path.clone());
+            last_file_success = Some(false);
+            file_errors.push(TranslationFileErrorEntry {
+                file_path: context.relative_path.clone(),
+                message: message.clone(),
+                code: Some("WRITE_FAILED".into()),
+            });
+            emit_progress(
+                &app,
+                TranslationProgressEventPayload {
+                    job_id: payload.job_id.clone(),
+                    status: "running".into(),
+                    progress_pct: Some(percentage(processed_segments, total_segments)),
+                    log: Some(message),
+                    translated_count: Some(processed_segments),
+                    total_count: Some(total_segments),
+                    file_name: last_file_name.clone(),
+                    file_success: last_file_success,
+                    file_errors: clone_errors(&file_errors),
+                    last_written: None,
+                },
+            );
+            continue;
+        }
+
+        let absolute_display = output_absolute_path
+            .canonicalize()
+            .unwrap_or_else(|_| output_absolute_path.clone())
+            .to_string_lossy()
+            .to_string();
+        let output_relative_display = normalize_relative_display(&output_relative);
+
+        last_file_name = Some(context.relative_path.clone());
+        last_file_success = Some(true);
+
+        emit_progress(
+            &app,
+            TranslationProgressEventPayload {
+                job_id: payload.job_id.clone(),
+                status: "running".into(),
+                progress_pct: Some(percentage(processed_segments, total_segments)),
+                log: Some(format!(
+                    "{} 번역 결과를 저장했습니다.",
+                    context.relative_path
+                )),
+                translated_count: Some(processed_segments),
+                total_count: Some(total_segments),
+                file_name: last_file_name.clone(),
+                file_success: last_file_success,
+                file_errors: clone_errors(&file_errors),
+                last_written: Some(LastWrittenInfo {
+                    source_relative_path: context.relative_path.clone(),
+                    output_absolute_path: absolute_display,
+                    output_relative_path: output_relative_display,
+                }),
+            },
+        );
+    }
+
+    let final_status = if !file_errors.is_empty() {
+        if processed_segments > 0 || total_segments > 0 {
+            "partial_success"
+        } else {
+            "failed"
+        }
+    } else {
+        "completed"
+    };
+    let final_log = if total_segments == 0 && file_errors.is_empty() {
+        "번역할 문자열이 없습니다.".to_string()
+    } else if final_status == "completed" {
+        "번역이 완료되었습니다.".to_string()
+    } else if final_status == "partial_success" {
+        "일부 파일을 번역하거나 저장하지 못했습니다.".to_string()
+    } else {
+        "번역을 완료하지 못했습니다.".to_string()
+    };
+
+    let mut final_progress = if total_segments == 0 {
+        100.0
+    } else {
+        percentage(processed_segments, total_segments)
+    };
+    if final_progress < 100.0 && final_status != "failed" {
+        final_progress = 100.0;
     }
 
     emit_progress(
         &app,
         TranslationProgressEventPayload {
             job_id: payload.job_id,
-            state: "completed".into(),
-            progress: 100.0,
-            log: Some("번역이 완료되었습니다.".into()),
-            translated_count: total_segments,
-            total_count: total_segments,
+            status: final_status.into(),
+            progress_pct: Some(final_progress),
+            log: Some(final_log),
+            translated_count: Some(processed_segments),
+            total_count: Some(total_segments),
             file_name: last_file_name,
             file_success: last_file_success,
-            file_errors: None,
+            file_errors: clone_errors(&file_errors),
+            last_written: None,
         },
     );
+}
+
+fn clone_errors(errors: &[TranslationFileErrorEntry]) -> Option<Vec<TranslationFileErrorEntry>> {
+    if errors.is_empty() {
+        None
+    } else {
+        Some(errors.to_vec())
+    }
+}
+
+fn derive_output_relative_path(relative_path: &str, target_lang: &str) -> PathBuf {
+    let path = Path::new(relative_path);
+    let mut result = PathBuf::new();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            result.push(parent);
+        }
+    }
+
+    let output_name = path
+        .file_name()
+        .map(|name| build_output_filename(name, target_lang))
+        .unwrap_or_else(|| {
+            let lang = sanitized_language_tag(target_lang);
+            format!("translated.{lang}")
+        });
+
+    result.push(output_name);
+    result
+}
+
+fn sanitized_language_tag(target_lang: &str) -> String {
+    let trimmed = target_lang.trim();
+    if trimmed.is_empty() {
+        "translated".to_string()
+    } else {
+        trimmed.to_lowercase()
+    }
+}
+
+fn build_output_filename(source_name: &OsStr, target_lang: &str) -> String {
+    let lang = sanitized_language_tag(target_lang);
+    let temp = PathBuf::from(source_name);
+    let stem = temp.file_stem().and_then(|s| s.to_str());
+    let extension = temp.extension().and_then(|s| s.to_str());
+
+    match (stem, extension) {
+        (Some(stem), Some(ext)) => format!("{stem}.{lang}.{ext}"),
+        (Some(stem), None) => format!("{stem}.{lang}"),
+        (None, Some(ext)) => format!("translated.{lang}.{ext}"),
+        (None, None) => format!("translated.{lang}"),
+    }
+}
+
+fn render_translated_file(context: &FileContext) -> String {
+    if context.lines.is_empty() {
+        return if context.had_trailing_newline {
+            "\n".to_string()
+        } else {
+            String::new()
+        };
+    }
+
+    let mut buffer = String::new();
+    for (index, original_line) in context.lines.iter().enumerate() {
+        if index > 0 {
+            buffer.push('\n');
+        }
+
+        if let Some(replacement) = &context.translated_lines[index] {
+            buffer.push_str(replacement);
+        } else {
+            buffer.push_str(original_line);
+        }
+    }
+
+    if context.had_trailing_newline {
+        buffer.push('\n');
+    }
+
+    buffer
+}
+
+fn normalize_relative_display(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn emit_progress(app: &AppHandle, payload: TranslationProgressEventPayload) {
@@ -434,23 +732,17 @@ fn percentage(processed: u32, total: u32) -> f32 {
 }
 
 fn format_translation_error(segment: &Segment, error: TranslationError) -> String {
+    let location = format!("{} {}행", segment.relative_path, segment.line_number);
     match error {
         TranslationError::PlaceholderMismatch(missing) => {
             if missing.is_empty() {
-                format!(
-                    "{} 번역 중 자리표시자 검증에 실패했습니다.",
-                    segment.file_path
-                )
+                format!("{location} 번역 중 자리표시자 검증에 실패했습니다.")
             } else {
-                format!(
-                    "{} 번역 중 자리표시자 누락: {}",
-                    segment.file_path,
-                    missing.join(", ")
-                )
+                format!("{location} 번역 중 자리표시자 누락: {}", missing.join(", "))
             }
         }
         TranslationError::Provider(message) | TranslationError::Http(message) => {
-            format!("{} 번역 중 오류 발생: {}", segment.file_path, message)
+            format!("{location} 번역 중 오류 발생: {}", message)
         }
     }
 }

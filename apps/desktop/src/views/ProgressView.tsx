@@ -17,6 +17,7 @@ const statusLabels: Record<JobState, string> = {
   completed: '완료됨',
   failed: '실패',
   canceled: '중단됨',
+  partial_success: '부분 성공',
 }
 
 const statusTones: Record<JobState, ChipTone> = {
@@ -25,6 +26,7 @@ const statusTones: Record<JobState, ChipTone> = {
   completed: 'primary',
   failed: 'error',
   canceled: 'warning',
+  partial_success: 'warning',
 }
 
 const progressClasses: Record<JobState, string> = {
@@ -33,6 +35,7 @@ const progressClasses: Record<JobState, string> = {
   completed: 'bg-emerald-500',
   failed: 'bg-rose-500',
   canceled: 'bg-slate-700',
+  partial_success: 'bg-amber-500',
 }
 
 const languageBadges: Record<string, string> = {
@@ -72,12 +75,14 @@ function ProgressView() {
     startTranslationForCurrentJob,
     requestCancelCurrentJob,
     updateCurrentJobTargetLanguage,
+    updateCurrentJobOutputOverride,
   } = useJobStore()
   const [selectionError, setSelectionError] = useState<string | null>(null)
   const [isStarting, setIsStarting] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [openError, setOpenError] = useState<string | null>(null)
   const [targetLanguageDraft, setTargetLanguageDraft] = useState(DEFAULT_TARGET_LANGUAGE)
+  const [outputOverrideDraft, setOutputOverrideDraft] = useState('')
   const activeJobId = currentJob?.id ?? null
   const shouldLoadFiles = Boolean(
     activeJobId && !currentJob?.files && !currentJob?.filesLoading && !currentJob?.fileListError,
@@ -93,6 +98,10 @@ function ProgressView() {
   useEffect(() => {
     setTargetLanguageDraft(currentJob?.targetLanguage ?? DEFAULT_TARGET_LANGUAGE)
   }, [currentJob?.targetLanguage])
+
+  useEffect(() => {
+    setOutputOverrideDraft(currentJob?.outputOverrideDir ?? '')
+  }, [currentJob?.outputOverrideDir])
 
   useEffect(() => {
     if (!activeJobId || !shouldLoadFiles) {
@@ -119,7 +128,10 @@ function ProgressView() {
   const selectedFilePaths = currentJob?.selectedFiles ?? EMPTY_SELECTED_FILES
   const sourceLanguageGuess = currentJob?.sourceLanguageGuess ?? DEFAULT_SOURCE_LANGUAGE
   const targetLanguage = currentJob?.targetLanguage ?? DEFAULT_TARGET_LANGUAGE
-  const outputPath = currentJob ? currentJob.outputPath : ''
+  const overridePreview = currentJob?.outputOverrideDir?.trim()
+  const outputPath = currentJob
+    ? currentJob.outputPath?.trim() || overridePreview || currentJob.installPath
+    : ''
 
   const autoSelectedCount = useMemo(
     () => files.filter((entry) => entry.autoSelected).length,
@@ -189,6 +201,15 @@ function ProgressView() {
       updateCurrentJobTargetLanguage(value)
     },
     [updateCurrentJobTargetLanguage],
+  )
+
+  const handleOutputOverrideChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const value = event.target.value
+      setOutputOverrideDraft(value)
+      updateCurrentJobOutputOverride(value)
+    },
+    [updateCurrentJobOutputOverride],
   )
 
   const handleOpenOutput = useCallback(async () => {
@@ -416,17 +437,30 @@ function ProgressView() {
                 선택된 파일 {selectedFilePaths.length}개 · 추정 원본 언어 {sourceLanguageLabel} · 목표 언어 {targetLanguageLabel}
               </div>
               <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
-                {showTargetLanguageEditor && (
-                  <label className="flex items-center gap-2 text-xs text-slate-300">
-                    <span>목표 언어</span>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 sm:flex-1">
+                  {showTargetLanguageEditor && (
+                    <label className="flex items-center gap-2 text-xs text-slate-300">
+                      <span>목표 언어</span>
+                      <input
+                        type="text"
+                        value={targetLanguageDraft}
+                        onChange={handleTargetLanguageChange}
+                        className="w-24 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      />
+                    </label>
+                  )}
+                  <label className="flex flex-1 items-center gap-2 text-xs text-slate-300">
+                    <span>출력 폴더</span>
                     <input
                       type="text"
-                      value={targetLanguageDraft}
-                      onChange={handleTargetLanguageChange}
-                      className="w-24 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      value={outputOverrideDraft}
+                      onChange={handleOutputOverrideChange}
+                      disabled={currentJob?.status !== 'pending'}
+                      placeholder="비워두면 원본 파일 옆에 저장"
+                      className="flex-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-60"
                     />
                   </label>
-                )}
+                </div>
                 <button
                   type="button"
                   onClick={handleStart}
@@ -447,7 +481,6 @@ function ProgressView() {
           <ul className="space-y-2 text-xs text-slate-300">
             {currentJob.logs.map((entry, index) => (
               <li
-                // eslint-disable-next-line react/no-array-index-key
                 key={`${entry.ts}-${index}`}
                 className={`rounded-lg border border-slate-800/60 bg-slate-950/40 px-3 py-2 ${
                   entry.level === 'error'
