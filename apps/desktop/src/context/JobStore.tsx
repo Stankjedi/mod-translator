@@ -283,11 +283,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     completedJobs: [],
   })
   const activeJobIdRef = useRef<string | null>(null)
-  const currentJobRef = useRef<TranslationJob | null>(null)
-
   useEffect(() => {
     activeJobIdRef.current = state.currentJob?.id ?? null
-    currentJobRef.current = state.currentJob
   }, [state.currentJob])
 
   const finalizeCurrentJobAndPromote = useCallback(
@@ -295,12 +292,17 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       nextState: Extract<JobState, 'completed' | 'failed' | 'canceled'>,
       finalLogEntry: JobLogEntry | null,
       finalStats: FinalizeStats,
-      fileErrorsSnapshot: Record<string, string>,
+      payload?: TranslationProgressEventPayload,
     ) => {
       setState((prev) => {
         if (!prev.currentJob) {
           return prev
         }
+
+        const fileErrors =
+          payload && prev.currentJob.id === payload.jobId
+            ? applyFileErrorUpdates(prev.currentJob, payload)
+            : prev.currentJob.fileErrors
 
         const finishedJob: TranslationJob = {
           ...prev.currentJob,
@@ -312,20 +314,18 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           logs: finalLogEntry
             ? [...prev.currentJob.logs, finalLogEntry]
             : prev.currentJob.logs,
-          fileErrors: { ...fileErrorsSnapshot },
+          fileErrors: { ...fileErrors },
           completedAt: Date.now(),
         }
 
         const [nextJob, ...restQueue] = prev.queue
         let newCurrentJob: TranslationJob | null = null
-        let newActiveJobId: string | null = null
 
         if (nextJob) {
           newCurrentJob = prepareJobForActivation(nextJob)
-          newActiveJobId = newCurrentJob.id
         }
 
-        activeJobIdRef.current = newActiveJobId
+        activeJobIdRef.current = newCurrentJob?.id ?? null
 
         return {
           currentJob: newCurrentJob,
@@ -794,21 +794,11 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             ? '번역 중 오류가 발생했습니다.'
             : '작업이 중단되었습니다.')
         const finalLogEntry = text ? createLogEntry(level, text) : null
-        const currentJob = currentJobRef.current
-        let fileErrorsSnapshot: Record<string, string> = {}
-        if (currentJob && currentJob.id === payload.jobId) {
-          const updatedFileErrors = applyFileErrorUpdates(currentJob, payload)
-          if (updatedFileErrors !== currentJob.fileErrors) {
-            currentJobRef.current = { ...currentJob, fileErrors: updatedFileErrors }
-          }
-          fileErrorsSnapshot = { ...updatedFileErrors }
-        }
-
         finalizeCurrentJobAndPromote(payload.state, finalLogEntry, {
           progress: clampProgress(Math.round(payload.progress)),
           translatedCount: payload.translatedCount,
           totalCount: payload.totalCount,
-        }, fileErrorsSnapshot)
+        }, payload)
       }
     },
     [finalizeCurrentJobAndPromote],
