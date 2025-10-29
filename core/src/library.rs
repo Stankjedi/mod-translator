@@ -36,6 +36,7 @@ pub struct ModSummary {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModFileDescriptor {
     pub path: String,
+    pub mod_install_path: String,
     pub translatable: bool,
     #[serde(default)]
     pub auto_selected: bool,
@@ -351,13 +352,26 @@ impl LibraryScanner {
 
 #[tauri::command]
 pub fn list_mod_files(mod_directory: String) -> Result<ModFileListing, String> {
-    let root = PathBuf::from(mod_directory);
+    let root = PathBuf::from(&mod_directory);
     if !root.exists() {
         return Err("모드 디렉터리를 찾을 수 없습니다.".into());
     }
     if !root.is_dir() {
         return Err("지정된 경로가 디렉터리가 아닙니다.".into());
     }
+
+    let canonical_root = root
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&mod_directory));
+    let mod_install_path = canonical_root
+        .to_str()
+        .map(|value| value.to_string())
+        .ok_or_else(|| {
+            format!(
+                "경로를 UTF-8 문자열로 변환하지 못했습니다: {:?}",
+                canonical_root
+            )
+        })?;
 
     let mut queue = VecDeque::new();
     queue.push_back(root.clone());
@@ -386,7 +400,7 @@ pub fn list_mod_files(mod_directory: String) -> Result<ModFileListing, String> {
                 continue;
             }
 
-            if let Some(descriptor) = classify_mod_file(&root, &path) {
+            if let Some(descriptor) = classify_mod_file(&root, &path, &mod_install_path) {
                 files.push(descriptor);
             }
         }
@@ -431,7 +445,11 @@ fn to_utf8_string(path: &Path) -> Result<String, String> {
         .ok_or_else(|| format!("경로를 UTF-8 문자열로 변환하지 못했습니다: {:?}", path))
 }
 
-fn classify_mod_file(root: &Path, path: &Path) -> Option<ModFileDescriptor> {
+fn classify_mod_file(
+    root: &Path,
+    path: &Path,
+    mod_install_path: &str,
+) -> Option<ModFileDescriptor> {
     let relative = path.strip_prefix(root).ok()?;
     let relative_str = normalize_relative_path(relative);
     let lowered = relative_str.to_lowercase();
@@ -475,6 +493,7 @@ fn classify_mod_file(root: &Path, path: &Path) -> Option<ModFileDescriptor> {
 
     Some(ModFileDescriptor {
         path: relative_str,
+        mod_install_path: mod_install_path.to_string(),
         translatable: true,
         auto_selected,
         language_hint,

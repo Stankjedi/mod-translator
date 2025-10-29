@@ -62,6 +62,8 @@ export interface JobLogEntry {
 
 export interface JobFileEntry {
   path: string
+  relativePath: string
+  modInstallPath: string
   translatable: boolean
   autoSelected: boolean
   languageHint: string | null
@@ -76,6 +78,7 @@ export interface TranslationJob {
   gameName: string
   installPath: string
   outputPath: string
+  outputOverrideDir: string | null
   status: JobState
   providerId: ProviderId
   providerApiKey: string
@@ -150,6 +153,7 @@ interface JobStoreValue {
   startTranslationForCurrentJob: (options: StartTranslationOptions) => Promise<void>
   requestCancelCurrentJob: () => Promise<boolean>
   updateCurrentJobTargetLanguage: (value: string) => void
+  updateCurrentJobOutputOverride: (value: string) => void
 }
 
 const JobStoreContext = createContext<JobStoreValue | undefined>(undefined)
@@ -260,6 +264,7 @@ const createJob = (
   gameName: input.gameName,
   installPath: input.installPath,
   outputPath: input.installPath,
+  outputOverrideDir: null,
   status: 'pending',
   providerId,
   providerApiKey,
@@ -298,7 +303,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
   const finalizeCurrentJobAndPromote = useCallback(
     (
-      nextState: Extract<JobState, 'completed' | 'failed' | 'canceled'>,
+      nextState: Extract<JobState, 'completed' | 'failed' | 'canceled' | 'partial_success'>,
       finalLogEntry: JobLogEntry | null,
       finalStats: FinalizeStats,
       payload?: TranslationProgressEventPayload,
@@ -543,6 +548,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
         const files: JobFileEntry[] = listing.files.map((entry) => ({
           path: entry.path,
+          relativePath: entry.path,
+          modInstallPath: entry.mod_install_path,
           translatable: entry.translatable,
           autoSelected: entry.auto_selected,
           languageHint: entry.language_hint,
@@ -649,10 +656,17 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       const selectedSet = new Set(options.selectedFiles)
       let filesPayload = (activeJob.files ?? [])
         .filter((file) => selectedSet.has(file.path))
-        .map((file) => ({ path: file.path }))
+        .map((file) => ({
+          relativePath: file.relativePath,
+          modInstallPath: file.modInstallPath,
+        }))
 
       if (!filesPayload.length) {
-        filesPayload = options.selectedFiles.map((filePath) => ({ path: filePath }))
+        const fallbackRoot = activeJob.installPath.trim()
+        filesPayload = options.selectedFiles.map((filePath) => ({
+          relativePath: filePath,
+          modInstallPath: fallbackRoot,
+        }))
       }
 
       await invoke('start_translation_job', {
@@ -662,6 +676,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         sourceLang: sourceLanguage,
         targetLang: targetLanguage,
         files: filesPayload,
+        outputOverrideDir: activeJob.outputOverrideDir,
       })
 
       setState((prev) => {
@@ -759,18 +774,38 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const updateCurrentJobOutputOverride = useCallback((value: string) => {
+    setState((prev) => {
+      if (!prev.currentJob || prev.currentJob.status !== 'pending') {
+        return prev
+      }
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          outputOverrideDir: value,
+        },
+      }
+    })
+  }, [])
+
   const handleTranslationProgressPayload = useCallback(
     (payload: TranslationProgressEventPayload) => {
       if (!payload || !activeJobIdRef.current || activeJobIdRef.current !== payload.jobId) {
         return
       }
 
-      if (payload.state === 'running') {
-        const trimmedLog = payload.log?.trim() ?? ''
-        const progress = clampProgress(Math.round(payload.progress))
-        const fileName = payload.fileName ?? null
-        const fileSuccess = payload.fileSuccess ?? null
+      const status = payload.status ?? 'running'
+      const trimmedLog = payload.log?.trim() ?? ''
+      const progress = clampProgress(Math.round(payload.progressPct ?? 0))
+      const fileName = payload.fileName ?? null
+      const fileSuccess = payload.fileSuccess ?? null
+      const translatedCount = payload.translatedCount ?? 0
+      const totalCount = payload.totalCount ?? 0
+      const lastWritten = payload.lastWritten ?? null
 
+      if (status === 'running') {
         setState((prev) => {
           if (!prev.currentJob || prev.currentJob.id !== payload.jobId) {
             return prev
@@ -786,6 +821,16 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               : prev.currentJob.logs
 
           const updatedFileErrors = applyFileErrorUpdates(prev.currentJob, payload)
+          const nextOutputPath =
+            lastWritten?.outputAbsolutePath ?? prev.currentJob.outputPath
+          const nextTranslatedCount =
+            typeof payload.translatedCount === 'number'
+              ? payload.translatedCount
+              : prev.currentJob.translatedCount
+          const nextTotalCount =
+            typeof payload.totalCount === 'number'
+              ? payload.totalCount
+              : prev.currentJob.totalCount
 
           return {
             ...prev,
@@ -793,41 +838,57 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               ...prev.currentJob,
               status: 'running',
               progress,
-              translatedCount: payload.translatedCount,
-              totalCount: payload.totalCount,
+              translatedCount: nextTranslatedCount,
+              totalCount: nextTotalCount,
               latestFileName: fileName,
               latestFileSuccess: fileSuccess,
               logs,
               fileErrors: updatedFileErrors,
+              outputPath: nextOutputPath,
             },
           }
         })
         return
       }
 
-      if (payload.state === 'completed' || payload.state === 'failed' || payload.state === 'canceled') {
+      if (
+        status === 'completed' ||
+        status === 'failed' ||
+        status === 'canceled' ||
+        status === 'partial_success'
+      ) {
         const level: JobLogLevel =
-          payload.state === 'failed' ? 'error' : payload.state === 'canceled' ? 'warn' : 'info'
+          status === 'failed'
+            ? 'error'
+            : status === 'canceled' || status === 'partial_success'
+            ? 'warn'
+            : 'info'
         const fallbackText =
-          payload.state === 'completed'
+          status === 'completed'
             ? '번역이 완료되었습니다.'
-            : payload.state === 'failed'
+            : status === 'failed'
             ? '번역 중 오류가 발생했습니다.'
+            : status === 'partial_success'
+            ? '일부 파일에서 오류가 발생했습니다.'
             : '작업이 중단되었습니다.'
         const providerKey = providerApiKeyRef.current.trim()
-        const trimmedLog = payload.log?.trim() ?? ''
         const containsSensitiveData =
           !!providerKey && providerKey.length > 0 && trimmedLog.includes(providerKey)
         const sanitizedLog = containsSensitiveData ? '' : trimmedLog
         const text = sanitizedLog || fallbackText
         const finalLogEntry = text ? createLogEntry(level, text) : null
-        finalizeCurrentJobAndPromote(payload.state, finalLogEntry, {
-          progress: clampProgress(Math.round(payload.progress)),
-          translatedCount: payload.translatedCount,
-          totalCount: payload.totalCount,
-          fileName: payload.fileName ?? null,
-          fileSuccess: payload.fileSuccess ?? null,
-        }, payload)
+        finalizeCurrentJobAndPromote(
+          status,
+          finalLogEntry,
+          {
+            progress,
+            translatedCount,
+            totalCount,
+            fileName,
+            fileSuccess,
+          },
+          payload,
+        )
       }
     },
     [finalizeCurrentJobAndPromote],
@@ -880,6 +941,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       startTranslationForCurrentJob,
       requestCancelCurrentJob,
       updateCurrentJobTargetLanguage,
+      updateCurrentJobOutputOverride,
     }),
     [
       state.currentJob,
@@ -893,6 +955,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       startTranslationForCurrentJob,
       requestCancelCurrentJob,
       updateCurrentJobTargetLanguage,
+      updateCurrentJobOutputOverride,
     ],
   )
 

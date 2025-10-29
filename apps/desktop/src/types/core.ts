@@ -49,12 +49,19 @@ export interface SteamPathResponse {
   note: string
 }
 
-export type JobState = 'pending' | 'running' | 'completed' | 'failed' | 'canceled'
+export type JobState =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'partial_success'
 
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
 export interface TranslationFileDescriptor {
-  path: string
+  relativePath: string
+  modInstallPath: string
 }
 
 export interface StartTranslationJobPayload {
@@ -64,6 +71,7 @@ export interface StartTranslationJobPayload {
   files: TranslationFileDescriptor[]
   sourceLang: string | null
   targetLang: string | null
+  outputOverrideDir?: string | null
 }
 
 export type TranslationProgressState = JobState
@@ -76,18 +84,24 @@ export interface TranslationFileErrorEntry {
 
 export interface TranslationProgressEventPayload {
   jobId: string
-  state: TranslationProgressState
-  progress: number
+  status: TranslationProgressState
+  progressPct?: number
   log?: string | null
-  translatedCount: number
-  totalCount: number
+  translatedCount?: number
+  totalCount?: number
   fileName?: string | null
   fileSuccess?: boolean | null
   fileErrors?: TranslationFileErrorEntry[]
+  lastWritten?: {
+    sourceRelativePath: string
+    outputAbsolutePath: string
+    outputRelativePath: string
+  }
 }
 
 export interface ModFileDescriptor {
   path: string
+  mod_install_path: string
   translatable: boolean
   auto_selected: boolean
   language_hint: string | null
