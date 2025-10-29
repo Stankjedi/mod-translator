@@ -82,6 +82,7 @@ export interface TranslationJob {
   status: JobState
   providerId: ProviderId
   providerApiKey: string
+  modelId: string
   progress: number
   translatedCount: number
   totalCount: number
@@ -128,6 +129,7 @@ export type EnqueueJobError =
   | 'invalid-path'
   | 'missing-provider'
   | 'missing-api-key'
+  | 'missing-model'
 
 export interface EnqueueJobResult {
   job: TranslationJob
@@ -256,6 +258,7 @@ const createJob = (
   input: EnqueueJobInput,
   providerId: ProviderId,
   providerApiKey: string,
+  modelId: string,
 ): TranslationJob => ({
   id: createId(),
   modId: input.modId,
@@ -268,6 +271,7 @@ const createJob = (
   status: 'pending',
   providerId,
   providerApiKey,
+  modelId,
   progress: 0,
   translatedCount: 0,
   totalCount: 0,
@@ -286,7 +290,7 @@ const createJob = (
 })
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
-  const { activeProviderId, apiKeys } = useSettingsStore()
+  const { activeProviderId, apiKeys, providerModels } = useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
@@ -300,6 +304,46 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     activeJobIdRef.current = state.currentJob?.id ?? null
     providerApiKeyRef.current = state.currentJob?.providerApiKey ?? ''
   }, [state.currentJob?.id, state.currentJob?.providerApiKey])
+
+  useEffect(() => {
+    setState((prev) => {
+      let nextCurrent = prev.currentJob
+      let currentChanged = false
+
+      if (nextCurrent && nextCurrent.status === 'pending') {
+        const updatedModel = providerModels[nextCurrent.providerId].trim()
+        if (updatedModel && updatedModel !== nextCurrent.modelId) {
+          nextCurrent = { ...nextCurrent, modelId: updatedModel }
+          currentChanged = true
+        }
+      }
+
+      let queueChanged = false
+      const nextQueue = prev.queue.map((job) => {
+        if (job.status !== 'pending') {
+          return job
+        }
+
+        const updatedModel = providerModels[job.providerId].trim()
+        if (updatedModel && updatedModel !== job.modelId) {
+          queueChanged = true
+          return { ...job, modelId: updatedModel }
+        }
+
+        return job
+      })
+
+      if (!currentChanged && !queueChanged) {
+        return prev
+      }
+
+      return {
+        ...prev,
+        currentJob: nextCurrent,
+        queue: queueChanged ? nextQueue : prev.queue,
+      }
+    })
+  }, [providerModels])
 
   const finalizeCurrentJobAndPromote = useCallback(
     (
@@ -382,7 +426,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
       const providerId = activeProviderId
       if (!providerId) {
-        const placeholderJob = createJob(input, 'gemini', '')
+        const placeholderJob = createJob(input, 'gemini', '', '')
         outcome = { job: placeholderJob, promoted: false, error: 'missing-provider' }
         return outcome
       }
@@ -391,12 +435,19 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       const apiKey = apiKeyRaw.trim()
 
       if (!apiKey) {
-        const placeholderJob = createJob(input, providerId, '')
+        const placeholderJob = createJob(input, providerId, '', '')
         outcome = { job: placeholderJob, promoted: false, error: 'missing-api-key' }
         return outcome
       }
 
-      const baseJob = createJob(input, providerId, apiKey)
+      const selectedModel = providerModels[providerId]?.trim() ?? ''
+      if (!selectedModel) {
+        const placeholderJob = createJob(input, providerId, apiKey, '')
+        outcome = { job: placeholderJob, promoted: false, error: 'missing-model' }
+        return outcome
+      }
+
+      const baseJob = createJob(input, providerId, apiKey, selectedModel)
 
       setState((prev) => {
         if (prev.currentJob && prev.currentJob.modId === input.modId) {
@@ -461,7 +512,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
       return outcome
     },
-    [activeProviderId, apiKeys],
+    [activeProviderId, apiKeys, providerModels],
   )
 
   const cancelQueuedJob = useCallback((jobId: string) => {
@@ -650,6 +701,11 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         throw new Error('번역할 파일을 하나 이상 선택해 주세요.')
       }
 
+      const modelId = activeJob.modelId.trim()
+      if (!modelId) {
+        throw new Error('번역에 사용할 모델을 선택해 주세요.')
+      }
+
       const targetLanguage = options.targetLanguage ?? activeJob.targetLanguage
       const sourceLanguage = options.sourceLanguageGuess ?? activeJob.sourceLanguageGuess
 
@@ -673,6 +729,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         jobId: activeJob.id,
         provider: activeJob.providerId,
         apiKey: activeJob.providerApiKey,
+        modelId,
         sourceLang: sourceLanguage,
         targetLang: targetLanguage,
         files: filesPayload,
@@ -694,6 +751,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             selectedFiles: [...options.selectedFiles],
             sourceLanguageGuess: sourceLanguage ?? DEFAULT_SOURCE_LANGUAGE,
             targetLanguage,
+            modelId,
             translatedCount: 0,
             totalCount: 0,
           },

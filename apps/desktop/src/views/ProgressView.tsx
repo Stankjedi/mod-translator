@@ -279,6 +279,7 @@ function ProgressView() {
   const stopButtonDisabled = currentJob.cancelRequested || currentJob.status !== 'running'
   const stopButtonLabel = currentJob.cancelRequested ? '중단 요청됨…' : '중단'
   const providerDisplay = providerLabelFor(currentJob.providerId)
+  const modelDisplay = currentJob.modelId
   const translatedSummary =
     currentJob.totalCount > 0
       ? `${currentJob.translatedCount} / ${currentJob.totalCount}개 번역됨`
@@ -302,6 +303,7 @@ function ProgressView() {
         </div>
         <div className="flex items-center gap-3">
           <Chip label={`번역기: ${providerDisplay}`} tone="idle" />
+          {modelDisplay && <Chip label={`모델: ${modelDisplay}`} tone="idle" />}
           <Chip label={statusLabel} tone={statusTone} />
           {showStopButton && (
             <button
@@ -342,6 +344,7 @@ function ProgressView() {
           </div>
           <div className="grid gap-2 text-xs text-slate-500 sm:grid-cols-2">
             {providerDisplay && <p>번역기: {providerDisplay}</p>}
+            {modelDisplay && <p>모델: {modelDisplay}</p>}
             <p>언어: {sourceLanguageLabel} → {targetLanguageLabel}</p>
             {translatedSummary && <p>{translatedSummary}</p>}
             <p>선택된 파일 {selectedFilePaths.length}개</p>
@@ -516,6 +519,7 @@ function ProgressView() {
           <ul className="space-y-3 text-xs text-slate-300">
             {historyEntries.map((job) => {
               const historyProvider = providerLabelFor(job.providerId)
+              const historyModel = job.modelId
               const historyStatusLabel = statusLabels[job.status]
               const historyTone = statusTones[job.status]
               const counts =
@@ -534,9 +538,13 @@ function ProgressView() {
                       <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-white">
                         <span>{job.modName}</span>
                         <Chip label={historyProvider} tone="idle" />
+                        {historyModel && <Chip label={historyModel} tone="idle" />}
                         <Chip label={historyStatusLabel} tone={historyTone} />
                       </div>
                       <p className="text-xs text-slate-400">완료 {completionTime}</p>
+                      {historyModel && (
+                        <p className="text-xs text-slate-500">모델: {historyModel}</p>
+                      )}
                       <p className="text-xs text-slate-500">
                         언어: {historySource} → {historyTarget}
                       </p>

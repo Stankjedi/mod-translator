@@ -200,6 +200,15 @@ function ModManagementView() {
           return
         }
 
+        if (result.error === 'missing-model') {
+          setActionMessage({
+            type: 'error',
+            text: '사용할 모델이 지정되지 않았습니다. 설정 탭에서 제공자별 모델을 선택한 뒤 다시 시도해 주세요.',
+          })
+          navigate('/settings')
+          return
+        }
+
         navigate('/progress')
       } catch (error) {
         console.error('모드 예약 중 오류가 발생했습니다.', error)

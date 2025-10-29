@@ -20,6 +20,7 @@ interface SettingsStoreValue extends SettingsState {
   setProviderEnabled: (provider: ProviderId, enabled: boolean) => void
   toggleProvider: (provider: ProviderId) => void
   setActiveProvider: (provider: ProviderId) => void
+  setProviderModel: (provider: ProviderId, modelId: string) => void
   updateApiKey: (provider: ProviderId, value: string | null) => void
   setConcurrency: (value: number) => void
   setWorkerCount: (value: number) => void
@@ -52,6 +53,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       persistSettings({
         selectedProviders: state.selectedProviders,
         activeProviderId: state.activeProviderId,
+        providerModels: state.providerModels,
         concurrency: state.concurrency,
         workerCount: state.workerCount,
         bucketSize: state.bucketSize,
@@ -67,6 +69,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
   }, [
     state.selectedProviders,
     state.activeProviderId,
+    state.providerModels,
     state.concurrency,
     state.workerCount,
     state.bucketSize,
@@ -140,6 +143,23 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const setProviderModel = useCallback((provider: ProviderId, modelId: string) => {
+    setState((prev) => {
+      const trimmed = modelId.trim()
+      if (!trimmed || prev.providerModels[provider] === trimmed) {
+        return prev
+      }
+
+      return {
+        ...prev,
+        providerModels: {
+          ...prev.providerModels,
+          [provider]: trimmed,
+        },
+      }
+    })
+  }, [])
+
   const updateApiKey = useCallback((provider: ProviderId, value: string | null) => {
     let outcome: { success: boolean; error?: unknown } = { success: true }
     setState((prev) => {
@@ -204,6 +224,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setProviderEnabled,
       toggleProvider,
       setActiveProvider,
+      setProviderModel,
       updateApiKey,
       setConcurrency,
       setWorkerCount,
@@ -219,6 +240,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setProviderEnabled,
       toggleProvider,
       setActiveProvider,
+      setProviderModel,
       updateApiKey,
       setConcurrency,
       setWorkerCount,

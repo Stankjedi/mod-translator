@@ -2,9 +2,26 @@ const STORAGE_KEY = 'mod_translator_settings_v1'
 
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
+export type ProviderModelMap = Record<ProviderId, string>
+
+export const PROVIDER_MODEL_OPTIONS: Record<ProviderId, string[]> = {
+  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
+  gpt: ['gpt-4o-mini', 'gpt-4o'],
+  claude: ['claude-3-5-sonnet-20240620', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'],
+  grok: ['grok-2-1212'],
+}
+
+export const DEFAULT_PROVIDER_MODELS: ProviderModelMap = {
+  gemini: 'gemini-2.5-flash',
+  gpt: 'gpt-4o-mini',
+  claude: 'claude-3-5-sonnet-20240620',
+  grok: 'grok-2-1212',
+}
+
 export interface PersistedSettings {
   selectedProviders: ProviderId[]
   activeProviderId: ProviderId
+  providerModels: ProviderModelMap
   concurrency: number
   workerCount: number
   bucketSize: number
@@ -18,6 +35,7 @@ export interface PersistedSettings {
 export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   selectedProviders: ['gemini', 'gpt', 'claude', 'grok'],
   activeProviderId: 'gemini',
+  providerModels: { ...DEFAULT_PROVIDER_MODELS },
   concurrency: 3,
   workerCount: 2,
   bucketSize: 5,
@@ -51,6 +69,24 @@ function sanitizeProviders(input: unknown): ProviderId[] {
 
   const normalized = order.filter((provider) => seen.has(provider))
   return normalized.length ? normalized : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders]
+}
+
+function sanitizeProviderModels(value: unknown): ProviderModelMap {
+  const defaults = { ...DEFAULT_PROVIDER_MODELS }
+  if (!value || typeof value !== 'object') {
+    return defaults
+  }
+
+  const entries = value as Record<string, unknown>
+  (Object.keys(defaults) as ProviderId[]).forEach((provider) => {
+    const raw = entries[provider]
+    const normalized = typeof raw === 'string' ? raw.trim() : ''
+    if (normalized && PROVIDER_MODEL_OPTIONS[provider].includes(normalized)) {
+      defaults[provider] = normalized
+    }
+  })
+
+  return defaults
 }
 
 function sanitizeActiveProvider(
@@ -93,6 +129,7 @@ export function loadPersistedSettings(): PersistedSettings {
     const parsed = JSON.parse(raw) as Partial<PersistedSettings>
 
     const selectedProviders = sanitizeProviders(parsed.selectedProviders)
+    const providerModels = sanitizeProviderModels(parsed.providerModels)
 
     return {
       selectedProviders,
@@ -100,6 +137,7 @@ export function loadPersistedSettings(): PersistedSettings {
         parsed.activeProviderId,
         selectedProviders,
       ),
+      providerModels,
       concurrency: sanitizeNumber(parsed.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
       workerCount: sanitizeNumber(parsed.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
       bucketSize: sanitizeNumber(parsed.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),
@@ -137,12 +175,14 @@ export function persistSettings(settings: PersistedSettings) {
     settings.activeProviderId,
     sanitizedProviders,
   )
+  const providerModels = sanitizeProviderModels(settings.providerModels)
 
   const payload: PersistedSettings = {
     ...DEFAULT_PERSISTED_SETTINGS,
     ...settings,
     selectedProviders: sanitizedProviders,
     activeProviderId,
+    providerModels,
     concurrency: sanitizeNumber(settings.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
     workerCount: sanitizeNumber(settings.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
     bucketSize: sanitizeNumber(settings.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),

@@ -27,6 +27,7 @@ pub struct StartTranslationJobPayload {
     pub job_id: String,
     pub provider: String,
     pub api_key: Option<String>,
+    pub model_id: String,
     pub files: Vec<TranslationFileInput>,
     pub source_lang: Option<String>,
     pub target_lang: Option<String>,
@@ -99,20 +100,23 @@ pub fn start_translation_job(
     jobId: String,
     provider: String,
     apiKey: Option<String>,
+    modelId: String,
     sourceLang: Option<String>,
     targetLang: Option<String>,
     files: Vec<TranslationFileInput>,
     outputOverrideDir: Option<String>,
 ) -> Result<(), String> {
-    let payload = StartTranslationJobPayload {
+    let mut payload = StartTranslationJobPayload {
         job_id: jobId,
         provider,
         api_key: apiKey,
+        model_id: modelId,
         files,
         source_lang: sourceLang,
         target_lang: targetLang,
         output_override_dir: outputOverrideDir,
     };
+    payload.model_id = payload.model_id.trim().to_string();
     if payload.files.is_empty() {
         return Err("번역할 파일을 하나 이상 선택해야 합니다.".into());
     }
@@ -157,6 +161,25 @@ pub fn start_translation_job(
             },
         );
         return Err("선택한 번역기의 API 키를 설정해 주세요.".into());
+    }
+
+    if payload.model_id.is_empty() {
+        emit_progress(
+            &app,
+            TranslationProgressEventPayload {
+                job_id: payload.job_id.clone(),
+                status: "failed".into(),
+                progress_pct: Some(0.0),
+                log: Some("번역 모델이 선택되지 않았습니다.".into()),
+                translated_count: Some(0),
+                total_count: Some(0),
+                file_name: None,
+                file_success: None,
+                file_errors: None,
+                last_written: None,
+            },
+        );
+        return Err("번역에 사용할 모델을 선택해 주세요.".into());
     }
 
     {
@@ -373,6 +396,7 @@ async fn run_translation_job(
                 &client,
                 provider,
                 &api_key,
+                &payload.model_id,
                 &segment.text,
                 &source_lang,
                 &target_lang,
@@ -381,12 +405,13 @@ async fn run_translation_job(
             {
                 Ok(value) => value,
                 Err(error) => {
-                    let message = format_translation_error(segment, error);
+                    let log_message = format_translation_error(segment, &error);
+                    let file_message = format_file_error_message(segment, &error);
                     last_file_name = Some(segment.relative_path.clone());
                     last_file_success = Some(false);
                     file_errors.push(TranslationFileErrorEntry {
                         file_path: segment.relative_path.clone(),
-                        message: message.clone(),
+                        message: file_message.clone(),
                         code: Some("TRANSLATE_FAILED".into()),
                     });
                     emit_progress(
@@ -395,7 +420,7 @@ async fn run_translation_job(
                             job_id: payload.job_id.clone(),
                             status: "failed".into(),
                             progress_pct: Some(percentage(processed, total_segments)),
-                            log: Some(message),
+                            log: Some(log_message.clone()),
                             translated_count: Some(processed),
                             total_count: Some(total_segments),
                             file_name: last_file_name.clone(),
@@ -731,9 +756,12 @@ fn percentage(processed: u32, total: u32) -> f32 {
     ((processed as f32) / (total as f32) * 100.0).clamp(0.0, 100.0)
 }
 
-fn format_translation_error(segment: &Segment, error: TranslationError) -> String {
+fn format_translation_error(segment: &Segment, error: &TranslationError) -> String {
     let location = format!("{} {}행", segment.relative_path, segment.line_number);
     match error {
+        TranslationError::ModelNotFound { model_id, .. } => format!(
+            "{location} 번역 중 선택한 모델 '{model_id}'을(를) 사용할 수 없습니다. 제공자가 404를 반환했습니다."
+        ),
         TranslationError::PlaceholderMismatch(missing) => {
             if missing.is_empty() {
                 format!("{location} 번역 중 자리표시자 검증에 실패했습니다.")
@@ -744,5 +772,14 @@ fn format_translation_error(segment: &Segment, error: TranslationError) -> Strin
         TranslationError::Provider(message) | TranslationError::Http(message) => {
             format!("{location} 번역 중 오류 발생: {}", message)
         }
+    }
+}
+
+fn format_file_error_message(segment: &Segment, error: &TranslationError) -> String {
+    match error {
+        TranslationError::ModelNotFound { model_id, .. } => format!(
+            "The selected model '{model_id}' is not available for this API key or API version (provider returned 404)."
+        ),
+        _ => format_translation_error(segment, error),
     }
 }
