@@ -16,6 +16,7 @@ import type {
   JobState,
   ModFileListing,
   ProviderId,
+  TranslationFileErrorEntry,
   TranslationProgressEventPayload,
 } from '../types/core'
 import { useSettingsStore } from './SettingsStore'
@@ -83,13 +84,12 @@ export interface TranslationJob {
   totalCount: number
   latestFileName: string | null
   latestFileSuccess: boolean | null
-  latestFileError: string | null
   cancelRequested: boolean
   logs: JobLogEntry[]
   files: JobFileEntry[] | null
   filesLoading: boolean
-  fileError: string | null
-  fileErrors: Record<string, string>
+  fileListError: string | null
+  fileErrors: TranslationFileErrorEntry[]
   selectedFiles: string[]
   sourceLanguageGuess: string
   targetLanguage: string
@@ -109,7 +109,6 @@ interface FinalizeStats {
   totalCount: number
   fileName: string | null
   fileSuccess: boolean | null
-  fileError: string | null
 }
 
 export interface EnqueueJobInput {
@@ -186,56 +185,50 @@ const guessSourceLanguageFromFiles = (entries: JobFileEntry[]): string => {
   return DEFAULT_SOURCE_LANGUAGE
 }
 
-const collectFileErrorUpdates = (
-  payload: TranslationProgressEventPayload,
-): { name: string; message: string | null }[] => {
-  const updates: { name: string; message: string | null }[] = []
-
-  if (typeof payload.fileName === 'string' && payload.fileName) {
-    updates.push({ name: payload.fileName, message: payload.fileError ?? null })
-  }
-
-  if (Array.isArray(payload.fileErrors)) {
-    for (const entry of payload.fileErrors) {
-      if (entry && typeof entry.fileName === 'string' && entry.fileName) {
-        updates.push({ name: entry.fileName, message: entry.fileError ?? null })
-      }
-    }
-  }
-
-  return updates
-}
-
 const applyFileErrorUpdates = (
-  job: TranslationJob,
+  currentJob: TranslationJob,
   payload: TranslationProgressEventPayload,
-): Record<string, string> => {
-  const updates = collectFileErrorUpdates(payload)
-  if (!updates.length) {
-    return job.fileErrors
+): TranslationFileErrorEntry[] => {
+  const prevList = currentJob.fileErrors ?? []
+  const incoming = Array.isArray(payload.fileErrors) ? payload.fileErrors : []
+
+  if (incoming.length === 0) {
+    return prevList
   }
 
-  let mutated = false
-  const next = { ...job.fileErrors }
+  const merged: TranslationFileErrorEntry[] = [...prevList]
 
-  for (const { name, message } of updates) {
-    if (!name) {
+  for (const entry of incoming) {
+    if (!entry || typeof entry.filePath !== 'string' || typeof entry.message !== 'string') {
       continue
     }
 
-    if (message && message.trim()) {
-      const trimmedMessage = message.trim()
-      if (next[name] !== trimmedMessage) {
-        next[name] = trimmedMessage
-        mutated = true
+    const normalizedPath = entry.filePath
+    const normalizedMessage = entry.message
+    const normalizedCode = entry.code
+
+    const alreadyExists = merged.some(
+      (item) =>
+        item.filePath === normalizedPath &&
+        item.message === normalizedMessage &&
+        item.code === normalizedCode,
+    )
+
+    if (!alreadyExists) {
+      const sanitized: TranslationFileErrorEntry = {
+        filePath: normalizedPath,
+        message: normalizedMessage,
       }
-    } else if (Object.prototype.hasOwnProperty.call(next, name)) {
-      delete next[name]
-      mutated = true
+
+      if (typeof normalizedCode !== 'undefined') {
+        sanitized.code = normalizedCode
+      }
+
+      merged.push(sanitized)
     }
   }
 
-  return mutated ? next : job.fileErrors
+  return merged
 }
 
 const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
@@ -246,13 +239,12 @@ const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   totalCount: 0,
   latestFileName: null,
   latestFileSuccess: null,
-  latestFileError: null,
   cancelRequested: false,
   logs: [],
   files: null,
   filesLoading: false,
-  fileError: null,
-  fileErrors: {},
+  fileListError: null,
+  fileErrors: [],
   selectedFiles: [...job.selectedFiles],
 })
 
@@ -276,13 +268,12 @@ const createJob = (
   totalCount: 0,
   latestFileName: null,
   latestFileSuccess: null,
-  latestFileError: null,
   cancelRequested: false,
   logs: [],
   files: null,
   filesLoading: false,
-  fileError: null,
-  fileErrors: {},
+  fileListError: null,
+  fileErrors: [],
   selectedFiles: [],
   sourceLanguageGuess: DEFAULT_SOURCE_LANGUAGE,
   targetLanguage: DEFAULT_TARGET_LANGUAGE,
@@ -330,12 +321,11 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           totalCount: finalStats.totalCount,
           latestFileName: finalStats.fileName,
           latestFileSuccess: finalStats.fileSuccess,
-          latestFileError: finalStats.fileError,
           cancelRequested: false,
           logs: finalLogEntry
             ? [...prev.currentJob.logs, finalLogEntry]
             : prev.currentJob.logs,
-          fileErrors: { ...fileErrors },
+          fileErrors: [...fileErrors],
           completedAt: Date.now(),
         }
 
@@ -523,7 +513,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         currentJob: {
           ...prev.currentJob,
           filesLoading: true,
-          fileError: null,
+          fileListError: null,
         },
       }
     })
@@ -572,7 +562,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             ...prev.currentJob,
             files,
             filesLoading: false,
-            fileError: null,
+            fileListError: null,
             selectedFiles,
             sourceLanguageGuess,
             targetLanguage,
@@ -594,7 +584,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           currentJob: {
             ...prev.currentJob,
             filesLoading: false,
-            fileError: message,
+            fileListError: message,
           },
         }
       })
@@ -780,7 +770,6 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         const progress = clampProgress(Math.round(payload.progress))
         const fileName = payload.fileName ?? null
         const fileSuccess = payload.fileSuccess ?? null
-        const fileError = payload.fileError ?? null
 
         setState((prev) => {
           if (!prev.currentJob || prev.currentJob.id !== payload.jobId) {
@@ -796,6 +785,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               ? [...prev.currentJob.logs, createLogEntry('info', trimmedLog)]
               : prev.currentJob.logs
 
+          const updatedFileErrors = applyFileErrorUpdates(prev.currentJob, payload)
+
           return {
             ...prev,
             currentJob: {
@@ -806,9 +797,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               totalCount: payload.totalCount,
               latestFileName: fileName,
               latestFileSuccess: fileSuccess,
-              latestFileError: fileError,
               logs,
-              fileErrors,
+              fileErrors: updatedFileErrors,
             },
           }
         })
@@ -837,8 +827,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           totalCount: payload.totalCount,
           fileName: payload.fileName ?? null,
           fileSuccess: payload.fileSuccess ?? null,
-          fileError: payload.fileError ?? null,
-        })
+        }, payload)
       }
     },
     [finalizeCurrentJobAndPromote],
