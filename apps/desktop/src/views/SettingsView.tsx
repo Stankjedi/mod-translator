@@ -49,6 +49,7 @@ function SettingsView() {
   const [apiKeyStatus, setApiKeyStatus] = useState<Record<string, 'saved' | 'removed'>>({})
   const {
     selectedProviders,
+    activeProviderId,
     apiKeys,
     setProviderEnabled,
     updateApiKey,
@@ -69,6 +70,12 @@ function SettingsView() {
     setPrioritizeDllResources,
     setEnableQualitySampling,
   } = useSettingsStore()
+  const activeProviderKey = activeProviderId ? apiKeys[activeProviderId] ?? '' : ''
+  const activeProviderKeyMissing = Boolean(activeProviderId) && !activeProviderKey.trim()
+  const activeProviderName = useMemo(
+    () => providers.find((provider) => provider.id === activeProviderId)?.name ?? activeProviderId?.toUpperCase() ?? '선택한 번역기',
+    [activeProviderId],
+  )
   const libraryNotes = useMemo(
     () =>
       libraries.flatMap((library) =>
@@ -248,6 +255,11 @@ function SettingsView() {
           <p className="mt-1 text-sm text-slate-400">
             각 제공자별 API 키를 직접 입력해 Rust 백엔드와의 연동을 준비하세요. 빈 값으로 저장하면 키가 제거됩니다.
           </p>
+          {activeProviderKeyMissing && (
+            <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
+              {activeProviderName} API 키가 설정되지 않았습니다. 번역 작업을 예약하기 전에 키를 입력하세요.
+            </div>
+          )}
           <div className="mt-4 space-y-4">
             {providers.map((provider) => {
               const storedValue = apiKeys[provider.id] ?? ''

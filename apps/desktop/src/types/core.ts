@@ -49,7 +49,7 @@ export interface SteamPathResponse {
   note: string
 }
 
-export type JobState = 'queued' | 'running' | 'completed' | 'failed' | 'canceled'
+export type JobState = 'queued' | 'pending' | 'running' | 'completed' | 'failed' | 'canceled'
 
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 

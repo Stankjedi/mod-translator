@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobStore } from '../context/JobStore'
+import { resolveJobLandingRoute } from '../utils/navigation'
 import Chip from '../ui/Chip'
 
 const pipelineStages = [
@@ -57,12 +58,13 @@ function DashboardView() {
   )
 
   const jobHighlight = useMemo(() => {
-    const runningCount = currentJob ? 1 : 0
+    const runningCount = currentJob && currentJob.status === 'running' ? 1 : 0
+    const pendingCount = currentJob && currentJob.status === 'pending' ? 1 : 0
     const queuedCount = queue.length
     const completedCount = completedJobs.filter((job) => job.status === 'completed').length
     const failedCount = completedJobs.filter((job) => job.status === 'failed').length
 
-    if (!runningCount && !queuedCount) {
+    if (!runningCount && !pendingCount && !queuedCount) {
       if (!completedJobs.length) {
         return '예약된 번역 작업이 없습니다. 모드 관리 탭에서 새 작업을 추가해 보세요.'
       }
@@ -74,7 +76,15 @@ function DashboardView() {
       return pieces.join(' · ')
     }
 
-    const summaryPieces = [`실행 중 ${runningCount}건`, `대기 ${queuedCount}건`, `완료 ${completedCount}건`]
+    const summaryPieces: string[] = []
+    if (runningCount) {
+      summaryPieces.push(`실행 중 ${runningCount}건`)
+    }
+    if (pendingCount) {
+      summaryPieces.push(`준비 중 ${pendingCount}건`)
+    }
+    summaryPieces.push(`대기 ${queuedCount}건`)
+    summaryPieces.push(`완료 ${completedCount}건`)
     if (failedCount) {
       summaryPieces.push(`실패 ${failedCount}건`)
     }
@@ -144,12 +154,8 @@ function DashboardView() {
   }, [libraries])
 
   const handleJobAction = useCallback(() => {
-    if (currentJob || queue.length) {
-      navigate('/progress')
-      return
-    }
-
-    navigate('/mods')
+    const target = resolveJobLandingRoute(Boolean(currentJob), queue.length)
+    navigate(target)
   }, [currentJob, navigate, queue.length])
 
   const quickActions = [
@@ -172,7 +178,9 @@ function DashboardView() {
           ? '대기 중 작업 확인'
           : '번역 작업 예약',
       description: currentJob
-        ? `${currentJob.modName} · 진행률 ${currentJob.progress}%`
+        ? currentJob.status === 'running'
+          ? `${currentJob.modName} · 진행률 ${Math.round(currentJob.progress)}%`
+          : `${currentJob.modName} · 시작 대기 중`
         : queue.length
           ? `대기열에 ${queue.length}건의 작업이 준비되어 있습니다.`
           : firstDetectedMod

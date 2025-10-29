@@ -7,7 +7,7 @@ mod steam;
 mod time;
 
 pub use jobs::{
-    cancel_translation_job, start_translation_job, StartTranslationJobPayload,
+    cancel_translation_job, open_output_folder, start_translation_job, StartTranslationJobPayload,
     TranslationFileInput, TranslationProgressEventPayload,
 };
 pub use library::{
