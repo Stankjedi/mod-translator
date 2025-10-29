@@ -31,7 +31,7 @@ const providers: Array<{ id: ProviderId; name: string; description: string }> = 
   },
 ]
 
-function statusChip(state: KeyValidationState, checking: boolean) {
+function statusChip(state: KeyValidationState | null, checking: boolean) {
   if (checking) {
     return {
       label: '확인 중…',
@@ -68,6 +68,41 @@ function statusChip(state: KeyValidationState, checking: boolean) {
   }
 }
 
+function formatValidationMessage(
+  providerName: string,
+  state: KeyValidationState | null,
+  verifiedModels: string[],
+  selectedModel: string,
+  checking: boolean,
+) {
+  if (checking) {
+    return `${providerName} API 키 상태를 확인하는 중입니다. 잠시만 기다려 주세요.`
+  }
+
+  if (state === null) {
+    return `${providerName} API 키가 아직 확인되지 않았습니다. 키를 저장하거나 "키 확인" 버튼을 눌러 상태를 확인해 주세요.`
+  }
+
+  switch (state) {
+    case 'valid': {
+      if (verifiedModels.length > 0) {
+        return `${providerName} API 키가 정상입니다. 사용 가능한 모델: ${verifiedModels.join(', ')}.`
+      }
+      if (selectedModel) {
+        return `${providerName} API 키가 정상입니다. 현재 선택된 모델(${selectedModel})을 사용할 수 있습니다.`
+      }
+      return `${providerName} API 키가 정상입니다. 확인된 모델이 아직 없습니다. 다른 모델을 선택해 검증해 주세요.`
+    }
+    case 'unauthorized':
+      return `${providerName} API 키가 401 Unauthorized 응답으로 거부되었습니다. 키를 다시 확인해 주세요.`
+    case 'forbidden':
+      return `${providerName} 키는 인식되었지만 선택한 모델이 허용되지 않았습니다. 다른 모델을 선택하거나 플랜을 확인해 주세요.`
+    case 'network_error':
+    default:
+      return `${providerName} 제공자에 연결하지 못했습니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.`
+  }
+}
+
 function SettingsView() {
   const i18n = useI18n()
   const steamTexts = i18n.settings.steam
@@ -96,6 +131,7 @@ function SettingsView() {
     setProviderEnabled,
     updateApiKey,
     providerModelOptions,
+    verifiedModels,
     keyValidation,
     validationInFlight,
     modelDiscoveryState,
@@ -314,8 +350,14 @@ function SettingsView() {
               const storedValue = apiKeys[provider.id] ?? ''
               const isEditing = editingProvider === provider.id
               const modelOptions = providerModelOptions[provider.id] ?? []
-              const selectedModel = providerModels[provider.id] ?? modelOptions[0] ?? ''
-              const validation = keyValidation[provider.id] ?? 'unknown'
+              const verifiedList = verifiedModels?.[provider.id] ?? []
+              const fallbackModels = modelOptions.filter((model) => !verifiedList.includes(model))
+              const storedSelection = providerModels[provider.id]?.trim() ?? ''
+              const availableOptions = modelOptions
+              const selectedModel = availableOptions.includes(storedSelection)
+                ? storedSelection
+                : verifiedList[0] ?? fallbackModels[0] ?? ''
+              const validation = keyValidation[provider.id] ?? null
               const checking = validationInFlight[provider.id] ?? false
               const discovery = modelDiscoveryState[provider.id] ?? {
                 source: 'fallback',
@@ -323,6 +365,13 @@ function SettingsView() {
               }
               const modelNotice = providerModelNotices[provider.id]
               const { label, className } = statusChip(validation, checking)
+              const statusMessage = formatValidationMessage(
+                provider.name,
+                validation,
+                verifiedList,
+                selectedModel,
+                checking,
+              )
               const badge =
                 discovery.source === 'live'
                   ? null
@@ -335,13 +384,21 @@ function SettingsView() {
                         text: '대체 목록',
                         className: 'bg-amber-700/70 text-amber-100 border-amber-400/40',
                       }
-              const dropdownNote = checking
-                ? '키 상태를 확인하는 중입니다. 잠시만 기다려 주세요.'
-                : discovery.source === 'live'
-                  ? '이 키로 확인된 모델 목록입니다.'
-                  : discovery.networkError
-                    ? '네트워크 오류로 기본 모델 목록을 사용합니다. 실행 시 실패할 수 있습니다.'
-                    : '실시간 모델 목록을 가져오지 못해 기본 모델 목록을 사용합니다. 키와 모델이 호환되지 않을 수 있습니다.'
+              const dropdownNote = (() => {
+                if (checking) {
+                  return '키 상태를 확인하는 중입니다. 잠시만 기다려 주세요.'
+                }
+                if (discovery.networkError) {
+                  return '네트워크 오류로 기본 모델 목록을 사용합니다. 실행 시 실패할 수 있습니다.'
+                }
+                if (availableOptions.length === 0) {
+                  return '표시할 모델이 없습니다. 키를 확인하거나 다른 모델 ID를 수동으로 검증해 주세요.'
+                }
+                if (verifiedList.length > 0) {
+                  return '이 키로 확인된 모델이 먼저 표시됩니다. 아래의 기타 모델은 추가 검증이 필요할 수 있습니다.'
+                }
+                return '아직 검증된 모델이 없어 알려진 기본 모델 목록을 표시합니다. 사용 전 키를 확인해 주세요.'
+              })()
               return (
                 <div
                   key={provider.id}
@@ -373,7 +430,14 @@ function SettingsView() {
                         </span>
                         <select
                           value={selectedModel}
-                          onChange={(event) => setProviderModel(provider.id, event.target.value)}
+                          disabled={availableOptions.length === 0}
+                          onChange={(event) => {
+                            const nextValue = event.target.value
+                            setProviderModel(provider.id, nextValue)
+                            if (!checking) {
+                              void revalidateProviderKey(provider.id, undefined, nextValue)
+                            }
+                          }}
                           className={`w-full rounded-xl border bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:w-56 sm:text-sm ${
                             discovery.source === 'live'
                               ? 'border-slate-800 focus:border-brand-500'
@@ -382,11 +446,29 @@ function SettingsView() {
                                 : 'border-amber-500/60 focus:border-amber-400'
                           }`}
                         >
-                          {modelOptions.map((model) => (
-                            <option key={model} value={model}>
-                              {model}
+                          {availableOptions.length === 0 && (
+                            <option value="" disabled>
+                              사용 가능한 모델이 없습니다
                             </option>
-                          ))}
+                          )}
+                          {verifiedList.length > 0 && (
+                            <optgroup label="이 키로 확인된 모델">
+                              {verifiedList.map((model) => (
+                                <option key={model} value={model}>
+                                  {model}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {fallbackModels.length > 0 && (
+                            <optgroup label={verifiedList.length > 0 ? '기타 알려진 모델' : '알려진 모델'}>
+                              {fallbackModels.map((model) => (
+                                <option key={model} value={model}>
+                                  {model}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
                         </select>
                         <p
                           className={`text-[11px] leading-relaxed ${
@@ -402,12 +484,13 @@ function SettingsView() {
                         {modelNotice && (
                           <p className="text-[11px] text-amber-200">{modelNotice}</p>
                         )}
+                        <p className="text-[11px] text-slate-400">{statusMessage}</p>
                       </label>
                       <button
                         type="button"
                         onClick={async () => {
                           if (checking) return
-                          await revalidateProviderKey(provider.id)
+                          await revalidateProviderKey(provider.id, undefined, selectedModel)
                         }}
                         disabled={checking}
                         className="rounded-xl border border-slate-700 px-3 py-2 text-[11px] font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200 disabled:cursor-not-allowed disabled:opacity-60"

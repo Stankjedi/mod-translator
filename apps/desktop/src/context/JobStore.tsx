@@ -967,19 +967,24 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         return prev
       }
 
-      const [nextJob, ...restQueue] = prev.queue
-      let nextCurrent: TranslationJob | null = null
+      const finishedJob = prev.currentJob
+      const queue = [...prev.queue]
+      const nextJob = queue.shift() ?? null
+      const nextCurrent = nextJob ? prepareJobForActivation(nextJob) : null
 
-      if (nextJob) {
-        nextCurrent = prepareJobForActivation(nextJob)
-      }
+      const existingIndex = prev.completedJobs.findIndex((job) => job.id === finishedJob.id)
+      const completedJobs =
+        existingIndex === -1
+          ? [...prev.completedJobs, finishedJob]
+          : prev.completedJobs.map((job, index) => (index === existingIndex ? finishedJob : job))
 
       activeJobIdRef.current = nextCurrent?.id ?? null
 
       return {
         ...prev,
         currentJob: nextCurrent,
-        queue: restQueue,
+        queue,
+        completedJobs,
       }
     })
   }, [])
