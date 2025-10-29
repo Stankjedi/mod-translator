@@ -130,6 +130,10 @@ function ProgressView() {
   const sourceLanguageLabel = resolveLanguageLabel(sourceLanguageGuess)
   const targetLanguageLabel = resolveLanguageLabel(targetLanguage)
   const historyEntries = useMemo(() => [...completedJobs].slice(-10).reverse(), [completedJobs])
+  const currentJobFailedFiles = useMemo(
+    () => (currentJob ? Object.entries(currentJob.fileErrors) : []),
+    [currentJob],
+  )
 
   const handleStart = useCallback(async () => {
     if (!currentJob || currentJob.status !== 'pending') return
@@ -321,6 +325,23 @@ function ProgressView() {
             {translatedSummary && <p>{translatedSummary}</p>}
             <p>선택된 파일 {selectedFilePaths.length}개</p>
           </div>
+          {currentJobFailedFiles.length > 0 && (
+            <div className="rounded-lg border border-rose-500/40 bg-rose-950/20 p-3 text-xs text-rose-100">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-rose-200">
+                오류가 발생한 파일
+              </p>
+              <ul className="mt-2 space-y-2">
+                {currentJobFailedFiles.map(([fileName, message]) => (
+                  <li key={fileName} className="space-y-1">
+                    <p className="font-mono text-[11px] text-rose-100 sm:text-xs">{fileName}</p>
+                    <p className="whitespace-pre-wrap text-[11px] text-rose-100/90 sm:text-xs">
+                      {message}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {outputPath && (
             <div className="flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:gap-3">
               <span>
@@ -466,6 +487,7 @@ function ProgressView() {
               const historySource = resolveLanguageLabel(job.sourceLanguageGuess ?? DEFAULT_SOURCE_LANGUAGE)
               const historyTarget = resolveLanguageLabel(job.targetLanguage ?? DEFAULT_TARGET_LANGUAGE)
               const finalLog = job.logs.length ? job.logs[job.logs.length - 1].text : null
+              const failedFileEntries = Object.entries(job.fileErrors ?? {})
               return (
                 <li key={job.id} className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-4">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -480,6 +502,21 @@ function ProgressView() {
                         언어: {historySource} → {historyTarget}
                       </p>
                       {counts && <p className="text-xs text-slate-500">{counts}</p>}
+                      {failedFileEntries.length > 0 && (
+                        <div className="space-y-2 rounded-lg border border-rose-500/40 bg-rose-950/10 p-3 text-[11px] text-rose-100 sm:text-xs">
+                          <p className="font-semibold uppercase tracking-wider text-rose-200">
+                            실패한 파일
+                          </p>
+                          <ul className="space-y-1">
+                            {failedFileEntries.map(([fileName, message]) => (
+                              <li key={fileName} className="space-y-1">
+                                <span className="block font-mono text-rose-100">{fileName}</span>
+                                <span className="block whitespace-pre-wrap text-rose-100/90">{message}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                       <div className="flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:gap-3">
                         <span className="font-mono text-[11px] text-slate-300 sm:text-xs">
                           출력 경로: {job.outputPath}

@@ -89,6 +89,7 @@ export interface TranslationJob {
   files: JobFileEntry[] | null
   filesLoading: boolean
   fileError: string | null
+  fileErrors: Record<string, string>
   selectedFiles: string[]
   sourceLanguageGuess: string
   targetLanguage: string
@@ -185,6 +186,58 @@ const guessSourceLanguageFromFiles = (entries: JobFileEntry[]): string => {
   return DEFAULT_SOURCE_LANGUAGE
 }
 
+const collectFileErrorUpdates = (
+  payload: TranslationProgressEventPayload,
+): { name: string; message: string | null }[] => {
+  const updates: { name: string; message: string | null }[] = []
+
+  if (typeof payload.fileName === 'string' && payload.fileName) {
+    updates.push({ name: payload.fileName, message: payload.fileError ?? null })
+  }
+
+  if (Array.isArray(payload.fileErrors)) {
+    for (const entry of payload.fileErrors) {
+      if (entry && typeof entry.fileName === 'string' && entry.fileName) {
+        updates.push({ name: entry.fileName, message: entry.fileError ?? null })
+      }
+    }
+  }
+
+  return updates
+}
+
+const applyFileErrorUpdates = (
+  job: TranslationJob,
+  payload: TranslationProgressEventPayload,
+): Record<string, string> => {
+  const updates = collectFileErrorUpdates(payload)
+  if (!updates.length) {
+    return job.fileErrors
+  }
+
+  let mutated = false
+  const next = { ...job.fileErrors }
+
+  for (const { name, message } of updates) {
+    if (!name) {
+      continue
+    }
+
+    if (message && message.trim()) {
+      const trimmedMessage = message.trim()
+      if (next[name] !== trimmedMessage) {
+        next[name] = trimmedMessage
+        mutated = true
+      }
+    } else if (Object.prototype.hasOwnProperty.call(next, name)) {
+      delete next[name]
+      mutated = true
+    }
+  }
+
+  return mutated ? next : job.fileErrors
+}
+
 const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   ...job,
   status: 'pending',
@@ -199,6 +252,7 @@ const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   files: null,
   filesLoading: false,
   fileError: null,
+  fileErrors: {},
   selectedFiles: [...job.selectedFiles],
 })
 
@@ -228,6 +282,7 @@ const createJob = (
   files: null,
   filesLoading: false,
   fileError: null,
+  fileErrors: {},
   selectedFiles: [],
   sourceLanguageGuess: DEFAULT_SOURCE_LANGUAGE,
   targetLanguage: DEFAULT_TARGET_LANGUAGE,
@@ -255,11 +310,17 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       nextState: Extract<JobState, 'completed' | 'failed' | 'canceled'>,
       finalLogEntry: JobLogEntry | null,
       finalStats: FinalizeStats,
+      payload?: TranslationProgressEventPayload,
     ) => {
       setState((prev) => {
         if (!prev.currentJob) {
           return prev
         }
+
+        const fileErrors =
+          payload && prev.currentJob.id === payload.jobId
+            ? applyFileErrorUpdates(prev.currentJob, payload)
+            : prev.currentJob.fileErrors
 
         const finishedJob: TranslationJob = {
           ...prev.currentJob,
@@ -274,19 +335,18 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           logs: finalLogEntry
             ? [...prev.currentJob.logs, finalLogEntry]
             : prev.currentJob.logs,
+          fileErrors: { ...fileErrors },
           completedAt: Date.now(),
         }
 
         const [nextJob, ...restQueue] = prev.queue
         let newCurrentJob: TranslationJob | null = null
-        let newActiveJobId: string | null = null
 
         if (nextJob) {
           newCurrentJob = prepareJobForActivation(nextJob)
-          newActiveJobId = newCurrentJob.id
         }
 
-        activeJobIdRef.current = newActiveJobId
+        activeJobIdRef.current = newCurrentJob?.id ?? null
 
         return {
           currentJob: newCurrentJob,
@@ -748,6 +808,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               latestFileSuccess: fileSuccess,
               latestFileError: fileError,
               logs,
+              fileErrors,
             },
           }
         })
@@ -770,7 +831,6 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         const sanitizedLog = containsSensitiveData ? '' : trimmedLog
         const text = sanitizedLog || fallbackText
         const finalLogEntry = text ? createLogEntry(level, text) : null
-
         finalizeCurrentJobAndPromote(payload.state, finalLogEntry, {
           progress: clampProgress(Math.round(payload.progress)),
           translatedCount: payload.translatedCount,
