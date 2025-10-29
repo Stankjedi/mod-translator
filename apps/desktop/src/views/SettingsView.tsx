@@ -4,9 +4,9 @@ import { useI18n } from '../i18n/ko'
 import { maskApiKey } from '../storage/apiKeyStorage'
 import {
   useSettingsStore,
+  type KeyValidationState,
   type ProviderId,
 } from '../context/SettingsStore'
-import { PROVIDER_MODEL_OPTIONS } from '../storage/settingsStorage'
 
 const providers: Array<{ id: ProviderId; name: string; description: string }> = [
   {
@@ -30,6 +30,43 @@ const providers: Array<{ id: ProviderId; name: string; description: string }> = 
     description: 'xAI 모델을 통해 빠른 응답과 유연한 문체를 제공합니다.',
   },
 ]
+
+function statusChip(state: KeyValidationState, checking: boolean) {
+  if (checking) {
+    return {
+      label: '확인 중…',
+      className: 'bg-sky-700 text-sky-100 border-sky-400/40 animate-pulse',
+    }
+  }
+
+  switch (state) {
+    case 'valid':
+      return {
+        label: '키 정상',
+        className: 'bg-emerald-600 text-emerald-100 border-emerald-400/40',
+      }
+    case 'unauthorized':
+      return {
+        label: '인증 실패',
+        className: 'bg-rose-600 text-rose-100 border-rose-400/40',
+      }
+    case 'forbidden':
+      return {
+        label: '권한 없음',
+        className: 'bg-amber-600 text-amber-100 border-amber-400/40',
+      }
+    case 'network_error':
+      return {
+        label: '네트워크 오류',
+        className: 'bg-slate-600 text-slate-100 border-slate-400/40',
+      }
+    default:
+      return {
+        label: '미확인',
+        className: 'bg-slate-700 text-slate-200 border-slate-500/40',
+      }
+  }
+}
 
 function SettingsView() {
   const i18n = useI18n()
@@ -58,6 +95,12 @@ function SettingsView() {
     providerModels,
     setProviderEnabled,
     updateApiKey,
+    providerModelOptions,
+    keyValidation,
+    validationInFlight,
+    modelDiscoveryState,
+    providerModelNotices,
+    revalidateProviderKey,
     concurrency,
     workerCount,
     bucketSize,
@@ -270,8 +313,35 @@ function SettingsView() {
             {providers.map((provider) => {
               const storedValue = apiKeys[provider.id] ?? ''
               const isEditing = editingProvider === provider.id
-              const modelOptions = PROVIDER_MODEL_OPTIONS[provider.id]
+              const modelOptions = providerModelOptions[provider.id] ?? []
               const selectedModel = providerModels[provider.id] ?? modelOptions[0] ?? ''
+              const validation = keyValidation[provider.id] ?? 'unknown'
+              const checking = validationInFlight[provider.id] ?? false
+              const discovery = modelDiscoveryState[provider.id] ?? {
+                source: 'fallback',
+                networkError: false,
+              }
+              const modelNotice = providerModelNotices[provider.id]
+              const { label, className } = statusChip(validation, checking)
+              const badge =
+                discovery.source === 'live'
+                  ? null
+                  : discovery.networkError
+                    ? {
+                        text: '네트워크 오류',
+                        className: 'bg-rose-700/70 text-rose-100 border-rose-400/40',
+                      }
+                    : {
+                        text: '대체 목록',
+                        className: 'bg-amber-700/70 text-amber-100 border-amber-400/40',
+                      }
+              const dropdownNote = checking
+                ? '키 상태를 확인하는 중입니다. 잠시만 기다려 주세요.'
+                : discovery.source === 'live'
+                  ? '이 키로 확인된 모델 목록입니다.'
+                  : discovery.networkError
+                    ? '네트워크 오류로 기본 모델 목록을 사용합니다. 실행 시 실패할 수 있습니다.'
+                    : '실시간 모델 목록을 가져오지 못해 기본 모델 목록을 사용합니다. 키와 모델이 호환되지 않을 수 있습니다.'
               return (
                 <div
                   key={provider.id}
@@ -283,14 +353,34 @@ function SettingsView() {
                         {provider.name} API 키
                       </span>
                       <span className="text-xs text-slate-400">{provider.description}</span>
+                      <span
+                        className={`mt-2 inline-flex w-fit items-center rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wider ${className}`}
+                      >
+                        {label}
+                      </span>
                     </div>
                     <div className="flex flex-col gap-3 sm:items-end">
                       <label className="flex flex-col gap-2 text-xs text-slate-300 sm:text-sm">
-                        <span>모델</span>
+                        <span className="flex items-center gap-2">
+                          <span>모델</span>
+                          {badge && (
+                            <span
+                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${badge.className}`}
+                            >
+                              {badge.text}
+                            </span>
+                          )}
+                        </span>
                         <select
                           value={selectedModel}
                           onChange={(event) => setProviderModel(provider.id, event.target.value)}
-                          className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:w-56 sm:text-sm"
+                          className={`w-full rounded-xl border bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:w-56 sm:text-sm ${
+                            discovery.source === 'live'
+                              ? 'border-slate-800 focus:border-brand-500'
+                              : discovery.networkError
+                                ? 'border-rose-500/60 focus:border-rose-400'
+                                : 'border-amber-500/60 focus:border-amber-400'
+                          }`}
                         >
                           {modelOptions.map((model) => (
                             <option key={model} value={model}>
@@ -298,7 +388,32 @@ function SettingsView() {
                             </option>
                           ))}
                         </select>
+                        <p
+                          className={`text-[11px] leading-relaxed ${
+                            discovery.source === 'live'
+                              ? 'text-slate-500'
+                              : discovery.networkError
+                                ? 'text-rose-200'
+                                : 'text-amber-200'
+                          }`}
+                        >
+                          {dropdownNote}
+                        </p>
+                        {modelNotice && (
+                          <p className="text-[11px] text-amber-200">{modelNotice}</p>
+                        )}
                       </label>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (checking) return
+                          await revalidateProviderKey(provider.id)
+                        }}
+                        disabled={checking}
+                        className="rounded-xl border border-slate-700 px-3 py-2 text-[11px] font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {checking ? '확인 중…' : '키 확인 / 모델 새로고침'}
+                      </button>
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                         {isEditing ? (
                           <>

@@ -1,8 +1,18 @@
 /* eslint-disable react-refresh/only-export-components */
 import type { ReactNode } from 'react'
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import {
   DEFAULT_PERSISTED_SETTINGS,
+  PROVIDER_MODEL_OPTIONS,
   loadPersistedSettings,
   persistSettings,
   type PersistedSettings,
@@ -16,12 +26,26 @@ interface SettingsState extends PersistedSettings {
   apiKeys: ApiKeyMap
 }
 
+export type KeyValidationState =
+  | 'unknown'
+  | 'valid'
+  | 'unauthorized'
+  | 'forbidden'
+  | 'network_error'
+
 interface SettingsStoreValue extends SettingsState {
+  providerModelOptions: Record<ProviderId, string[]>
+  keyValidation: Record<ProviderId, KeyValidationState>
+  validationInFlight: Record<ProviderId, boolean>
+  modelDiscoveryState: Record<ProviderId, ProviderModelDiscoveryState>
+  providerModelNotices: Record<ProviderId, string | null>
   setProviderEnabled: (provider: ProviderId, enabled: boolean) => void
   toggleProvider: (provider: ProviderId) => void
   setActiveProvider: (provider: ProviderId) => void
   setProviderModel: (provider: ProviderId, modelId: string) => void
   updateApiKey: (provider: ProviderId, value: string | null) => void
+  refreshProviderModels: (provider: ProviderId, apiKeyOverride?: string) => Promise<void>
+  revalidateProviderKey: (provider: ProviderId, apiKeyOverride?: string) => Promise<KeyValidationState>
   setConcurrency: (value: number) => void
   setWorkerCount: (value: number) => void
   setBucketSize: (value: number) => void
@@ -30,6 +54,18 @@ interface SettingsStoreValue extends SettingsState {
   setEnforcePlaceholderGuard: (enabled: boolean) => void
   setPrioritizeDllResources: (enabled: boolean) => void
   setEnableQualitySampling: (enabled: boolean) => void
+}
+
+type ProviderModelSource = 'live' | 'fallback'
+
+interface ProviderModelDiscoveryState {
+  source: ProviderModelSource
+  networkError: boolean
+}
+
+interface ProviderValidationResponse {
+  validationStatus: KeyValidationState
+  models: string[]
 }
 
 const SettingsStoreContext = createContext<SettingsStoreValue | undefined>(undefined)
@@ -47,6 +83,184 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     ...loadPersistedSettings(),
     apiKeys: loadApiKeys(),
   }))
+  const [providerModelOptions, setProviderModelOptions] = useState<Record<ProviderId, string[]>>({
+    gemini: [...PROVIDER_MODEL_OPTIONS.gemini],
+    gpt: [...PROVIDER_MODEL_OPTIONS.gpt],
+    claude: [...PROVIDER_MODEL_OPTIONS.claude],
+    grok: [...PROVIDER_MODEL_OPTIONS.grok],
+  })
+  const [keyValidation, setKeyValidation] = useState<Record<ProviderId, KeyValidationState>>({
+    gemini: 'unknown',
+    gpt: 'unknown',
+    claude: 'unknown',
+    grok: 'unknown',
+  })
+  const [validationInFlight, setValidationInFlight] = useState<Record<ProviderId, boolean>>({
+    gemini: false,
+    gpt: false,
+    claude: false,
+    grok: false,
+  })
+  const [modelDiscoveryState, setModelDiscoveryState] = useState<
+    Record<ProviderId, ProviderModelDiscoveryState>
+  >({
+    gemini: { source: 'fallback', networkError: false },
+    gpt: { source: 'fallback', networkError: false },
+    claude: { source: 'fallback', networkError: false },
+    grok: { source: 'fallback', networkError: false },
+  })
+  const [providerModelNotices, setProviderModelNotices] = useState<Record<ProviderId, string | null>>({
+    gemini: null,
+    gpt: null,
+    claude: null,
+    grok: null,
+  })
+  const validationLocks = useRef<
+    Record<ProviderId, { promise: Promise<ProviderValidationResponse>; key: string } | null>
+  >({
+    gemini: null,
+    gpt: null,
+    claude: null,
+    grok: null,
+  })
+
+  const runValidation = useCallback(
+    async (provider: ProviderId, apiKeyOverride?: string): Promise<ProviderValidationResponse> => {
+      const trimmed = (apiKeyOverride ?? state.apiKeys[provider] ?? '').trim()
+
+      const lock = validationLocks.current[provider]
+      if (lock) {
+        if (lock.key === trimmed) {
+          return lock.promise
+        }
+        await lock.promise
+      }
+
+      if (!trimmed) {
+        setValidationInFlight((prev) => ({
+          ...prev,
+          [provider]: false,
+        }))
+        return { validationStatus: 'unauthorized', models: [] }
+      }
+
+      setValidationInFlight((prev) => ({
+        ...prev,
+        [provider]: true,
+      }))
+
+      const task = (async () => {
+        try {
+          const response = await invoke<ProviderValidationResponse>('validate_api_key_and_list_models', {
+            provider,
+            apiKey: trimmed,
+          })
+          return response
+        } catch (error) {
+          console.error(`Failed to validate API key for ${provider}`, error)
+          return { validationStatus: 'network_error', models: [] }
+        }
+      })()
+
+      validationLocks.current[provider] = { promise: task, key: trimmed }
+
+      const result = await task
+
+      validationLocks.current[provider] = null
+      setValidationInFlight((prev) => ({
+        ...prev,
+        [provider]: false,
+      }))
+
+      return result
+    },
+    [setValidationInFlight, state.apiKeys],
+  )
+
+  const applyValidationResult = useCallback(
+    (provider: ProviderId, response: ProviderValidationResponse) => {
+      const fallback = [...PROVIDER_MODEL_OPTIONS[provider]]
+      const normalized = Array.from(
+        new Set(response.models.map((model) => (typeof model === 'string' ? model.trim() : '')).filter(Boolean)),
+      )
+      if (normalized.length > 0) {
+        normalized.sort((a, b) => a.localeCompare(b))
+      }
+      const options = normalized.length > 0 ? normalized : fallback
+      const status = response.validationStatus
+
+      setKeyValidation((prev) => ({
+        ...prev,
+        [provider]: status,
+      }))
+
+      setModelDiscoveryState((prev) => ({
+        ...prev,
+        [provider]: {
+          source: normalized.length > 0 ? 'live' : 'fallback',
+          networkError: status === 'network_error',
+        },
+      }))
+
+      setProviderModelOptions((prev) => ({
+        ...prev,
+        [provider]: options,
+      }))
+
+      let autoSelection: { next: string; previous: string } | null = null
+      setState((prev) => {
+        const current = prev.providerModels[provider] ?? ''
+        if (options.includes(current)) {
+          return prev
+        }
+        const nextModel = options[0] ?? ''
+        if (!nextModel || current === nextModel) {
+          return prev
+        }
+        autoSelection = { next: nextModel, previous: current }
+        return {
+          ...prev,
+          providerModels: {
+            ...prev.providerModels,
+            [provider]: nextModel,
+          },
+        }
+      })
+
+      if (autoSelection) {
+        const { next, previous } = autoSelection
+        const message = previous
+          ? `${previous || '이전'} 모델을 사용할 수 없어 ${next} 모델로 자동 변경했습니다.`
+          : `${next} 모델이 자동으로 선택되었습니다.`
+        setProviderModelNotices((prev) => ({
+          ...prev,
+          [provider]: message,
+        }))
+      } else if (status === 'valid') {
+        setProviderModelNotices((prev) => ({
+          ...prev,
+          [provider]: null,
+        }))
+      }
+    },
+    [setKeyValidation, setModelDiscoveryState, setProviderModelNotices, setProviderModelOptions],
+  )
+
+  const revalidateProviderKey = useCallback(
+    async (provider: ProviderId, apiKeyOverride?: string) => {
+      const result = await runValidation(provider, apiKeyOverride)
+      applyValidationResult(provider, result)
+      return result.validationStatus
+    },
+    [applyValidationResult, runValidation],
+  )
+
+  const refreshProviderModels = useCallback(
+    async (provider: ProviderId, apiKeyOverride?: string) => {
+      await revalidateProviderKey(provider, apiKeyOverride)
+    },
+    [revalidateProviderKey],
+  )
 
   useEffect(() => {
     try {
@@ -143,33 +357,51 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const setProviderModel = useCallback((provider: ProviderId, modelId: string) => {
-    setState((prev) => {
+  const setProviderModel = useCallback(
+    (provider: ProviderId, modelId: string) => {
       const trimmed = modelId.trim()
-      if (!trimmed || prev.providerModels[provider] === trimmed) {
-        return prev
+      if (!trimmed) {
+        return
       }
 
-      return {
-        ...prev,
-        providerModels: {
-          ...prev.providerModels,
-          [provider]: trimmed,
-        },
-      }
-    })
-  }, [])
+      let changed = false
+      setState((prev) => {
+        if (prev.providerModels[provider] === trimmed) {
+          return prev
+        }
+        changed = true
+        return {
+          ...prev,
+          providerModels: {
+            ...prev.providerModels,
+            [provider]: trimmed,
+          },
+        }
+      })
 
-  const updateApiKey = useCallback((provider: ProviderId, value: string | null) => {
-    let outcome: { success: boolean; error?: unknown } = { success: true }
-    setState((prev) => {
-      const nextKeys: ApiKeyMap = { ...prev.apiKeys }
-      const trimmed = (value ?? '').trim()
-      if (trimmed) {
-        nextKeys[provider] = trimmed
-      } else {
-        delete nextKeys[provider]
+      if (changed) {
+        setProviderModelNotices((prev) => ({
+          ...prev,
+          [provider]: null,
+        }))
       }
+    },
+    [setProviderModelNotices],
+  )
+
+  const updateApiKey = useCallback(
+    (provider: ProviderId, value: string | null) => {
+      let outcome: { success: boolean; error?: unknown } = { success: true }
+      let trimmedValue = ''
+      setState((prev) => {
+        const nextKeys: ApiKeyMap = { ...prev.apiKeys }
+        const trimmed = (value ?? '').trim()
+        trimmedValue = trimmed
+        if (trimmed) {
+          nextKeys[provider] = trimmed
+        } else {
+          delete nextKeys[provider]
+        }
 
       try {
         persistApiKeys(nextKeys)
@@ -181,10 +413,19 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       }
     })
 
-    if (!outcome.success) {
-      throw outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error))
-    }
-  }, [])
+      if (!outcome.success) {
+        throw outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error))
+      }
+      setProviderModelNotices((prev) => ({
+        ...prev,
+        [provider]: null,
+      }))
+      ;(async () => {
+        await revalidateProviderKey(provider, trimmedValue)
+      })()
+    },
+    [revalidateProviderKey, setProviderModelNotices],
+  )
 
   const setConcurrency = useCallback((value: number) => {
     setState((prev) => ({ ...prev, concurrency: clampPositiveInteger(value, 1) }))
@@ -221,11 +462,18 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
   const value = useMemo<SettingsStoreValue>(
     () => ({
       ...state,
+      providerModelOptions,
+      keyValidation,
+      validationInFlight,
+      modelDiscoveryState,
+      providerModelNotices,
       setProviderEnabled,
       toggleProvider,
       setActiveProvider,
       setProviderModel,
       updateApiKey,
+      refreshProviderModels,
+      revalidateProviderKey,
       setConcurrency,
       setWorkerCount,
       setBucketSize,
@@ -242,6 +490,13 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setActiveProvider,
       setProviderModel,
       updateApiKey,
+      providerModelOptions,
+      keyValidation,
+      validationInFlight,
+      modelDiscoveryState,
+      providerModelNotices,
+      refreshProviderModels,
+      revalidateProviderKey,
       setConcurrency,
       setWorkerCount,
       setBucketSize,

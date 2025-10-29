@@ -5,6 +5,7 @@ pub mod pipeline;
 pub mod policy;
 mod steam;
 mod time;
+mod validation;
 
 pub use jobs::{
     cancel_translation_job, open_output_folder, start_translation_job, StartTranslationJobPayload,
@@ -17,3 +18,4 @@ pub use library::{
 pub use pipeline::PipelinePlan;
 pub use policy::{default_policy_banner, PolicyBanner, PolicyProfile};
 pub use steam::{detect_steam_path, SteamLocator, SteamPathResponse};
+pub use validation::validate_api_key_and_list_models;
