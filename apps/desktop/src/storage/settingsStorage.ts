@@ -16,7 +16,7 @@ export interface PersistedSettings {
 }
 
 export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
-  selectedProviders: ['gemini', 'gpt'],
+  selectedProviders: ['gemini', 'gpt', 'claude', 'grok'],
   activeProviderId: 'gemini',
   concurrency: 3,
   workerCount: 2,

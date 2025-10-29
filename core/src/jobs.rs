@@ -30,16 +30,21 @@ pub struct StartTranslationJobPayload {
     pub target_lang: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationProgressEventPayload {
     pub job_id: String,
     pub state: String,
     pub progress: f32,
-    pub translated_count: usize,
-    pub total_count: usize,
     pub log: Option<String>,
-    pub error: Option<String>,
+    pub translated_count: u32,
+    pub total_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_success: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -81,10 +86,12 @@ pub fn start_translation_job(
                     job_id: payload.job_id.clone(),
                     state: "failed".into(),
                     progress: 0.0,
+                    log: Some(format!("지원하지 않는 번역기: {}", payload.provider)),
                     translated_count: 0,
                     total_count: 0,
-                    log: Some(format!("지원하지 않는 번역기: {}", payload.provider)),
-                    error: Some("unsupported-provider".into()),
+                    file_name: None,
+                    file_success: None,
+                    file_error: None,
                 },
             );
             return Err(format!("지원하지 않는 번역기: {}", payload.provider));
@@ -99,10 +106,12 @@ pub fn start_translation_job(
                 job_id: payload.job_id.clone(),
                 state: "failed".into(),
                 progress: 0.0,
+                log: Some("API 키가 설정되지 않았습니다.".into()),
                 translated_count: 0,
                 total_count: 0,
-                log: Some("API 키가 설정되지 않았습니다.".into()),
-                error: Some("missing-api-key".into()),
+                file_name: None,
+                file_success: None,
+                file_error: None,
             },
         );
         return Err("선택한 번역기의 API 키를 설정해 주세요.".into());
@@ -182,24 +191,30 @@ async fn run_translation_job(
     let target_lang = payload.target_lang.as_deref().unwrap_or("ko").to_string();
 
     let mut segments = Vec::new();
+    let mut last_file_name: Option<String> = None;
+    let mut last_file_success: Option<bool> = None;
+    let mut last_file_error: Option<String> = None;
     for file in &payload.files {
         let path = PathBuf::from(&file.path);
         let content = match fs::read_to_string(&path) {
             Ok(value) => value,
             Err(err) => {
+                let message = format!("{} 파일을 읽는 중 오류가 발생했습니다: {}", file.path, err);
+                last_file_name = Some(file.path.clone());
+                last_file_success = Some(false);
+                last_file_error = Some(message.clone());
                 emit_progress(
                     &app,
                     TranslationProgressEventPayload {
                         job_id: payload.job_id.clone(),
                         state: "failed".into(),
                         progress: 0.0,
+                        log: Some(message),
                         translated_count: 0,
                         total_count: 0,
-                        log: Some(format!(
-                            "{} 파일을 읽는 중 오류가 발생했습니다: {}",
-                            file.path, err
-                        )),
-                        error: Some(err.to_string()),
+                        file_name: last_file_name.clone(),
+                        file_success: last_file_success,
+                        file_error: last_file_error.clone(),
                     },
                 );
                 return;
@@ -226,10 +241,12 @@ async fn run_translation_job(
             job_id: payload.job_id.clone(),
             state: "running".into(),
             progress: 0.0,
-            translated_count: 0,
-            total_count: total_segments,
             log: Some("번역을 준비하는 중입니다.".into()),
-            error: None,
+            translated_count: 0,
+            total_count: total_segments as u32,
+            file_name: last_file_name.clone(),
+            file_success: last_file_success,
+            file_error: last_file_error.clone(),
         },
     );
 
@@ -240,10 +257,12 @@ async fn run_translation_job(
                 job_id: payload.job_id.clone(),
                 state: "completed".into(),
                 progress: 100.0,
+                log: Some("번역할 문자열이 없습니다.".into()),
                 translated_count: 0,
                 total_count: 0,
-                log: Some("번역할 문자열이 없습니다.".into()),
-                error: None,
+                file_name: last_file_name.clone(),
+                file_success: last_file_success,
+                file_error: last_file_error.clone(),
             },
         );
         return;
@@ -258,28 +277,34 @@ async fn run_translation_job(
                     job_id: payload.job_id.clone(),
                     state: "failed".into(),
                     progress: 0.0,
+                    log: Some("HTTP 클라이언트를 초기화하지 못했습니다.".into()),
                     translated_count: 0,
                     total_count: 0,
-                    log: Some("HTTP 클라이언트를 초기화하지 못했습니다.".into()),
-                    error: Some(err.to_string()),
+                    file_name: last_file_name.clone(),
+                    file_success: last_file_success,
+                    file_error: last_file_error.clone(),
                 },
             );
             return;
         }
     };
 
+    let total_segments = total_segments as u32;
     for (index, segment) in segments.iter().enumerate() {
+        let processed = index as u32;
         if cancel_flag.load(Ordering::SeqCst) {
             emit_progress(
                 &app,
                 TranslationProgressEventPayload {
                     job_id: payload.job_id.clone(),
                     state: "canceled".into(),
-                    progress: percentage(index, total_segments),
-                    translated_count: index,
-                    total_count: total_segments,
+                    progress: percentage(processed, total_segments),
                     log: Some("사용자가 작업을 중단했습니다.".into()),
-                    error: None,
+                    translated_count: processed,
+                    total_count: total_segments,
+                    file_name: last_file_name.clone(),
+                    file_success: last_file_success,
+                    file_error: last_file_error.clone(),
                 },
             );
             return;
@@ -298,37 +323,48 @@ async fn run_translation_job(
             Ok(value) => value,
             Err(error) => {
                 let message = format_translation_error(segment, error);
-                let progress = percentage(index, total_segments);
+                let progress = percentage(processed, total_segments);
+                last_file_name = Some(segment.file_path.clone());
+                last_file_success = Some(false);
+                last_file_error = Some(message.clone());
                 emit_progress(
                     &app,
                     TranslationProgressEventPayload {
                         job_id: payload.job_id.clone(),
                         state: "failed".into(),
                         progress,
-                        translated_count: index,
+                        log: Some(message),
+                        translated_count: processed,
                         total_count: total_segments,
-                        log: Some(message.clone()),
-                        error: Some(message),
+                        file_name: last_file_name.clone(),
+                        file_success: last_file_success,
+                        file_error: last_file_error.clone(),
                     },
                 );
                 return;
             }
         };
 
-        let progress = percentage(index + 1, total_segments);
+        last_file_name = Some(segment.file_path.clone());
+        last_file_success = Some(true);
+        last_file_error = None;
+
+        let progress = percentage(processed + 1, total_segments);
         emit_progress(
             &app,
             TranslationProgressEventPayload {
                 job_id: payload.job_id.clone(),
                 state: "running".into(),
                 progress,
-                translated_count: index + 1,
-                total_count: total_segments,
                 log: Some(format!(
                     "{} {}행 번역 완료",
                     segment.file_path, segment.line_index
                 )),
-                error: None,
+                translated_count: processed + 1,
+                total_count: total_segments,
+                file_name: last_file_name.clone(),
+                file_success: last_file_success,
+                file_error: last_file_error.clone(),
             },
         );
 
@@ -339,10 +375,12 @@ async fn run_translation_job(
                     job_id: payload.job_id.clone(),
                     state: "canceled".into(),
                     progress,
-                    translated_count: index + 1,
-                    total_count: total_segments,
                     log: Some("사용자가 작업을 중단했습니다.".into()),
-                    error: None,
+                    translated_count: processed + 1,
+                    total_count: total_segments,
+                    file_name: last_file_name.clone(),
+                    file_success: last_file_success,
+                    file_error: last_file_error.clone(),
                 },
             );
             return;
@@ -357,10 +395,12 @@ async fn run_translation_job(
             job_id: payload.job_id,
             state: "completed".into(),
             progress: 100.0,
+            log: Some("번역이 완료되었습니다.".into()),
             translated_count: total_segments,
             total_count: total_segments,
-            log: Some("번역이 완료되었습니다.".into()),
-            error: None,
+            file_name: last_file_name,
+            file_success: last_file_success,
+            file_error: last_file_error,
         },
     );
 }
@@ -371,7 +411,7 @@ fn emit_progress(app: &AppHandle, payload: TranslationProgressEventPayload) {
     }
 }
 
-fn percentage(processed: usize, total: usize) -> f32 {
+fn percentage(processed: u32, total: u32) -> f32 {
     if total == 0 {
         return 0.0;
     }

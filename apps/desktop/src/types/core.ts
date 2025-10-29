@@ -49,7 +49,7 @@ export interface SteamPathResponse {
   note: string
 }
 
-export type JobState = 'queued' | 'pending' | 'running' | 'completed' | 'failed' | 'canceled'
+export type JobState = 'pending' | 'running' | 'completed' | 'failed' | 'canceled'
 
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
@@ -72,10 +72,12 @@ export interface TranslationProgressEventPayload {
   jobId: string
   state: TranslationProgressState
   progress: number
+  log?: string | null
   translatedCount: number
   totalCount: number
-  log?: string | null
-  error?: string | null
+  fileName?: string | null
+  fileSuccess?: boolean | null
+  fileError?: string | null
 }
 
 export interface ModFileDescriptor {

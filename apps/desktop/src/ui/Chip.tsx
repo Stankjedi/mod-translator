@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes } from 'react'
 
 export type ChipVariant = 'status' | 'action'
-export type ChipTone = 'primary' | 'idle' | 'info' | 'warning' | 'danger'
+export type ChipTone = 'primary' | 'idle' | 'running' | 'warning' | 'error'
 
 interface BaseChipProps {
   label: string
@@ -19,11 +19,11 @@ type InteractiveProps = {
 export type ChipProps = BaseChipProps & Partial<InteractiveProps>
 
 const toneStyles: Record<ChipTone, string> = {
-  primary: 'border-brand-500/60 bg-brand-500/10 text-brand-100',
+  primary: 'border-brand-400/60 bg-brand-500/10 text-brand-100',
   idle: 'border-slate-700 bg-slate-900/60 text-slate-200',
-  info: 'border-sky-500/50 bg-sky-500/10 text-sky-100',
+  running: 'border-emerald-500/60 bg-emerald-500/10 text-emerald-100',
   warning: 'border-amber-500/60 bg-amber-500/10 text-amber-100',
-  danger: 'border-rose-500/60 bg-rose-500/10 text-rose-100',
+  error: 'border-rose-500/60 bg-rose-500/10 text-rose-100',
 }
 
 const variantStyles: Record<ChipVariant, string> = {

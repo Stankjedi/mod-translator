@@ -12,18 +12,18 @@ const providers: Array<{ id: ProviderId; name: string; description: string }> = 
   },
   {
     id: 'gpt',
-    name: 'gpt',
+    name: 'GPT',
     description: '긴 컨텍스트와 안정적인 번역 품질을 제공합니다.',
   },
   {
     id: 'claude',
     name: '클로드',
-    description: '대사 중심 콘텐츠에 적합한 Anthropic 어댑터입니다.',
+    description: 'Anthropic의 분석 중심 모델로 세밀한 표현에 강합니다.',
   },
   {
     id: 'grok',
     name: '그록',
-    description: '신속한 반복 실험에 적합한 실험적 제공자입니다.',
+    description: 'xAI 모델을 통해 빠른 응답과 유연한 문체를 제공합니다.',
   },
 ]
 

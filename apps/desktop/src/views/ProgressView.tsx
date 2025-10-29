@@ -1,32 +1,33 @@
 import { memo, useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Link } from 'react-router-dom'
-import { useJobStore, type JobFileEntry } from '../context/JobStore'
-import type { JobState, ProviderId } from '../types/core'
+import {
+  useJobStore,
+  type JobFileEntry,
+  providerLabelFor,
+} from '../context/JobStore'
+import type { JobState } from '../types/core'
 import Chip, { type ChipTone } from '../ui/Chip'
 
 const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 const statusLabels: Record<JobState, string> = {
-  queued: '대기 중',
   pending: '준비 중',
-  running: '번역 중',
+  running: '진행 중',
   completed: '완료됨',
   failed: '실패',
   canceled: '중단됨',
 }
 
 const statusTones: Record<JobState, ChipTone> = {
-  queued: 'idle',
   pending: 'idle',
-  running: 'primary',
-  completed: 'info',
-  failed: 'danger',
-  canceled: 'idle',
+  running: 'running',
+  completed: 'primary',
+  failed: 'error',
+  canceled: 'warning',
 }
 
 const progressClasses: Record<JobState, string> = {
-  queued: 'bg-slate-600',
   pending: 'bg-slate-600',
   running: 'bg-brand-500',
   completed: 'bg-emerald-500',
@@ -47,13 +48,6 @@ const languageBadges: Record<string, string> = {
   pl: 'PL',
   it: 'IT',
   ko: 'KO',
-}
-
-const providerLabels: Record<ProviderId, string> = {
-  gemini: '제미니',
-  gpt: 'GPT',
-  claude: 'Claude',
-  grok: 'Grok',
 }
 
 const DEFAULT_SOURCE_LANGUAGE = 'en'
@@ -84,7 +78,7 @@ function ProgressView() {
   const [cancelError, setCancelError] = useState<string | null>(null)
   const [openError, setOpenError] = useState<string | null>(null)
   const [targetLanguageDraft, setTargetLanguageDraft] = useState(DEFAULT_TARGET_LANGUAGE)
-  const activeJobId = currentJob?.jobId ?? null
+  const activeJobId = currentJob?.id ?? null
   const shouldLoadFiles = Boolean(
     activeJobId && !currentJob?.files && !currentJob?.filesLoading && !currentJob?.fileError,
   )
@@ -125,7 +119,7 @@ function ProgressView() {
   const selectedFilePaths = currentJob?.selectedFiles ?? EMPTY_SELECTED_FILES
   const sourceLanguageGuess = currentJob?.sourceLanguageGuess ?? DEFAULT_SOURCE_LANGUAGE
   const targetLanguage = currentJob?.targetLanguage ?? DEFAULT_TARGET_LANGUAGE
-  const outputPath = currentJob?.outputPath?.trim() || currentJob?.installPath?.trim() || ''
+  const outputPath = currentJob ? currentJob.outputPath : ''
 
   const autoSelectedCount = useMemo(
     () => files.filter((entry) => entry.autoSelected).length,
@@ -136,6 +130,10 @@ function ProgressView() {
   const sourceLanguageLabel = resolveLanguageLabel(sourceLanguageGuess)
   const targetLanguageLabel = resolveLanguageLabel(targetLanguage)
   const historyEntries = useMemo(() => [...completedJobs].slice(-10).reverse(), [completedJobs])
+  const currentJobFailedFiles = useMemo(
+    () => (currentJob ? Object.entries(currentJob.fileErrors) : []),
+    [currentJob],
+  )
 
   const handleStart = useCallback(async () => {
     if (!currentJob || currentJob.status !== 'pending') return
@@ -215,6 +213,17 @@ function ProgressView() {
     }
   }, [currentJob])
 
+  const handleOpenHistoryOutput = useCallback(async (path: string) => {
+    if (!path.trim() || !isTauriRuntime()) {
+      return
+    }
+    try {
+      await invoke('open_output_folder', { path })
+    } catch (error) {
+      console.error('완료된 작업 출력 폴더를 여는 중 오류가 발생했습니다.', error)
+    }
+  }, [])
+
   if (!currentJob) {
     return (
       <div className="mx-auto flex max-w-3xl flex-col items-center justify-center gap-6 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-10 text-center text-slate-300">
@@ -248,20 +257,17 @@ function ProgressView() {
   const showStopButton = currentJob.status === 'running'
   const stopButtonDisabled = currentJob.cancelRequested || currentJob.status !== 'running'
   const stopButtonLabel = currentJob.cancelRequested ? '중단 요청됨…' : '중단'
-  const providerDisplay = currentJob.providerId
-    ? providerLabels[currentJob.providerId] ?? currentJob.providerId.toUpperCase()
-    : currentJob.providerLabel
+  const providerDisplay = providerLabelFor(currentJob.providerId)
   const translatedSummary =
     currentJob.totalCount > 0
       ? `${currentJob.translatedCount} / ${currentJob.totalCount}개 번역됨`
       : null
   const startButtonLabel =
-    currentJob.status === 'running'
-      ? '번역 진행 중'
-      : isStarting
-        ? '준비 중...'
-        : '번역 시작'
+    currentJob.status === 'running' ? '번역 진행 중' : isStarting ? '준비 중...' : '번역 시작'
   const showTargetLanguageEditor = currentJob.status === 'pending'
+  const latestLogText = currentJob.logs.length
+    ? currentJob.logs[currentJob.logs.length - 1].text
+    : '번역 작업을 시작하면 진행 메시지가 여기에 표시됩니다.'
 
   return (
     <div className="space-y-6">
@@ -274,6 +280,7 @@ function ProgressView() {
           {cancelError && <p className="mt-2 text-xs text-rose-300">{cancelError}</p>}
         </div>
         <div className="flex items-center gap-3">
+          <Chip label={`번역기: ${providerDisplay}`} tone="idle" />
           <Chip label={statusLabel} tone={statusTone} />
           {showStopButton && (
             <button
@@ -302,7 +309,7 @@ function ProgressView() {
         </div>
 
         <div className="space-y-4 text-sm text-slate-300">
-          <p>{currentJob.message ?? '번역 작업을 시작하면 진행 메시지가 여기에 표시됩니다.'}</p>
+          <p>{latestLogText}</p>
           <div className="flex items-center gap-3 text-xs text-slate-400">
             <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800/60">
               <div
@@ -318,6 +325,23 @@ function ProgressView() {
             {translatedSummary && <p>{translatedSummary}</p>}
             <p>선택된 파일 {selectedFilePaths.length}개</p>
           </div>
+          {currentJobFailedFiles.length > 0 && (
+            <div className="rounded-lg border border-rose-500/40 bg-rose-950/20 p-3 text-xs text-rose-100">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-rose-200">
+                오류가 발생한 파일
+              </p>
+              <ul className="mt-2 space-y-2">
+                {currentJobFailedFiles.map(([fileName, message]) => (
+                  <li key={fileName} className="space-y-1">
+                    <p className="font-mono text-[11px] text-rose-100 sm:text-xs">{fileName}</p>
+                    <p className="whitespace-pre-wrap text-[11px] text-rose-100/90 sm:text-xs">
+                      {message}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {outputPath && (
             <div className="flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:gap-3">
               <span>
@@ -415,20 +439,25 @@ function ProgressView() {
         <h4 className="text-sm font-semibold text-slate-200">실시간 로그</h4>
         {currentJob.logs.length ? (
           <ul className="space-y-2 text-xs text-slate-300">
-            {currentJob.logs.map((entry) => (
+            {currentJob.logs.map((entry, index) => (
               <li
-                key={entry.id}
+                // eslint-disable-next-line react/no-array-index-key
+                key={`${entry.ts}-${index}`}
                 className={`rounded-lg border border-slate-800/60 bg-slate-950/40 px-3 py-2 ${
-                  entry.level === 'error' ? 'border-rose-500/40 text-rose-200' : ''
+                  entry.level === 'error'
+                    ? 'border-rose-500/40 text-rose-200'
+                    : entry.level === 'warn'
+                      ? 'border-amber-500/40 text-amber-100'
+                      : ''
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-medium text-slate-200">
-                    {new Date(entry.timestamp).toLocaleTimeString()}
+                    {new Date(entry.ts).toLocaleTimeString()}
                   </span>
                   <span className="text-[10px] uppercase tracking-widest text-slate-500">{entry.level}</span>
                 </div>
-                <p className="mt-1 whitespace-pre-wrap">{entry.message}</p>
+                <p className="mt-1 whitespace-pre-wrap">{entry.text}</p>
               </li>
             ))}
           </ul>
@@ -447,35 +476,63 @@ function ProgressView() {
         {historyEntries.length ? (
           <ul className="space-y-3 text-xs text-slate-300">
             {historyEntries.map((job) => {
-              const historyProvider = job.providerId
-                ? providerLabels[job.providerId] ?? job.providerId.toUpperCase()
-                : job.providerLabel ?? '미지정'
+              const historyProvider = providerLabelFor(job.providerId)
               const historyStatusLabel = statusLabels[job.status]
               const historyTone = statusTones[job.status]
               const counts =
                 job.totalCount > 0
                   ? `${job.translatedCount} / ${job.totalCount}개 번역됨`
                   : `진행률 ${Math.round(job.progress)}%`
-              const completionTime = new Date(job.lastUpdated).toLocaleString()
+              const completionTime = new Date(job.completedAt ?? job.createdAt).toLocaleString()
               const historySource = resolveLanguageLabel(job.sourceLanguageGuess ?? DEFAULT_SOURCE_LANGUAGE)
               const historyTarget = resolveLanguageLabel(job.targetLanguage ?? DEFAULT_TARGET_LANGUAGE)
+              const finalLog = job.logs.length ? job.logs[job.logs.length - 1].text : null
+              const failedFileEntries = Object.entries(job.fileErrors ?? {})
               return (
-                <li key={job.jobId} className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-4">
+                <li key={job.id} className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-4">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div className="space-y-1">
                       <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-white">
                         <span>{job.modName}</span>
+                        <Chip label={historyProvider} tone="idle" />
                         <Chip label={historyStatusLabel} tone={historyTone} />
                       </div>
-                      <p className="text-xs text-slate-400">{historyProvider} · 완료 {completionTime}</p>
+                      <p className="text-xs text-slate-400">완료 {completionTime}</p>
                       <p className="text-xs text-slate-500">
                         언어: {historySource} → {historyTarget}
                       </p>
                       {counts && <p className="text-xs text-slate-500">{counts}</p>}
+                      {failedFileEntries.length > 0 && (
+                        <div className="space-y-2 rounded-lg border border-rose-500/40 bg-rose-950/10 p-3 text-[11px] text-rose-100 sm:text-xs">
+                          <p className="font-semibold uppercase tracking-wider text-rose-200">
+                            실패한 파일
+                          </p>
+                          <ul className="space-y-1">
+                            {failedFileEntries.map(([fileName, message]) => (
+                              <li key={fileName} className="space-y-1">
+                                <span className="block font-mono text-rose-100">{fileName}</span>
+                                <span className="block whitespace-pre-wrap text-rose-100/90">{message}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <div className="flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:gap-3">
+                        <span className="font-mono text-[11px] text-slate-300 sm:text-xs">
+                          출력 경로: {job.outputPath}
+                        </span>
+                        {isTauriRuntime() && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenHistoryOutput(job.outputPath)}
+                            className="inline-flex w-fit items-center justify-center rounded-full border border-slate-700 px-3 py-1 text-[11px] font-semibold text-slate-200 transition hover:border-brand-400 hover:text-white"
+                          >
+                            폴더 열기
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    {job.message && (
-                      <p className="max-w-md text-xs text-slate-400">{job.message}</p>
-                    )}
+                    {finalLog && <p className="max-w-md text-xs text-slate-400">{finalLog}</p>}
                   </div>
                 </li>
               )

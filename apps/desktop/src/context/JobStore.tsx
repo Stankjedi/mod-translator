@@ -42,8 +42,8 @@ const LANGUAGE_PRIORITY = [
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   gemini: '제미니',
   gpt: 'GPT',
-  claude: 'Claude',
-  grok: 'Grok',
+  claude: '클로드',
+  grok: '그록',
 }
 
 const createId = () =>
@@ -51,13 +51,12 @@ const createId = () =>
     ? crypto.randomUUID()
     : `job-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
-export type JobLogLevel = 'info' | 'error'
+export type JobLogLevel = 'info' | 'warn' | 'error'
 
 export interface JobLogEntry {
-  id: string
+  ts: number
+  text: string
   level: JobLogLevel
-  message: string
-  timestamp: number
 }
 
 export interface JobFileEntry {
@@ -68,44 +67,49 @@ export interface JobFileEntry {
   selected: boolean
 }
 
-export interface QueueJob {
-  jobId: string
+export interface TranslationJob {
+  id: string
   modId: string
   workshopId: string
   modName: string
   gameName: string
   installPath: string
-  outputPath: string | null
-  progress: number
+  outputPath: string
   status: JobState
-  logs: JobLogEntry[]
-  backendJobId: string | null
-  message: string | null
-  providerId: ProviderId | null
-  providerLabel: string | null
-  providerApiKey: string | null
+  providerId: ProviderId
+  providerApiKey: string
+  progress: number
   translatedCount: number
   totalCount: number
-  selectedFiles: string[]
-  sourceLanguageGuess: string | null
-  targetLanguage: string | null
-  lastUpdated: number
+  latestFileName: string | null
+  latestFileSuccess: boolean | null
+  latestFileError: string | null
+  cancelRequested: boolean
+  logs: JobLogEntry[]
   files: JobFileEntry[] | null
   filesLoading: boolean
   fileError: string | null
-  cancelRequested: boolean
+  fileErrors: Record<string, string>
+  selectedFiles: string[]
+  sourceLanguageGuess: string
+  targetLanguage: string
+  createdAt: number
+  completedAt?: number
 }
 
 interface JobStoreState {
-  currentJob: QueueJob | null
-  queue: QueueJob[]
-  completedJobs: QueueJob[]
+  currentJob: TranslationJob | null
+  queue: TranslationJob[]
+  completedJobs: TranslationJob[]
 }
 
 interface FinalizeStats {
-  progress?: number
-  translatedCount?: number
-  totalCount?: number
+  progress: number
+  translatedCount: number
+  totalCount: number
+  fileName: string | null
+  fileSuccess: boolean | null
+  fileError: string | null
 }
 
 export interface EnqueueJobInput {
@@ -120,10 +124,11 @@ export type EnqueueJobError =
   | 'duplicate-active'
   | 'duplicate-queued'
   | 'invalid-path'
+  | 'missing-provider'
   | 'missing-api-key'
 
 export interface EnqueueJobResult {
-  job: QueueJob
+  job: TranslationJob
   promoted: boolean
   error: EnqueueJobError | null
 }
@@ -135,15 +140,11 @@ export interface StartTranslationOptions {
 }
 
 interface JobStoreValue {
-  currentJob: QueueJob | null
-  queue: QueueJob[]
-  completedJobs: QueueJob[]
+  currentJob: TranslationJob | null
+  queue: TranslationJob[]
+  completedJobs: TranslationJob[]
   enqueueJob: (input: EnqueueJobInput) => EnqueueJobResult
-  promoteNextJob: () => void
   appendLog: (message: string, level?: JobLogLevel) => void
-  markCurrentJobCompleted: (message?: string | null, stats?: FinalizeStats) => void
-  markCurrentJobFailed: (message?: string | null, stats?: FinalizeStats) => void
-  markCurrentJobCanceled: (message?: string | null, stats?: FinalizeStats) => void
   cancelQueuedJob: (jobId: string) => boolean
   loadFilesForCurrentJob: () => Promise<void>
   toggleCurrentJobFileSelection: (path: string) => void
@@ -161,11 +162,10 @@ const clampProgress = (value: number) => {
   return Math.min(100, Math.max(0, value))
 }
 
-const createLogEntry = (level: JobLogLevel, message: string): JobLogEntry => ({
-  id: createId(),
+const createLogEntry = (level: JobLogLevel, text: string): JobLogEntry => ({
+  ts: Date.now(),
+  text,
   level,
-  message,
-  timestamp: Date.now(),
 })
 
 const guessSourceLanguageFromFiles = (entries: JobFileEntry[]): string => {
@@ -186,56 +186,111 @@ const guessSourceLanguageFromFiles = (entries: JobFileEntry[]): string => {
   return DEFAULT_SOURCE_LANGUAGE
 }
 
-const prepareJobForActivation = (job: QueueJob): QueueJob => ({
+const collectFileErrorUpdates = (
+  payload: TranslationProgressEventPayload,
+): { name: string; message: string | null }[] => {
+  const updates: { name: string; message: string | null }[] = []
+
+  if (typeof payload.fileName === 'string' && payload.fileName) {
+    updates.push({ name: payload.fileName, message: payload.fileError ?? null })
+  }
+
+  if (Array.isArray(payload.fileErrors)) {
+    for (const entry of payload.fileErrors) {
+      if (entry && typeof entry.fileName === 'string' && entry.fileName) {
+        updates.push({ name: entry.fileName, message: entry.fileError ?? null })
+      }
+    }
+  }
+
+  return updates
+}
+
+const applyFileErrorUpdates = (
+  job: TranslationJob,
+  payload: TranslationProgressEventPayload,
+): Record<string, string> => {
+  const updates = collectFileErrorUpdates(payload)
+  if (!updates.length) {
+    return job.fileErrors
+  }
+
+  let mutated = false
+  const next = { ...job.fileErrors }
+
+  for (const { name, message } of updates) {
+    if (!name) {
+      continue
+    }
+
+    if (message && message.trim()) {
+      const trimmedMessage = message.trim()
+      if (next[name] !== trimmedMessage) {
+        next[name] = trimmedMessage
+        mutated = true
+      }
+    } else if (Object.prototype.hasOwnProperty.call(next, name)) {
+      delete next[name]
+      mutated = true
+    }
+  }
+
+  return mutated ? next : job.fileErrors
+}
+
+const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   ...job,
   status: 'pending',
   progress: 0,
-  backendJobId: null,
-  message: '번역 대기 중입니다. 파일을 선택하고 번역을 시작하세요.',
-  logs: [],
-  selectedFiles: [...job.selectedFiles],
-  sourceLanguageGuess: job.sourceLanguageGuess ?? DEFAULT_SOURCE_LANGUAGE,
-  targetLanguage: job.targetLanguage ?? DEFAULT_TARGET_LANGUAGE,
   translatedCount: 0,
   totalCount: 0,
-  lastUpdated: Date.now(),
+  latestFileName: null,
+  latestFileSuccess: null,
+  latestFileError: null,
+  cancelRequested: false,
+  logs: [],
   files: null,
   filesLoading: false,
   fileError: null,
-  cancelRequested: false,
-  outputPath: job.outputPath ?? job.installPath,
+  fileErrors: {},
+  selectedFiles: [...job.selectedFiles],
 })
 
-const createJob = (input: EnqueueJobInput): QueueJob => ({
-  jobId: createId(),
+const createJob = (
+  input: EnqueueJobInput,
+  providerId: ProviderId,
+  providerApiKey: string,
+): TranslationJob => ({
+  id: createId(),
   modId: input.modId,
   workshopId: input.workshopId ?? input.modId,
   modName: input.modName,
   gameName: input.gameName,
   installPath: input.installPath,
   outputPath: input.installPath,
+  status: 'pending',
+  providerId,
+  providerApiKey,
   progress: 0,
-  status: 'queued',
-  logs: [],
-  backendJobId: null,
-  message: null,
-  providerId: null,
-  providerLabel: null,
-  providerApiKey: null,
   translatedCount: 0,
   totalCount: 0,
-  selectedFiles: [],
-  sourceLanguageGuess: DEFAULT_SOURCE_LANGUAGE,
-  targetLanguage: DEFAULT_TARGET_LANGUAGE,
-  lastUpdated: Date.now(),
+  latestFileName: null,
+  latestFileSuccess: null,
+  latestFileError: null,
+  cancelRequested: false,
+  logs: [],
   files: null,
   filesLoading: false,
   fileError: null,
-  cancelRequested: false,
+  fileErrors: {},
+  selectedFiles: [],
+  sourceLanguageGuess: DEFAULT_SOURCE_LANGUAGE,
+  targetLanguage: DEFAULT_TARGET_LANGUAGE,
+  createdAt: Date.now(),
 })
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
-  const { activeProviderId, selectedProviders, apiKeys } = useSettingsStore()
+  const { activeProviderId, apiKeys } = useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
@@ -243,232 +298,191 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
   })
   const activeJobIdRef = useRef<string | null>(null)
 
+  const providerApiKeyRef = useRef<string>('')
+
   useEffect(() => {
-    activeJobIdRef.current = state.currentJob?.jobId ?? null
-  }, [state.currentJob?.jobId])
-
-  const promoteNextJob = useCallback(() => {
-    setState((prev) => {
-      if (prev.queue.length === 0) {
-        if (!prev.currentJob) {
-          return prev
-        }
-        activeJobIdRef.current = null
-        return {
-          ...prev,
-          currentJob: null,
-          queue: [],
-        }
-      }
-
-      const [nextJob, ...rest] = prev.queue
-      const nextCurrent = prepareJobForActivation(nextJob)
-      activeJobIdRef.current = nextCurrent.jobId
-
-      return {
-        ...prev,
-        currentJob: nextCurrent,
-        queue: rest,
-      }
-    })
-  }, [])
-
-  const appendLog = useCallback((message: string, level: JobLogLevel = 'info') => {
-    const trimmed = message.trim()
-    if (!trimmed) {
-      return
-    }
-    const entry = createLogEntry(level, trimmed)
-    setState((prev) => {
-      if (!prev.currentJob) return prev
-      return {
-        ...prev,
-        currentJob: {
-          ...prev.currentJob,
-          logs: [...prev.currentJob.logs, entry],
-          lastUpdated: Date.now(),
-        },
-      }
-    })
-  }, [])
+    activeJobIdRef.current = state.currentJob?.id ?? null
+    providerApiKeyRef.current = state.currentJob?.providerApiKey ?? ''
+  }, [state.currentJob?.id, state.currentJob?.providerApiKey])
 
   const finalizeCurrentJobAndPromote = useCallback(
     (
       nextState: Extract<JobState, 'completed' | 'failed' | 'canceled'>,
       finalLogEntry: JobLogEntry | null,
-      finalStats: FinalizeStats = {},
+      finalStats: FinalizeStats,
+      payload?: TranslationProgressEventPayload,
     ) => {
       setState((prev) => {
         if (!prev.currentJob) {
           return prev
         }
 
-        const derivedProgress =
-          finalStats.progress ?? (nextState === 'completed' ? 100 : prev.currentJob.progress)
-        const derivedTranslated = finalStats.translatedCount ?? prev.currentJob.translatedCount
-        const derivedTotal = finalStats.totalCount ?? prev.currentJob.totalCount
-        const archivedLogs = finalLogEntry
-          ? [...prev.currentJob.logs, finalLogEntry]
-          : prev.currentJob.logs
-        const archivedJob: QueueJob = {
+        const fileErrors =
+          payload && prev.currentJob.id === payload.jobId
+            ? applyFileErrorUpdates(prev.currentJob, payload)
+            : prev.currentJob.fileErrors
+
+        const finishedJob: TranslationJob = {
           ...prev.currentJob,
           status: nextState,
-          progress: derivedProgress,
-          translatedCount: derivedTranslated,
-          totalCount: derivedTotal,
+          progress: finalStats.progress,
+          translatedCount: finalStats.translatedCount,
+          totalCount: finalStats.totalCount,
+          latestFileName: finalStats.fileName,
+          latestFileSuccess: finalStats.fileSuccess,
+          latestFileError: finalStats.fileError,
           cancelRequested: false,
-          logs: archivedLogs,
-          message: finalLogEntry?.message ?? prev.currentJob.message,
-          lastUpdated: Date.now(),
+          logs: finalLogEntry
+            ? [...prev.currentJob.logs, finalLogEntry]
+            : prev.currentJob.logs,
+          fileErrors: { ...fileErrors },
+          completedAt: Date.now(),
         }
 
         const [nextJob, ...restQueue] = prev.queue
-        const nextCurrent = nextJob ? prepareJobForActivation(nextJob) : null
-        activeJobIdRef.current = nextCurrent?.jobId ?? null
+        let newCurrentJob: TranslationJob | null = null
+
+        if (nextJob) {
+          newCurrentJob = prepareJobForActivation(nextJob)
+        }
+
+        activeJobIdRef.current = newCurrentJob?.id ?? null
 
         return {
-          ...prev,
-          currentJob: nextCurrent,
+          currentJob: newCurrentJob,
           queue: restQueue,
-          completedJobs: [...prev.completedJobs, archivedJob],
+          completedJobs: [...prev.completedJobs, finishedJob],
         }
       })
     },
     [],
   )
 
-  const markCurrentJobCompleted = useCallback(
-    (message?: string | null, stats?: FinalizeStats) => {
-      const trimmed = message?.trim() ?? null
-      const logEntry = trimmed ? createLogEntry('info', trimmed) : null
-      finalizeCurrentJobAndPromote('completed', logEntry, stats ?? {})
-    },
-    [finalizeCurrentJobAndPromote],
-  )
+  const appendLog = useCallback((message: string, level: JobLogLevel = 'info') => {
+    const trimmed = message.trim()
+    if (!trimmed) {
+      return
+    }
 
-  const markCurrentJobFailed = useCallback(
-    (message?: string | null, stats?: FinalizeStats) => {
-      const trimmed = message?.trim() ?? null
-      const logEntry = trimmed ? createLogEntry('error', trimmed) : null
-      finalizeCurrentJobAndPromote('failed', logEntry, stats ?? {})
-    },
-    [finalizeCurrentJobAndPromote],
-  )
+    setState((prev) => {
+      if (!prev.currentJob) {
+        return prev
+      }
 
-  const markCurrentJobCanceled = useCallback(
-    (message?: string | null, stats?: FinalizeStats) => {
-      const trimmed = message?.trim() ?? null
-      const logEntry = trimmed ? createLogEntry('info', trimmed) : null
-      finalizeCurrentJobAndPromote('canceled', logEntry, stats ?? {})
-    },
-    [finalizeCurrentJobAndPromote],
-  )
+      const logEntry = createLogEntry(level, trimmed)
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          logs: [...prev.currentJob.logs, logEntry],
+        },
+      }
+    })
+  }, [])
 
   const enqueueJob = useCallback(
     (input: EnqueueJobInput): EnqueueJobResult => {
-      let result: EnqueueJobResult | null = null
+      let outcome: EnqueueJobResult | null = null
 
-      const providerId = activeProviderId ?? selectedProviders[0] ?? null
-      const providerLabel = providerId ? PROVIDER_LABELS[providerId] ?? providerId.toUpperCase() : null
-      const providerApiKeyRaw = providerId ? apiKeys[providerId] ?? null : null
-      const providerApiKey = providerApiKeyRaw?.trim().length ? providerApiKeyRaw.trim() : null
+      const providerId = activeProviderId
+      if (!providerId) {
+        const placeholderJob = createJob(input, 'gemini', '')
+        outcome = { job: placeholderJob, promoted: false, error: 'missing-provider' }
+        return outcome
+      }
+
+      const apiKeyRaw = apiKeys[providerId] ?? ''
+      const apiKey = apiKeyRaw.trim()
+
+      if (!apiKey) {
+        const placeholderJob = createJob(input, providerId, '')
+        outcome = { job: placeholderJob, promoted: false, error: 'missing-api-key' }
+        return outcome
+      }
+
+      const baseJob = createJob(input, providerId, apiKey)
 
       setState((prev) => {
         if (prev.currentJob && prev.currentJob.modId === input.modId) {
-          result = { job: prev.currentJob, promoted: false, error: 'duplicate-active' }
+          outcome = { job: prev.currentJob, promoted: false, error: 'duplicate-active' }
           return prev
         }
 
-      const duplicateQueued = prev.queue.find((job) => job.modId === input.modId)
-      if (duplicateQueued) {
-        result = { job: duplicateQueued, promoted: false, error: 'duplicate-queued' }
-        return prev
-      }
-
-      const job: QueueJob = {
-        ...createJob(input),
-        providerId,
-        providerLabel,
-        providerApiKey,
-      }
-
-      if (!providerId) {
-        result = { job, promoted: false, error: 'missing-api-key' }
-        return prev
-      }
-
-      if (providerId && !providerApiKey) {
-        result = { job, promoted: false, error: 'missing-api-key' }
-        return prev
-      }
-      const trimmedPath = job.installPath.trim()
-
-      if (!trimmedPath) {
-        const failureLog = createLogEntry(
-          'error',
-          '모드 설치 경로가 유효하지 않아 작업을 완료할 수 없습니다.',
-        )
-        const failedJob: QueueJob = {
-          ...job,
-          installPath: job.installPath,
-          status: 'failed',
-          logs: [failureLog],
-          lastUpdated: Date.now(),
+        const duplicateQueued = prev.queue.find((job) => job.modId === input.modId)
+        if (duplicateQueued) {
+          outcome = { job: duplicateQueued, promoted: false, error: 'duplicate-queued' }
+          return prev
         }
 
-        result = { job: failedJob, promoted: false, error: 'invalid-path' }
+        const trimmedPath = baseJob.installPath.trim()
+        if (!trimmedPath) {
+          const failureLog = createLogEntry(
+            'error',
+            '모드 설치 경로가 유효하지 않아 작업을 완료할 수 없습니다.',
+          )
 
+          const failedJob: TranslationJob = {
+            ...baseJob,
+            status: 'failed',
+            logs: [failureLog],
+            completedAt: Date.now(),
+          }
+
+          outcome = { job: failedJob, promoted: false, error: 'invalid-path' }
+
+          return {
+            ...prev,
+            completedJobs: [...prev.completedJobs, failedJob],
+          }
+        }
+
+        const normalizedJob: TranslationJob = {
+          ...baseJob,
+          installPath: trimmedPath,
+          outputPath: baseJob.outputPath?.trim() || trimmedPath,
+        }
+
+        if (!prev.currentJob) {
+          const activated = prepareJobForActivation(normalizedJob)
+          outcome = { job: activated, promoted: true, error: null }
+          activeJobIdRef.current = activated.id
+          return {
+            ...prev,
+            currentJob: activated,
+          }
+        }
+
+        outcome = { job: normalizedJob, promoted: false, error: null }
         return {
           ...prev,
-          completedJobs: [...prev.completedJobs, failedJob],
+          queue: [...prev.queue, normalizedJob],
         }
+      })
+
+      if (!outcome) {
+        throw new Error('enqueueJob 결과를 결정하지 못했습니다.')
       }
 
-      const normalizedJob: QueueJob = {
-        ...job,
-        installPath: trimmedPath,
-        outputPath: job.outputPath ?? trimmedPath,
-        lastUpdated: Date.now(),
-      }
-
-      if (!prev.currentJob) {
-        const activated = prepareJobForActivation(normalizedJob)
-        result = { job: activated, promoted: true, error: null }
-        activeJobIdRef.current = activated.jobId
-        return {
-          ...prev,
-          currentJob: activated,
-        }
-      }
-
-      result = { job: normalizedJob, promoted: false, error: null }
-      return {
-        ...prev,
-        queue: [...prev.queue, normalizedJob],
-      }
-    })
-
-    if (!result) {
-      throw new Error('enqueueJob 결과를 결정하지 못했습니다.')
-    }
-
-    return result
-  }, [activeProviderId, apiKeys, selectedProviders])
+      return outcome
+    },
+    [activeProviderId, apiKeys],
+  )
 
   const cancelQueuedJob = useCallback((jobId: string) => {
     let cancelled = false
     setState((prev) => {
-      const index = prev.queue.findIndex((job) => job.jobId === jobId)
+      const index = prev.queue.findIndex((job) => job.id === jobId)
       if (index === -1) {
         return prev
       }
 
       const job = prev.queue[index]
-      const canceledJob: QueueJob = {
+      const canceledJob: TranslationJob = {
         ...job,
         status: 'canceled',
-        lastUpdated: Date.now(),
         cancelRequested: false,
+        completedAt: Date.now(),
       }
 
       cancelled = true
@@ -483,194 +497,24 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     return cancelled
   }, [])
 
-  const requestCancelCurrentJob = useCallback(async () => {
-    const activeJob = state.currentJob
-    if (!activeJob) {
-      return false
-    }
-
-    if (activeJob.cancelRequested) {
-      return true
-    }
-
-    setState((prev) => {
-      if (!prev.currentJob || prev.currentJob.jobId !== activeJob.jobId) {
-        return prev
-      }
-
-      return {
-        ...prev,
-        currentJob: {
-          ...prev.currentJob,
-          cancelRequested: true,
-          lastUpdated: Date.now(),
-        },
-      }
-    })
-
-    appendLog('현재 작업 중단을 요청했습니다.')
-
-    if (!isTauri()) {
-      return true
-    }
-
-    try {
-      await invoke('cancel_translation_job', { jobId: activeJob.jobId })
-      return true
-    } catch (error) {
-      console.error('번역 작업 중단 요청에 실패했습니다.', error)
-      appendLog('작업 중단 요청에 실패했습니다. 다시 시도해 주세요.', 'error')
-      setState((prev) => {
-        if (!prev.currentJob || prev.currentJob.jobId !== activeJob.jobId) {
-          return prev
-        }
-
-        return {
-          ...prev,
-          currentJob: {
-            ...prev.currentJob,
-            cancelRequested: false,
-            lastUpdated: Date.now(),
-          },
-        }
-      })
-
-      return false
-    }
-  }, [appendLog, state.currentJob])
-
-  const toggleCurrentJobFileSelection = useCallback((path: string) => {
-    setState((prev) => {
-      if (!prev.currentJob || !prev.currentJob.files) {
-        return prev
-      }
-
-      const index = prev.currentJob.files.findIndex((file) => file.path === path)
-      if (index === -1) {
-        return prev
-      }
-
-      const target = prev.currentJob.files[index]
-      const nextSelected = !target.selected
-
-      const nextFiles = [
-        ...prev.currentJob.files.slice(0, index),
-        { ...target, selected: nextSelected },
-        ...prev.currentJob.files.slice(index + 1),
-      ]
-
-      const selectedEntries = nextFiles.filter((entry) => entry.selected)
-      const selectedFiles = selectedEntries.map((entry) => entry.path)
-      const sourceLanguageGuess = selectedEntries.length
-        ? guessSourceLanguageFromFiles(selectedEntries)
-        : DEFAULT_SOURCE_LANGUAGE
-
-      return {
-        ...prev,
-        currentJob: {
-          ...prev.currentJob,
-          files: nextFiles,
-          selectedFiles,
-          sourceLanguageGuess,
-          lastUpdated: Date.now(),
-        },
-      }
-    })
-  }, [])
-
-  const updateCurrentJobTargetLanguage = useCallback((value: string) => {
-    setState((prev) => {
-      if (!prev.currentJob) {
-        return prev
-      }
-
-      const trimmed = value.trim()
-      return {
-        ...prev,
-        currentJob: {
-          ...prev.currentJob,
-          targetLanguage: trimmed || DEFAULT_TARGET_LANGUAGE,
-          lastUpdated: Date.now(),
-        },
-      }
-    })
-  }, [])
-
   const loadFilesForCurrentJob = useCallback(async () => {
-    const activeJob = state.currentJob
-    if (!activeJob) {
+    const jobId = state.currentJob?.id
+    if (!jobId) {
       return
     }
 
-    const jobId = activeJob.jobId
-    const trimmedPath = activeJob.installPath.trim()
-
+    const trimmedPath = state.currentJob?.installPath.trim()
     if (!trimmedPath) {
-      const message = '모드 설치 경로를 확인할 수 없어 작업이 실패했습니다.'
-      let shouldFail = true
-      setState((prev) => {
-        if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
-          shouldFail = false
-          return prev
-        }
-
-        return {
-          ...prev,
-          currentJob: {
-            ...prev.currentJob,
-            filesLoading: false,
-            fileError: message,
-            lastUpdated: Date.now(),
-          },
-        }
-      })
-
-      if (shouldFail) {
-        markCurrentJobFailed(message)
-      }
+      appendLog('설치 경로가 비어 있어 파일을 불러올 수 없습니다.', 'error')
       return
     }
 
-    if (!isTauri()) {
-      const message = '파일 목록은 데스크톱 환경에서만 확인할 수 있습니다.'
-      let shouldFail = true
-      setState((prev) => {
-        if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
-          shouldFail = false
-          return prev
-        }
-
-        return {
-          ...prev,
-          currentJob: {
-            ...prev.currentJob,
-            filesLoading: false,
-            fileError: message,
-            lastUpdated: Date.now(),
-          },
-        }
-      })
-
-      if (shouldFail) {
-        markCurrentJobFailed(message)
-      }
-      return
-    }
-
-    let shouldFetch = true
     setState((prev) => {
-      if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
-        shouldFetch = false
+      if (!prev.currentJob || prev.currentJob.id !== jobId) {
         return prev
       }
 
       if (prev.currentJob.filesLoading) {
-        shouldFetch = false
-        return prev
-      }
-
-      if (prev.currentJob.files && !prev.currentJob.fileError) {
-        shouldFetch = false
         return prev
       }
 
@@ -684,7 +528,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       }
     })
 
-    if (!shouldFetch) {
+    if (!isTauri()) {
       return
     }
 
@@ -694,7 +538,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       })
 
       setState((prev) => {
-        if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
+        if (!prev.currentJob || prev.currentJob.id !== jobId) {
           return prev
         }
 
@@ -732,16 +576,16 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             selectedFiles,
             sourceLanguageGuess,
             targetLanguage,
-            lastUpdated: Date.now(),
           },
         }
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      let shouldFail = true
+      let shouldLog = true
+
       setState((prev) => {
-        if (!prev.currentJob || prev.currentJob.jobId !== jobId) {
-          shouldFail = false
+        if (!prev.currentJob || prev.currentJob.id !== jobId) {
+          shouldLog = false
           return prev
         }
 
@@ -751,17 +595,44 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             ...prev.currentJob,
             filesLoading: false,
             fileError: message,
-            lastUpdated: Date.now(),
           },
         }
       })
 
-      if (shouldFail) {
-        const combined = `파일을 불러오지 못했습니다. 모드 경로나 설치 여부를 확인해 주세요.\n${message}`
-        markCurrentJobFailed(combined)
+      if (shouldLog) {
+        appendLog(
+          `파일을 불러오지 못했습니다. 모드 경로나 설치 여부를 확인해 주세요.\n${message}`,
+          'error',
+        )
       }
     }
-  }, [markCurrentJobFailed, state.currentJob])
+  }, [appendLog, state.currentJob])
+
+  const toggleCurrentJobFileSelection = useCallback((path: string) => {
+    setState((prev) => {
+      if (!prev.currentJob || !prev.currentJob.files) {
+        return prev
+      }
+
+      const files = prev.currentJob.files.map((entry) =>
+        entry.path === path ? { ...entry, selected: !entry.selected } : entry,
+      )
+      const selectedFiles = files.filter((entry) => entry.selected).map((entry) => entry.path)
+      const sourceLanguageGuess = selectedFiles.length
+        ? guessSourceLanguageFromFiles(files.filter((entry) => entry.selected))
+        : DEFAULT_SOURCE_LANGUAGE
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          files,
+          selectedFiles,
+          sourceLanguageGuess,
+        },
+      }
+    })
+  }, [])
 
   const startTranslationForCurrentJob = useCallback(
     async (options: StartTranslationOptions) => {
@@ -774,20 +645,16 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         throw new Error('현재 실행 중인 작업이 없습니다.')
       }
 
+      if (activeJob.status !== 'pending') {
+        throw new Error('이미 실행 중인 작업입니다.')
+      }
+
       if (!options.selectedFiles.length) {
         throw new Error('번역할 파일을 하나 이상 선택해 주세요.')
       }
 
-      if (!activeJob.providerId) {
-        throw new Error('사용할 번역기를 설정한 뒤 다시 시도해 주세요.')
-      }
-
-      if (!activeJob.providerApiKey) {
-        throw new Error('선택한 번역기의 API 키를 설정해 주세요.')
-      }
-
-      const targetLanguage = options.targetLanguage ?? activeJob.targetLanguage ?? DEFAULT_TARGET_LANGUAGE
-      const sourceLanguage = options.sourceLanguageGuess ?? activeJob.sourceLanguageGuess ?? null
+      const targetLanguage = options.targetLanguage ?? activeJob.targetLanguage
+      const sourceLanguage = options.sourceLanguageGuess ?? activeJob.sourceLanguageGuess
 
       const selectedSet = new Set(options.selectedFiles)
       let filesPayload = (activeJob.files ?? [])
@@ -795,24 +662,20 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         .map((file) => ({ path: file.path }))
 
       if (!filesPayload.length) {
-        filesPayload = options.selectedFiles.map((path) => ({ path }))
+        filesPayload = options.selectedFiles.map((filePath) => ({ path: filePath }))
       }
 
-      try {
-        await invoke('start_translation_job', {
-          jobId: activeJob.jobId,
-          provider: activeJob.providerId,
-          apiKey: activeJob.providerApiKey,
-          sourceLang: sourceLanguage,
-          targetLang: targetLanguage,
-          files: filesPayload,
-        })
-      } catch (error) {
-        throw error instanceof Error ? error : new Error(String(error))
-      }
+      await invoke('start_translation_job', {
+        jobId: activeJob.id,
+        provider: activeJob.providerId,
+        apiKey: activeJob.providerApiKey,
+        sourceLang: sourceLanguage,
+        targetLang: targetLanguage,
+        files: filesPayload,
+      })
 
       setState((prev) => {
-        if (!prev.currentJob || prev.currentJob.jobId !== activeJob.jobId) {
+        if (!prev.currentJob || prev.currentJob.id !== activeJob.id) {
           return prev
         }
 
@@ -820,18 +683,14 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           ...prev,
           currentJob: {
             ...prev.currentJob,
-            backendJobId: activeJob.jobId,
-            message: '번역을 준비하는 중입니다.',
             status: 'running',
             progress: 0,
             cancelRequested: false,
             selectedFiles: [...options.selectedFiles],
-            sourceLanguageGuess: sourceLanguage,
+            sourceLanguageGuess: sourceLanguage ?? DEFAULT_SOURCE_LANGUAGE,
             targetLanguage,
             translatedCount: 0,
             totalCount: 0,
-            logs: [...prev.currentJob.logs],
-            lastUpdated: Date.now(),
           },
         }
       })
@@ -839,113 +698,185 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     [state.currentJob],
   )
 
-  useEffect(() => {
-    if (!isTauri()) return undefined
+  const requestCancelCurrentJob = useCallback(async () => {
+    const activeJob = state.currentJob
+    if (!activeJob) {
+      return false
+    }
 
-    let cancelled = false
-    let dispose: UnlistenFn | null = null
+    if (activeJob.cancelRequested) {
+      return true
+    }
 
-    listen<TranslationProgressEventPayload>('translation-progress', (event) => {
-      if (cancelled) return
-      const payload = event.payload
-      if (!payload) return
-
-      if (activeJobIdRef.current && activeJobIdRef.current !== payload.jobId) {
-        return
+    setState((prev) => {
+      if (!prev.currentJob || prev.currentJob.id !== activeJob.id) {
+        return prev
       }
 
-      const progress = clampProgress(Math.round(payload.progress))
-      const trimmedLog = payload.log?.trim() ?? null
-      const logLevel: JobLogLevel = payload.state === 'failed' ? 'error' : 'info'
-
-      if (payload.state === 'completed') {
-        const finalMessage = trimmedLog ?? '번역이 완료되었습니다.'
-        const logEntry = createLogEntry('info', finalMessage)
-        finalizeCurrentJobAndPromote(
-          'completed',
-          logEntry,
-          {
-            progress,
-            translatedCount: payload.translatedCount,
-            totalCount: payload.totalCount,
-          },
-        )
-        return
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          cancelRequested: true,
+        },
       }
+    })
 
-      if (payload.state === 'failed') {
-        const combinedMessage = [payload.error, trimmedLog]
-          .filter((value): value is string => Boolean(value))
-          .join('\n') || '번역 중 오류가 발생했습니다.'
-        const logEntry = createLogEntry('error', combinedMessage)
-        finalizeCurrentJobAndPromote(
-          'failed',
-          logEntry,
-          {
-            progress,
-            translatedCount: payload.translatedCount,
-            totalCount: payload.totalCount,
-          },
-        )
-        return
-      }
+    appendLog('현재 작업 중단을 요청했습니다.')
 
-      if (payload.state === 'canceled') {
-        const cancelMessage = trimmedLog ?? '작업이 중단되었습니다.'
-        const logEntry = createLogEntry('info', cancelMessage)
-        finalizeCurrentJobAndPromote(
-          'canceled',
-          logEntry,
-          {
-            progress,
-            translatedCount: payload.translatedCount,
-            totalCount: payload.totalCount,
-          },
-        )
-        return
-      }
+    if (!isTauri()) {
+      return true
+    }
+
+    try {
+      await invoke('cancel_translation_job', { jobId: activeJob.id })
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      appendLog(`작업 중단 요청에 실패했습니다: ${message}`, 'warn')
 
       setState((prev) => {
-        if (!prev.currentJob || prev.currentJob.jobId !== payload.jobId) {
+        if (!prev.currentJob || prev.currentJob.id !== activeJob.id) {
           return prev
         }
-
-        const logEntry = trimmedLog ? createLogEntry(logLevel, trimmedLog) : null
-        const logs = logEntry ? [...prev.currentJob.logs, logEntry] : prev.currentJob.logs
 
         return {
           ...prev,
           currentJob: {
             ...prev.currentJob,
-            progress,
-            status: 'running',
-            message: trimmedLog ?? prev.currentJob.message,
-            translatedCount: payload.translatedCount,
-            totalCount: payload.totalCount,
-            logs,
-            lastUpdated: Date.now(),
+            cancelRequested: false,
           },
         }
       })
-    })
-      .then((unlisten) => {
-        if (cancelled) {
-          unlisten()
-        } else {
-          dispose = unlisten
-        }
-      })
-      .catch((error) => {
-        console.error('translation-progress 이벤트 등록에 실패했습니다.', error)
-      })
 
-    return () => {
-      cancelled = true
-      if (dispose) {
-        dispose()
+      return false
+    }
+  }, [appendLog, state.currentJob])
+
+  const updateCurrentJobTargetLanguage = useCallback((value: string) => {
+    setState((prev) => {
+      if (!prev.currentJob || prev.currentJob.status !== 'pending') {
+        return prev
+      }
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          targetLanguage: value,
+        },
+      }
+    })
+  }, [])
+
+  const handleTranslationProgressPayload = useCallback(
+    (payload: TranslationProgressEventPayload) => {
+      if (!payload || !activeJobIdRef.current || activeJobIdRef.current !== payload.jobId) {
+        return
+      }
+
+      if (payload.state === 'running') {
+        const trimmedLog = payload.log?.trim() ?? ''
+        const progress = clampProgress(Math.round(payload.progress))
+        const fileName = payload.fileName ?? null
+        const fileSuccess = payload.fileSuccess ?? null
+        const fileError = payload.fileError ?? null
+
+        setState((prev) => {
+          if (!prev.currentJob || prev.currentJob.id !== payload.jobId) {
+            return prev
+          }
+
+          const providerKey = prev.currentJob.providerApiKey.trim()
+          const containsSensitiveData =
+            !!providerKey && providerKey.length > 0 && trimmedLog.includes(providerKey)
+
+          const logs =
+            trimmedLog && !containsSensitiveData
+              ? [...prev.currentJob.logs, createLogEntry('info', trimmedLog)]
+              : prev.currentJob.logs
+
+          return {
+            ...prev,
+            currentJob: {
+              ...prev.currentJob,
+              status: 'running',
+              progress,
+              translatedCount: payload.translatedCount,
+              totalCount: payload.totalCount,
+              latestFileName: fileName,
+              latestFileSuccess: fileSuccess,
+              latestFileError: fileError,
+              logs,
+              fileErrors,
+            },
+          }
+        })
+        return
+      }
+
+      if (payload.state === 'completed' || payload.state === 'failed' || payload.state === 'canceled') {
+        const level: JobLogLevel =
+          payload.state === 'failed' ? 'error' : payload.state === 'canceled' ? 'warn' : 'info'
+        const fallbackText =
+          payload.state === 'completed'
+            ? '번역이 완료되었습니다.'
+            : payload.state === 'failed'
+            ? '번역 중 오류가 발생했습니다.'
+            : '작업이 중단되었습니다.'
+        const providerKey = providerApiKeyRef.current.trim()
+        const trimmedLog = payload.log?.trim() ?? ''
+        const containsSensitiveData =
+          !!providerKey && providerKey.length > 0 && trimmedLog.includes(providerKey)
+        const sanitizedLog = containsSensitiveData ? '' : trimmedLog
+        const text = sanitizedLog || fallbackText
+        const finalLogEntry = text ? createLogEntry(level, text) : null
+        finalizeCurrentJobAndPromote(payload.state, finalLogEntry, {
+          progress: clampProgress(Math.round(payload.progress)),
+          translatedCount: payload.translatedCount,
+          totalCount: payload.totalCount,
+          fileName: payload.fileName ?? null,
+          fileSuccess: payload.fileSuccess ?? null,
+          fileError: payload.fileError ?? null,
+        })
+      }
+    },
+    [finalizeCurrentJobAndPromote],
+  )
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return
+    }
+
+    let unlistenFn: UnlistenFn | null = null
+    let disposed = false
+
+    const setup = async () => {
+      try {
+        unlistenFn = await listen<TranslationProgressEventPayload>(
+          'translation-progress',
+          (event) => {
+            if (disposed) {
+              return
+            }
+            handleTranslationProgressPayload(event.payload)
+          },
+        )
+      } catch (error) {
+        console.error('translation-progress 이벤트 등록에 실패했습니다.', error)
       }
     }
-  }, [finalizeCurrentJobAndPromote])
+
+    setup()
+
+    return () => {
+      disposed = true
+      if (unlistenFn) {
+        unlistenFn()
+      }
+    }
+  }, [handleTranslationProgressPayload])
 
   const value = useMemo<JobStoreValue>(
     () => ({
@@ -953,11 +884,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       queue: state.queue,
       completedJobs: state.completedJobs,
       enqueueJob,
-      promoteNextJob,
       appendLog,
-      markCurrentJobCompleted,
-      markCurrentJobFailed,
-      markCurrentJobCanceled,
       cancelQueuedJob,
       loadFilesForCurrentJob,
       toggleCurrentJobFileSelection,
@@ -970,11 +897,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       state.queue,
       state.completedJobs,
       enqueueJob,
-      promoteNextJob,
       appendLog,
-      markCurrentJobCompleted,
-      markCurrentJobFailed,
-      markCurrentJobCanceled,
       cancelQueuedJob,
       loadFilesForCurrentJob,
       toggleCurrentJobFileSelection,
@@ -995,3 +918,8 @@ export function useJobStore() {
   return context
 }
 
+export function getDefaultJobRoute(hasActiveJob: boolean, queueLength: number): '/progress' | '/mods' {
+  return hasActiveJob || queueLength > 0 ? '/progress' : '/mods'
+}
+
+export const providerLabelFor = (provider: ProviderId) => PROVIDER_LABELS[provider] ?? provider.toUpperCase()
