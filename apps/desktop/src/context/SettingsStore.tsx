@@ -67,6 +67,16 @@ interface ProviderValidationResponse {
   models: string[]
 }
 
+function createValidationResponse(
+  status: KeyValidationState,
+  models: string[] = [],
+): ProviderValidationResponse {
+  return {
+    validationStatus: status,
+    models: models.length > 0 ? [...models] : [],
+  }
+}
+
 const SettingsStoreContext = createContext<SettingsStoreValue | undefined>(undefined)
 
 const PROVIDER_ORDER: ProviderId[] = ['gemini', 'gpt', 'claude', 'grok']
@@ -172,7 +182,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
           ...prev,
           [provider]: false,
         }))
-        return { validationStatus: 'unauthorized', models: [] }
+        return createValidationResponse('unauthorized')
       }
 
       setValidationInFlight((prev) => ({
@@ -187,10 +197,10 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
             apiKey: trimmed,
             modelHint: modelHint || undefined,
           })
-          return response
+          return createValidationResponse(response.validationStatus, response.models)
         } catch (error) {
           console.error(`Failed to validate API key for ${provider}`, error)
-          return { validationStatus: 'network_error', models: [] }
+          return createValidationResponse('network_error')
         }
       })()
 
@@ -392,6 +402,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         selectedProviders: state.selectedProviders,
         activeProviderId: state.activeProviderId,
         providerModels: state.providerModels,
+        verifiedModels: state.verifiedModels,
         concurrency: state.concurrency,
         workerCount: state.workerCount,
         bucketSize: state.bucketSize,
@@ -408,6 +419,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     state.selectedProviders,
     state.activeProviderId,
     state.providerModels,
+    state.verifiedModels,
     state.concurrency,
     state.workerCount,
     state.bucketSize,
