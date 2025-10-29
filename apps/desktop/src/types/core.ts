@@ -51,7 +51,7 @@ export interface SteamPathResponse {
 
 export type JobState = 'pending' | 'running' | 'completed' | 'failed' | 'canceled'
 
-export type ProviderId = 'gemini' | 'gpt'
+export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
 export interface TranslationFileDescriptor {
   path: string
@@ -76,8 +76,8 @@ export interface TranslationProgressEventPayload {
   translatedCount: number
   totalCount: number
   fileName?: string | null
+  fileSuccess?: boolean | null
   fileError?: string | null
-  fileErrors?: { fileName: string; fileError: string | null }[] | null
 }
 
 export interface ModFileDescriptor {
