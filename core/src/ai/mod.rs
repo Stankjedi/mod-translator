@@ -1,8 +1,9 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 use thiserror::Error;
 
 static PLACEHOLDER_REGEX: Lazy<Regex> = Lazy::new(|| {
@@ -12,6 +13,11 @@ static PLACEHOLDER_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 #[derive(Debug, Error)]
 pub enum TranslationError {
+    #[error("model not found for {provider}: {model_id}")]
+    ModelNotFound {
+        provider: ProviderId,
+        model_id: String,
+    },
     #[error("provider error: {0}")]
     Provider(String),
     #[error("http error: {0}")]
@@ -37,6 +43,12 @@ impl ProviderId {
             ProviderId::Claude => "Claude",
             ProviderId::Grok => "Grok",
         }
+    }
+}
+
+impl fmt::Display for ProviderId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.label())
     }
 }
 
@@ -70,6 +82,7 @@ pub async fn translate_text(
     client: &Client,
     provider: ProviderId,
     api_key: &str,
+    model_id: &str,
     input: &str,
     source_lang: &str,
     target_lang: &str,
@@ -81,18 +94,48 @@ pub async fn translate_text(
 
     let translated = match provider {
         ProviderId::Gemini => {
-            translate_with_gemini(client, api_key, normalized_input, source_lang, target_lang)
-                .await?
+            translate_with_gemini(
+                client,
+                api_key,
+                model_id,
+                normalized_input,
+                source_lang,
+                target_lang,
+            )
+            .await?
         }
         ProviderId::Gpt => {
-            translate_with_gpt(client, api_key, normalized_input, source_lang, target_lang).await?
+            translate_with_gpt(
+                client,
+                api_key,
+                model_id,
+                normalized_input,
+                source_lang,
+                target_lang,
+            )
+            .await?
         }
         ProviderId::Claude => {
-            translate_with_claude(client, api_key, normalized_input, source_lang, target_lang)
-                .await?
+            translate_with_claude(
+                client,
+                api_key,
+                model_id,
+                normalized_input,
+                source_lang,
+                target_lang,
+            )
+            .await?
         }
         ProviderId::Grok => {
-            translate_with_grok(client, api_key, normalized_input, source_lang, target_lang).await?
+            translate_with_grok(
+                client,
+                api_key,
+                model_id,
+                normalized_input,
+                source_lang,
+                target_lang,
+            )
+            .await?
         }
     };
 
@@ -103,17 +146,30 @@ pub async fn translate_text(
 async fn translate_with_gemini(
     client: &Client,
     api_key: &str,
+    model_id: &str,
     input: &str,
     source_lang: &str,
     target_lang: &str,
 ) -> Result<String, TranslationError> {
     let prompt = format!(
         "Translate the following text from {source_lang} to {target_lang}. \
-Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they appear.\n\n{input}"
+Preserve any placeholders such as {0}, %1$s, or similar tokens exactly as they appear.\n\n{input}"
     );
 
+    let trimmed_model = model_id.trim();
+    if trimmed_model.is_empty() {
+        return Err(TranslationError::Provider(
+            "Gemini 모델이 지정되지 않았습니다.".into(),
+        ));
+    }
+    let normalized_model = if trimmed_model.starts_with("models/") {
+        trimmed_model.to_string()
+    } else {
+        format!("models/{trimmed_model}")
+    };
+
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        "https://generativelanguage.googleapis.com/v1beta/{normalized_model}:generateContent?key={api_key}"
     );
     let response = client
         .post(url)
@@ -123,8 +179,14 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
         .send()
         .await?;
 
-    if !response.status().is_success() {
-        let status = response.status();
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Err(TranslationError::ModelNotFound {
+            provider: ProviderId::Gemini,
+            model_id: trimmed_model.to_string(),
+        });
+    }
+    if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(TranslationError::Http(format!(
             "Gemini API {}: {}",
@@ -135,9 +197,9 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
     let parsed: GeminiResponse = response.json().await?;
     let text = parsed
         .candidates
-        .and_then(|mut candidates| candidates.into_iter().next())
+        .and_then(|candidates| candidates.into_iter().next())
         .and_then(|candidate| candidate.content)
-        .and_then(|mut content| content.parts.and_then(|mut parts| parts.into_iter().next()))
+        .and_then(|content| content.parts.and_then(|parts| parts.into_iter().next()))
         .and_then(|part| part.text)
         .ok_or_else(|| {
             TranslationError::Provider("Gemini 응답에서 결과를 찾지 못했습니다.".into())
@@ -149,6 +211,7 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
 async fn translate_with_gpt(
     client: &Client,
     api_key: &str,
+    model_id: &str,
     input: &str,
     source_lang: &str,
     target_lang: &str,
@@ -157,11 +220,18 @@ async fn translate_with_gpt(
         "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders such as {{0}} or %1$s exactly as they appear. Return only the translated text.\n\n{input}"
     );
 
+    let trimmed_model = model_id.trim();
+    if trimmed_model.is_empty() {
+        return Err(TranslationError::Provider(
+            "OpenAI 모델이 지정되지 않았습니다.".into(),
+        ));
+    }
+
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
         .bearer_auth(api_key)
         .json(&serde_json::json!({
-            "model": "gpt-4o-mini",
+            "model": trimmed_model,
             "messages": [
                 {
                     "role": "system",
@@ -177,8 +247,14 @@ async fn translate_with_gpt(
         .send()
         .await?;
 
-    if !response.status().is_success() {
-        let status = response.status();
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Err(TranslationError::ModelNotFound {
+            provider: ProviderId::Gpt,
+            model_id: trimmed_model.to_string(),
+        });
+    }
+    if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(TranslationError::Http(format!(
             "OpenAI API {}: {}",
@@ -199,6 +275,7 @@ async fn translate_with_gpt(
 async fn translate_with_claude(
     client: &Client,
     api_key: &str,
+    model_id: &str,
     input: &str,
     source_lang: &str,
     target_lang: &str,
@@ -207,12 +284,19 @@ async fn translate_with_claude(
         "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders exactly as they appear, including tokens like {{0}} or %1$s. Return only the translated text.\n\n{input}"
     );
 
+    let trimmed_model = model_id.trim();
+    if trimmed_model.is_empty() {
+        return Err(TranslationError::Provider(
+            "Claude 모델이 지정되지 않았습니다.".into(),
+        ));
+    }
+
     let response = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .json(&serde_json::json!({
-            "model": "claude-3-5-sonnet-20240620",
+            "model": trimmed_model,
             "max_tokens": 1024,
             "system": "You are a professional game localization translator. Preserve formatting and placeholders exactly.",
             "messages": [
@@ -226,8 +310,14 @@ async fn translate_with_claude(
         .send()
         .await?;
 
-    if !response.status().is_success() {
-        let status = response.status();
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Err(TranslationError::ModelNotFound {
+            provider: ProviderId::Claude,
+            model_id: trimmed_model.to_string(),
+        });
+    }
+    if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(TranslationError::Http(format!(
             "Claude API {}: {}",
@@ -251,6 +341,7 @@ async fn translate_with_claude(
 async fn translate_with_grok(
     client: &Client,
     api_key: &str,
+    model_id: &str,
     input: &str,
     source_lang: &str,
     target_lang: &str,
@@ -259,11 +350,18 @@ async fn translate_with_grok(
         "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders such as {{0}} or %1$s exactly as they appear. Return only the translated text.\n\n{input}"
     );
 
+    let trimmed_model = model_id.trim();
+    if trimmed_model.is_empty() {
+        return Err(TranslationError::Provider(
+            "Grok 모델이 지정되지 않았습니다.".into(),
+        ));
+    }
+
     let response = client
         .post("https://api.x.ai/v1/chat/completions")
         .bearer_auth(api_key)
         .json(&serde_json::json!({
-            "model": "grok-2-1212",
+            "model": trimmed_model,
             "messages": [
                 {
                     "role": "system",
@@ -279,8 +377,14 @@ async fn translate_with_grok(
         .send()
         .await?;
 
-    if !response.status().is_success() {
-        let status = response.status();
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Err(TranslationError::ModelNotFound {
+            provider: ProviderId::Grok,
+            model_id: trimmed_model.to_string(),
+        });
+    }
+    if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(TranslationError::Http(format!(
             "Grok API {}: {}",

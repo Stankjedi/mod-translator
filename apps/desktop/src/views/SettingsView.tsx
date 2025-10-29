@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useI18n } from '../i18n/ko'
 import { maskApiKey } from '../storage/apiKeyStorage'
-import { useSettingsStore, type ProviderId } from '../context/SettingsStore'
+import {
+  useSettingsStore,
+  type ProviderId,
+} from '../context/SettingsStore'
+import { PROVIDER_MODEL_OPTIONS } from '../storage/settingsStorage'
 
 const providers: Array<{ id: ProviderId; name: string; description: string }> = [
   {
@@ -51,6 +55,7 @@ function SettingsView() {
     selectedProviders,
     activeProviderId,
     apiKeys,
+    providerModels,
     setProviderEnabled,
     updateApiKey,
     concurrency,
@@ -69,6 +74,7 @@ function SettingsView() {
     setEnforcePlaceholderGuard,
     setPrioritizeDllResources,
     setEnableQualitySampling,
+    setProviderModel,
   } = useSettingsStore()
   const activeProviderKey = activeProviderId ? apiKeys[activeProviderId] ?? '' : ''
   const activeProviderKeyMissing = Boolean(activeProviderId) && !activeProviderKey.trim()
@@ -264,87 +270,105 @@ function SettingsView() {
             {providers.map((provider) => {
               const storedValue = apiKeys[provider.id] ?? ''
               const isEditing = editingProvider === provider.id
+              const modelOptions = PROVIDER_MODEL_OPTIONS[provider.id]
+              const selectedModel = providerModels[provider.id] ?? modelOptions[0] ?? ''
               return (
                 <div
                   key={provider.id}
                   className="rounded-xl border border-slate-800/60 bg-slate-950/40 p-4"
                 >
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <span className="block text-sm font-medium text-white">
                         {provider.name} API 키
                       </span>
                       <span className="text-xs text-slate-400">{provider.description}</span>
                     </div>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-                      {isEditing ? (
-                        <>
-                          <input
-                            type="password"
-                            autoComplete="off"
-                            spellCheck={false}
-                            value={draftApiKey}
-                            onChange={(event) => handleApiKeyChange(event.target.value)}
-                            placeholder={`${provider.name} API 키를 입력하세요`}
-                            className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500 sm:w-64"
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleApiKeySave(provider.id, provider.name)}
-                              className="inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-brand-600/40 transition hover:bg-brand-500"
-                            >
-                              저장
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleApiKeyCancel}
-                              className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
-                            >
-                              취소
-                            </button>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <p className="text-xs text-slate-400 sm:text-sm">
-                            {storedValue
-                              ? `저장된 키: ${maskApiKey(storedValue)}`
-                              : '저장된 키가 없습니다.'}
-                          </p>
-                          <div className="flex items-center gap-3">
+                    <div className="flex flex-col gap-3 sm:items-end">
+                      <label className="flex flex-col gap-2 text-xs text-slate-300 sm:text-sm">
+                        <span>모델</span>
+                        <select
+                          value={selectedModel}
+                          onChange={(event) => setProviderModel(provider.id, event.target.value)}
+                          className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:w-56 sm:text-sm"
+                        >
+                          {modelOptions.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                        {isEditing ? (
+                          <>
+                            <input
+                              type="password"
+                              autoComplete="off"
+                              spellCheck={false}
+                              value={draftApiKey}
+                              onChange={(event) => handleApiKeyChange(event.target.value)}
+                              placeholder={`${provider.name} API 키를 입력하세요`}
+                              className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500 sm:w-64"
+                            />
                             <div className="flex gap-2">
                               <button
                                 type="button"
-                                onClick={() => handleStartEditing(provider.id)}
-                                className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200"
+                                onClick={() => handleApiKeySave(provider.id, provider.name)}
+                                className="inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-brand-600/40 transition hover:bg-brand-500"
                               >
-                                {storedValue ? '수정' : '추가'}
+                                저장
                               </button>
-                              {storedValue && (
+                              <button
+                                type="button"
+                                onClick={handleApiKeyCancel}
+                                className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                              >
+                                취소
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-xs text-slate-400 sm:text-sm">
+                              {storedValue
+                                ? `저장된 키: ${maskApiKey(storedValue)}`
+                                : '저장된 키가 없습니다.'}
+                            </p>
+                            <div className="flex items-center gap-3">
+                              <div className="flex gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => handleApiKeyRemove(provider.id, provider.name)}
-                                  className="inline-flex items-center justify-center rounded-xl border border-rose-500/60 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:border-rose-400 hover:text-rose-100"
+                                  onClick={() => handleStartEditing(provider.id)}
+                                  className="inline-flex items-center justify-center rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-brand-500 hover:text-brand-200"
                                 >
-                                  제거
+                                  {storedValue ? '수정' : '추가'}
                                 </button>
+                                {storedValue && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleApiKeyRemove(provider.id, provider.name)}
+                                    className="inline-flex items-center justify-center rounded-xl border border-rose-500/60 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:border-rose-400 hover:text-rose-100"
+                                  >
+                                    제거
+                                  </button>
+                                )}
+                              </div>
+                              {apiKeyStatus[provider.id] && (
+                                <span
+                                  className={`text-[11px] ${
+                                    apiKeyStatus[provider.id] === 'saved'
+                                      ? 'text-emerald-300'
+                                      : 'text-slate-400'
+                                  }`}
+                                >
+                                  {apiKeyStatus[provider.id] === 'saved' ? '저장됨' : '제거됨'}
+                                </span>
                               )}
                             </div>
-                            {apiKeyStatus[provider.id] && (
-                              <span
-                                className={`text-[11px] ${
-                                  apiKeyStatus[provider.id] === 'saved'
-                                    ? 'text-emerald-300'
-                                    : 'text-slate-400'
-                                }`}
-                              >
-                                {apiKeyStatus[provider.id] === 'saved' ? '저장됨' : '제거됨'}
-                              </span>
-                            )}
-                          </div>
-                        </>
-                      )}
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <p className="mt-2 text-[11px] text-slate-500">

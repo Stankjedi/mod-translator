@@ -68,6 +68,7 @@ export interface StartTranslationJobPayload {
   jobId: string
   provider: ProviderId
   apiKey: string | null
+  modelId: string
   files: TranslationFileDescriptor[]
   sourceLang: string | null
   targetLang: string | null
