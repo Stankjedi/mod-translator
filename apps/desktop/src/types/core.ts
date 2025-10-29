@@ -68,6 +68,12 @@ export interface StartTranslationJobPayload {
 
 export type TranslationProgressState = JobState
 
+export interface TranslationFileErrorEntry {
+  filePath: string
+  message: string
+  code?: string
+}
+
 export interface TranslationProgressEventPayload {
   jobId: string
   state: TranslationProgressState
@@ -77,7 +83,7 @@ export interface TranslationProgressEventPayload {
   totalCount: number
   fileName?: string | null
   fileSuccess?: boolean | null
-  fileError?: string | null
+  fileErrors?: TranslationFileErrorEntry[]
 }
 
 export interface ModFileDescriptor {

@@ -44,7 +44,16 @@ pub struct TranslationProgressEventPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_success: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_error: Option<String>,
+    pub file_errors: Option<Vec<TranslationFileErrorEntry>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationFileErrorEntry {
+    pub file_path: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 #[derive(Debug)]
@@ -91,7 +100,7 @@ pub fn start_translation_job(
                     total_count: 0,
                     file_name: None,
                     file_success: None,
-                    file_error: None,
+                    file_errors: None,
                 },
             );
             return Err(format!("지원하지 않는 번역기: {}", payload.provider));
@@ -111,7 +120,7 @@ pub fn start_translation_job(
                 total_count: 0,
                 file_name: None,
                 file_success: None,
-                file_error: None,
+                file_errors: None,
             },
         );
         return Err("선택한 번역기의 API 키를 설정해 주세요.".into());
@@ -193,7 +202,6 @@ async fn run_translation_job(
     let mut segments = Vec::new();
     let mut last_file_name: Option<String> = None;
     let mut last_file_success: Option<bool> = None;
-    let mut last_file_error: Option<String> = None;
     for file in &payload.files {
         let path = PathBuf::from(&file.path);
         let content = match fs::read_to_string(&path) {
@@ -202,7 +210,11 @@ async fn run_translation_job(
                 let message = format!("{} 파일을 읽는 중 오류가 발생했습니다: {}", file.path, err);
                 last_file_name = Some(file.path.clone());
                 last_file_success = Some(false);
-                last_file_error = Some(message.clone());
+                let error_entry = TranslationFileErrorEntry {
+                    file_path: file.path.clone(),
+                    message: message.clone(),
+                    code: None,
+                };
                 emit_progress(
                     &app,
                     TranslationProgressEventPayload {
@@ -214,7 +226,7 @@ async fn run_translation_job(
                         total_count: 0,
                         file_name: last_file_name.clone(),
                         file_success: last_file_success,
-                        file_error: last_file_error.clone(),
+                        file_errors: Some(vec![error_entry]),
                     },
                 );
                 return;
@@ -246,7 +258,7 @@ async fn run_translation_job(
             total_count: total_segments as u32,
             file_name: last_file_name.clone(),
             file_success: last_file_success,
-            file_error: last_file_error.clone(),
+            file_errors: None,
         },
     );
 
@@ -257,16 +269,16 @@ async fn run_translation_job(
                 job_id: payload.job_id.clone(),
                 state: "completed".into(),
                 progress: 100.0,
-                log: Some("번역할 문자열이 없습니다.".into()),
-                translated_count: 0,
-                total_count: 0,
-                file_name: last_file_name.clone(),
-                file_success: last_file_success,
-                file_error: last_file_error.clone(),
-            },
-        );
-        return;
-    }
+            log: Some("번역할 문자열이 없습니다.".into()),
+            translated_count: 0,
+            total_count: 0,
+            file_name: last_file_name.clone(),
+            file_success: last_file_success,
+            file_errors: None,
+        },
+    );
+    return;
+}
 
     let client = match Client::builder().build() {
         Ok(client) => client,
@@ -277,16 +289,16 @@ async fn run_translation_job(
                     job_id: payload.job_id.clone(),
                     state: "failed".into(),
                     progress: 0.0,
-                    log: Some("HTTP 클라이언트를 초기화하지 못했습니다.".into()),
-                    translated_count: 0,
-                    total_count: 0,
-                    file_name: last_file_name.clone(),
-                    file_success: last_file_success,
-                    file_error: last_file_error.clone(),
-                },
-            );
-            return;
-        }
+                log: Some("HTTP 클라이언트를 초기화하지 못했습니다.".into()),
+                translated_count: 0,
+                total_count: 0,
+                file_name: last_file_name.clone(),
+                file_success: last_file_success,
+                file_errors: None,
+            },
+        );
+        return;
+    }
     };
 
     let total_segments = total_segments as u32;
@@ -299,16 +311,16 @@ async fn run_translation_job(
                     job_id: payload.job_id.clone(),
                     state: "canceled".into(),
                     progress: percentage(processed, total_segments),
-                    log: Some("사용자가 작업을 중단했습니다.".into()),
-                    translated_count: processed,
-                    total_count: total_segments,
-                    file_name: last_file_name.clone(),
-                    file_success: last_file_success,
-                    file_error: last_file_error.clone(),
-                },
-            );
-            return;
-        }
+                log: Some("사용자가 작업을 중단했습니다.".into()),
+                translated_count: processed,
+                total_count: total_segments,
+                file_name: last_file_name.clone(),
+                file_success: last_file_success,
+                file_errors: None,
+            },
+        );
+        return;
+    }
 
         let translated = match translate_text(
             &client,
@@ -326,7 +338,11 @@ async fn run_translation_job(
                 let progress = percentage(processed, total_segments);
                 last_file_name = Some(segment.file_path.clone());
                 last_file_success = Some(false);
-                last_file_error = Some(message.clone());
+                let error_entry = TranslationFileErrorEntry {
+                    file_path: segment.file_path.clone(),
+                    message: message.clone(),
+                    code: None,
+                };
                 emit_progress(
                     &app,
                     TranslationProgressEventPayload {
@@ -338,7 +354,7 @@ async fn run_translation_job(
                         total_count: total_segments,
                         file_name: last_file_name.clone(),
                         file_success: last_file_success,
-                        file_error: last_file_error.clone(),
+                        file_errors: Some(vec![error_entry]),
                     },
                 );
                 return;
@@ -347,7 +363,6 @@ async fn run_translation_job(
 
         last_file_name = Some(segment.file_path.clone());
         last_file_success = Some(true);
-        last_file_error = None;
 
         let progress = percentage(processed + 1, total_segments);
         emit_progress(
@@ -364,7 +379,7 @@ async fn run_translation_job(
                 total_count: total_segments,
                 file_name: last_file_name.clone(),
                 file_success: last_file_success,
-                file_error: last_file_error.clone(),
+                file_errors: None,
             },
         );
 
@@ -376,15 +391,15 @@ async fn run_translation_job(
                     state: "canceled".into(),
                     progress,
                     log: Some("사용자가 작업을 중단했습니다.".into()),
-                    translated_count: processed + 1,
-                    total_count: total_segments,
-                    file_name: last_file_name.clone(),
-                    file_success: last_file_success,
-                    file_error: last_file_error.clone(),
-                },
-            );
-            return;
-        }
+                translated_count: processed + 1,
+                total_count: total_segments,
+                file_name: last_file_name.clone(),
+                file_success: last_file_success,
+                file_errors: None,
+            },
+        );
+        return;
+    }
 
         let _ = translated; // Placeholder for future persistence.
     }
@@ -400,7 +415,7 @@ async fn run_translation_job(
             total_count: total_segments,
             file_name: last_file_name,
             file_success: last_file_success,
-            file_error: last_file_error,
+            file_errors: None,
         },
     );
 }

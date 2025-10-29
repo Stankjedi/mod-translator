@@ -80,7 +80,7 @@ function ProgressView() {
   const [targetLanguageDraft, setTargetLanguageDraft] = useState(DEFAULT_TARGET_LANGUAGE)
   const activeJobId = currentJob?.id ?? null
   const shouldLoadFiles = Boolean(
-    activeJobId && !currentJob?.files && !currentJob?.filesLoading && !currentJob?.fileError,
+    activeJobId && !currentJob?.files && !currentJob?.filesLoading && !currentJob?.fileListError,
   )
 
   useEffect(() => {
@@ -115,7 +115,7 @@ function ProgressView() {
 
   const files: JobFileEntry[] = currentJob?.files ?? EMPTY_JOB_FILES
   const fileLoading = currentJob?.filesLoading ?? false
-  const fileError = currentJob?.fileError ?? null
+  const fileListError = currentJob?.fileListError ?? null
   const selectedFilePaths = currentJob?.selectedFiles ?? EMPTY_SELECTED_FILES
   const sourceLanguageGuess = currentJob?.sourceLanguageGuess ?? DEFAULT_SOURCE_LANGUAGE
   const targetLanguage = currentJob?.targetLanguage ?? DEFAULT_TARGET_LANGUAGE
@@ -131,7 +131,7 @@ function ProgressView() {
   const targetLanguageLabel = resolveLanguageLabel(targetLanguage)
   const historyEntries = useMemo(() => [...completedJobs].slice(-10).reverse(), [completedJobs])
   const currentJobFailedFiles = useMemo(
-    () => (currentJob ? Object.entries(currentJob.fileErrors) : []),
+    () => (currentJob ? currentJob.fileErrors : []),
     [currentJob],
   )
 
@@ -331,14 +331,20 @@ function ProgressView() {
                 오류가 발생한 파일
               </p>
               <ul className="mt-2 space-y-2">
-                {currentJobFailedFiles.map(([fileName, message]) => (
-                  <li key={fileName} className="space-y-1">
-                    <p className="font-mono text-[11px] text-rose-100 sm:text-xs">{fileName}</p>
-                    <p className="whitespace-pre-wrap text-[11px] text-rose-100/90 sm:text-xs">
-                      {message}
-                    </p>
-                  </li>
-                ))}
+                {currentJobFailedFiles.map((entry) => {
+                  const key = `${entry.filePath}|${entry.message}|${entry.code ?? ''}`
+                  return (
+                    <li key={key} className="space-y-1">
+                      <p className="font-mono text-[11px] text-rose-100 sm:text-xs">{entry.filePath}</p>
+                      <p className="whitespace-pre-wrap text-[11px] text-rose-100/90 sm:text-xs">
+                        {entry.message}
+                      </p>
+                      {entry.code && (
+                        <p className="text-[10px] uppercase tracking-widest text-rose-300/90">코드: {entry.code}</p>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           )}
@@ -374,8 +380,8 @@ function ProgressView() {
           {fileLoading && <span className="text-xs text-slate-400">파일 불러오는 중...</span>}
         </div>
 
-        {fileError ? (
-          <p className="text-xs text-rose-300">{fileError}</p>
+        {fileListError ? (
+          <p className="text-xs text-rose-300">{fileListError}</p>
         ) : (
           <>
             <div className="max-h-72 overflow-y-auto rounded-lg border border-slate-800/60 bg-slate-900/60">
@@ -487,7 +493,7 @@ function ProgressView() {
               const historySource = resolveLanguageLabel(job.sourceLanguageGuess ?? DEFAULT_SOURCE_LANGUAGE)
               const historyTarget = resolveLanguageLabel(job.targetLanguage ?? DEFAULT_TARGET_LANGUAGE)
               const finalLog = job.logs.length ? job.logs[job.logs.length - 1].text : null
-              const failedFileEntries = Object.entries(job.fileErrors ?? {})
+              const failedFileEntries = job.fileErrors
               return (
                 <li key={job.id} className="rounded-xl border border-slate-800/60 bg-slate-900/60 p-4">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -508,12 +514,20 @@ function ProgressView() {
                             실패한 파일
                           </p>
                           <ul className="space-y-1">
-                            {failedFileEntries.map(([fileName, message]) => (
-                              <li key={fileName} className="space-y-1">
-                                <span className="block font-mono text-rose-100">{fileName}</span>
-                                <span className="block whitespace-pre-wrap text-rose-100/90">{message}</span>
-                              </li>
-                            ))}
+                            {failedFileEntries.map((entry) => {
+                              const key = `${entry.filePath}|${entry.message}|${entry.code ?? ''}`
+                              return (
+                                <li key={key} className="space-y-1">
+                                  <span className="block font-mono text-rose-100">{entry.filePath}</span>
+                                  <span className="block whitespace-pre-wrap text-rose-100/90">{entry.message}</span>
+                                  {entry.code && (
+                                    <span className="block text-[10px] uppercase tracking-widest text-rose-300/90">
+                                      코드: {entry.code}
+                                    </span>
+                                  )}
+                                </li>
+                              )
+                            })}
                           </ul>
                         </div>
                       )}
