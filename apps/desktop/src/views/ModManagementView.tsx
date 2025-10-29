@@ -133,13 +133,20 @@ function ModManagementView() {
   const jobLookup = useMemo(() => {
     const map = new Map<
       string,
-      { status: JobState; position?: number; progress?: number; jobId?: string }
+      {
+        status: JobState
+        position?: number
+        progress?: number
+        jobId?: string
+        cancelRequested?: boolean
+      }
     >()
     if (currentJob) {
       map.set(currentJob.modId, {
         status: currentJob.status,
         progress: Math.round(currentJob.progress),
-        jobId: currentJob.jobId,
+        jobId: currentJob.id,
+        cancelRequested: currentJob.cancelRequested,
       })
     }
 
@@ -147,7 +154,8 @@ function ModManagementView() {
       map.set(job.modId, {
         status: job.status,
         position: index + 1,
-        jobId: job.jobId,
+        jobId: job.id,
+        cancelRequested: job.cancelRequested,
       })
     })
 
@@ -183,7 +191,7 @@ function ModManagementView() {
           return
         }
 
-        if (result.error === 'missing-api-key') {
+        if (result.error === 'missing-provider' || result.error === 'missing-api-key') {
           setActionMessage({
             type: 'error',
             text: '선택한 번역기의 API 키가 설정되지 않았습니다. 설정 탭에서 API 키를 입력한 뒤 다시 시도해 주세요.',
@@ -302,8 +310,8 @@ function ModManagementView() {
                 const isCurrent = currentJob?.modId === mod.id
                 const isRunning = isCurrent && jobInfo?.status === 'running'
                 const isPending = isCurrent && jobInfo?.status === 'pending'
-                const isQueued = jobInfo?.status === 'queued'
-                const isCancelRequested = isCurrent && currentJob?.cancelRequested
+                const isQueued = !isCurrent && jobInfo?.status === 'pending'
+                const isCancelRequested = Boolean(isCurrent && jobInfo?.cancelRequested)
                 const queuePosition = jobInfo?.position
                 const statusNote = isRunning
                   ? `실행 중 · ${jobInfo?.progress ?? 0}%`
@@ -327,12 +335,12 @@ function ModManagementView() {
                 const badgeTone: ChipTone = isCancelRequested
                   ? 'warning'
                   : isRunning
-                    ? 'primary'
+                    ? 'running'
                     : isPending
                       ? 'idle'
                       : isQueued
-                        ? 'info'
-                        : 'idle'
+                        ? 'idle'
+                        : 'primary'
                 const note = isCancelRequested
                   ? `사용자 중단 요청 진행 중 · ${jobInfo?.progress ?? 0}%`
                   : statusNote

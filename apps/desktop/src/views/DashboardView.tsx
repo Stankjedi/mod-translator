@@ -2,7 +2,7 @@ import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobStore } from '../context/JobStore'
-import { resolveJobLandingRoute } from '../utils/navigation'
+import { getDefaultJobRoute } from '../context/JobStore'
 import Chip from '../ui/Chip'
 
 const pipelineStages = [
@@ -154,7 +154,7 @@ function DashboardView() {
   }, [libraries])
 
   const handleJobAction = useCallback(() => {
-    const target = resolveJobLandingRoute(Boolean(currentJob), queue.length)
+    const target = getDefaultJobRoute(Boolean(currentJob), queue.length)
     navigate(target)
   }, [currentJob, navigate, queue.length])
 

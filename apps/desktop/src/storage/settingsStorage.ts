@@ -1,6 +1,6 @@
 const STORAGE_KEY = 'mod_translator_settings_v1'
 
-export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
+export type ProviderId = 'gemini' | 'gpt'
 
 export interface PersistedSettings {
   selectedProviders: ProviderId[]
@@ -38,7 +38,7 @@ function sanitizeProviders(input: unknown): ProviderId[] {
   }
 
   const seen = new Set<ProviderId>()
-  const order: ProviderId[] = ['gemini', 'gpt', 'claude', 'grok']
+  const order: ProviderId[] = ['gemini', 'gpt']
 
   input.forEach((value) => {
     if (typeof value !== 'string') {
