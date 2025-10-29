@@ -75,6 +75,9 @@ export interface TranslationProgressEventPayload {
   log?: string | null
   translatedCount: number
   totalCount: number
+  fileName?: string | null
+  fileSuccess?: boolean | null
+  fileError?: string | null
 }
 
 export interface ModFileDescriptor {

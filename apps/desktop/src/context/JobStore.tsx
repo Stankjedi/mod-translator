@@ -79,6 +79,9 @@ export interface TranslationJob {
   progress: number
   translatedCount: number
   totalCount: number
+  latestFileName: string | null
+  latestFileSuccess: boolean | null
+  latestFileError: string | null
   cancelRequested: boolean
   logs: JobLogEntry[]
   files: JobFileEntry[] | null
@@ -101,6 +104,9 @@ interface FinalizeStats {
   progress: number
   translatedCount: number
   totalCount: number
+  fileName: string | null
+  fileSuccess: boolean | null
+  fileError: string | null
 }
 
 export interface EnqueueJobInput {
@@ -183,6 +189,9 @@ const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   progress: 0,
   translatedCount: 0,
   totalCount: 0,
+  latestFileName: null,
+  latestFileSuccess: null,
+  latestFileError: null,
   cancelRequested: false,
   logs: [],
   files: null,
@@ -209,6 +218,9 @@ const createJob = (
   progress: 0,
   translatedCount: 0,
   totalCount: 0,
+  latestFileName: null,
+  latestFileSuccess: null,
+  latestFileError: null,
   cancelRequested: false,
   logs: [],
   files: null,
@@ -229,9 +241,12 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
   })
   const activeJobIdRef = useRef<string | null>(null)
 
+  const providerApiKeyRef = useRef<string>('')
+
   useEffect(() => {
     activeJobIdRef.current = state.currentJob?.id ?? null
-  }, [state.currentJob?.id])
+    providerApiKeyRef.current = state.currentJob?.providerApiKey ?? ''
+  }, [state.currentJob?.id, state.currentJob?.providerApiKey])
 
   const finalizeCurrentJobAndPromote = useCallback(
     (
@@ -250,6 +265,9 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
           progress: finalStats.progress,
           translatedCount: finalStats.translatedCount,
           totalCount: finalStats.totalCount,
+          latestFileName: finalStats.fileName,
+          latestFileSuccess: finalStats.fileSuccess,
+          latestFileError: finalStats.fileError,
           cancelRequested: false,
           logs: finalLogEntry
             ? [...prev.currentJob.logs, finalLogEntry]
@@ -698,15 +716,23 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       if (payload.state === 'running') {
         const trimmedLog = payload.log?.trim() ?? ''
         const progress = clampProgress(Math.round(payload.progress))
+        const fileName = payload.fileName ?? null
+        const fileSuccess = payload.fileSuccess ?? null
+        const fileError = payload.fileError ?? null
 
         setState((prev) => {
           if (!prev.currentJob || prev.currentJob.id !== payload.jobId) {
             return prev
           }
 
-          const logs = trimmedLog
-            ? [...prev.currentJob.logs, createLogEntry('info', trimmedLog)]
-            : prev.currentJob.logs
+          const providerKey = prev.currentJob.providerApiKey.trim()
+          const containsSensitiveData =
+            !!providerKey && providerKey.length > 0 && trimmedLog.includes(providerKey)
+
+          const logs =
+            trimmedLog && !containsSensitiveData
+              ? [...prev.currentJob.logs, createLogEntry('info', trimmedLog)]
+              : prev.currentJob.logs
 
           return {
             ...prev,
@@ -716,6 +742,9 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               progress,
               translatedCount: payload.translatedCount,
               totalCount: payload.totalCount,
+              latestFileName: fileName,
+              latestFileSuccess: fileSuccess,
+              latestFileError: fileError,
               logs,
             },
           }
@@ -726,18 +755,27 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       if (payload.state === 'completed' || payload.state === 'failed' || payload.state === 'canceled') {
         const level: JobLogLevel =
           payload.state === 'failed' ? 'error' : payload.state === 'canceled' ? 'warn' : 'info'
-        const text = payload.log?.trim() ??
-          (payload.state === 'completed'
+        const fallbackText =
+          payload.state === 'completed'
             ? '번역이 완료되었습니다.'
             : payload.state === 'failed'
             ? '번역 중 오류가 발생했습니다.'
-            : '작업이 중단되었습니다.')
+            : '작업이 중단되었습니다.'
+        const providerKey = providerApiKeyRef.current.trim()
+        const trimmedLog = payload.log?.trim() ?? ''
+        const containsSensitiveData =
+          !!providerKey && providerKey.length > 0 && trimmedLog.includes(providerKey)
+        const sanitizedLog = containsSensitiveData ? '' : trimmedLog
+        const text = sanitizedLog || fallbackText
         const finalLogEntry = text ? createLogEntry(level, text) : null
 
         finalizeCurrentJobAndPromote(payload.state, finalLogEntry, {
           progress: clampProgress(Math.round(payload.progress)),
           translatedCount: payload.translatedCount,
           totalCount: payload.totalCount,
+          fileName: payload.fileName ?? null,
+          fileSuccess: payload.fileSuccess ?? null,
+          fileError: payload.fileError ?? null,
         })
       }
     },
