@@ -147,7 +147,8 @@ pub fn start_translation_job(
 
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn cancel_translation_job(jobId: String) -> Result<(), String> {
+pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), String> {
+    let _ = app;
     let guard = ACTIVE_JOBS
         .lock()
         .map_err(|_| "job registry lock poisoned".to_string())?;
@@ -158,6 +159,16 @@ pub fn cancel_translation_job(jobId: String) -> Result<(), String> {
     } else {
         Err(format!("job {jobId} not found"))
     }
+}
+
+#[tauri::command]
+pub fn open_output_folder(path: String) -> Result<(), String> {
+    let path_buf = PathBuf::from(&path);
+    if !path_buf.exists() {
+        return Err(format!("경로를 찾을 수 없습니다: {path}"));
+    }
+
+    open::that_detached(path_buf).map_err(|error| format!("폴더를 열 수 없습니다: {error}"))
 }
 
 async fn run_translation_job(

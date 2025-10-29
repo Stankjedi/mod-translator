@@ -183,6 +183,15 @@ function ModManagementView() {
           return
         }
 
+        if (result.error === 'missing-api-key') {
+          setActionMessage({
+            type: 'error',
+            text: '선택한 번역기의 API 키가 설정되지 않았습니다. 설정 탭에서 API 키를 입력한 뒤 다시 시도해 주세요.',
+          })
+          navigate('/settings')
+          return
+        }
+
         navigate('/progress')
       } catch (error) {
         console.error('모드 예약 중 오류가 발생했습니다.', error)
@@ -292,11 +301,14 @@ function ModManagementView() {
                 const jobInfo = jobLookup.get(mod.id)
                 const isCurrent = currentJob?.modId === mod.id
                 const isRunning = isCurrent && jobInfo?.status === 'running'
+                const isPending = isCurrent && jobInfo?.status === 'pending'
                 const isQueued = jobInfo?.status === 'queued'
                 const isCancelRequested = isCurrent && currentJob?.cancelRequested
                 const queuePosition = jobInfo?.position
                 const statusNote = isRunning
                   ? `실행 중 · ${jobInfo?.progress ?? 0}%`
+                  : isPending
+                    ? '시작 대기 중'
                   : isQueued
                     ? queuePosition
                       ? `대기열 ${queuePosition}번`
@@ -307,16 +319,20 @@ function ModManagementView() {
                   ? '중단 요청됨'
                   : isRunning
                     ? '진행 중'
-                    : isQueued
-                      ? `대기 중${queuePosition ? ` ${queuePosition}번` : ''}`
-                      : '예약 가능'
+                    : isPending
+                      ? '준비 중'
+                      : isQueued
+                        ? `대기 중${queuePosition ? ` ${queuePosition}번` : ''}`
+                        : '예약 가능'
                 const badgeTone: ChipTone = isCancelRequested
                   ? 'warning'
                   : isRunning
                     ? 'primary'
-                    : isQueued
-                      ? 'info'
-                      : 'idle'
+                    : isPending
+                      ? 'idle'
+                      : isQueued
+                        ? 'info'
+                        : 'idle'
                 const note = isCancelRequested
                   ? `사용자 중단 요청 진행 중 · ${jobInfo?.progress ?? 0}%`
                   : statusNote
