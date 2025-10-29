@@ -33,7 +33,7 @@ interface SettingsStoreValue extends SettingsState {
 
 const SettingsStoreContext = createContext<SettingsStoreValue | undefined>(undefined)
 
-const PROVIDER_ORDER: ProviderId[] = ['gemini', 'gpt']
+const PROVIDER_ORDER: ProviderId[] = ['gemini', 'gpt', 'claude', 'grok']
 
 const clampPositiveInteger = (value: number, minimum: number) => {
   if (!Number.isFinite(value)) return minimum
