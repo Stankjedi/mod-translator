@@ -1,7 +1,7 @@
 use crate::ai::{translate_text, ProviderId, TranslationError};
-use log::warn;
+use log::{info, warn};
 use once_cell::sync::Lazy;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::{DefaultHasher, Entry};
 use std::collections::HashMap;
@@ -13,6 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tauri::{AppHandle, Emitter};
+
+const MAX_RETRY_ATTEMPTS: usize = 3;
+const BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -697,7 +701,7 @@ async fn run_translation_job(
                 return;
             }
 
-            let translated = match translate_text(
+            let translated = match translate_segment_with_retry(
                 &client,
                 provider,
                 &api_key,
@@ -705,6 +709,7 @@ async fn run_translation_job(
                 &segment.text,
                 &source_lang,
                 &target_lang,
+                payload.use_server_hints,
             )
             .await
             {

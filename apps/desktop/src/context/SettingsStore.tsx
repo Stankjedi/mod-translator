@@ -482,13 +482,14 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         autoTuneConcurrencyOn429: state.autoTuneConcurrencyOn429,
         enableBackendLogging: state.enableBackendLogging,
         enforcePlaceholderGuard: state.enforcePlaceholderGuard,
-        prioritizeDllResources: state.prioritizeDllResources,
-        enableQualitySampling: state.enableQualitySampling,
-      })
-    } catch (error) {
-      console.error('Failed to persist settings', error)
-    }
-  }, [
+      prioritizeDllResources: state.prioritizeDllResources,
+      enableQualitySampling: state.enableQualitySampling,
+      useServerHints: state.useServerHints,
+    })
+  } catch (error) {
+    console.error('Failed to persist settings', error)
+  }
+}, [
     state.selectedProviders,
     state.activeProviderId,
     state.providerModels,

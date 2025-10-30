@@ -345,7 +345,7 @@ const createJob = (
 })
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
-  const { activeProviderId, apiKeys, providerModels } = useSettingsStore()
+  const { activeProviderId, apiKeys, providerModels, useServerHints } = useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
