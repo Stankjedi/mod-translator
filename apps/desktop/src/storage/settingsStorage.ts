@@ -43,6 +43,15 @@ export const DEFAULT_PROVIDER_RETRY_POLICIES: ProviderRetryPolicyMap = {
   grok: cloneDefaultRetryPolicy(),
 }
 
+function createDefaultProviderRetryPolicyMap(): ProviderRetryPolicyMap {
+  return {
+    gemini: cloneDefaultRetryPolicy(),
+    gpt: cloneDefaultRetryPolicy(),
+    claude: cloneDefaultRetryPolicy(),
+    grok: cloneDefaultRetryPolicy(),
+  }
+}
+
 export const DEFAULT_PROVIDER_MODELS: ProviderModelMap = {
   gemini: 'gemini-2.5-flash',
   gpt: 'gpt-4o-mini',
@@ -107,6 +116,7 @@ export interface PersistedSettings {
   providerModels: ProviderModelMap
   verifiedModels: ProviderModelListMap
   retryPolicy: Record<ProviderId, RetryPolicy>
+  providerRetryPolicies: ProviderRetryPolicyMap
   concurrency: number
   workerCount: number
   bucketSize: number
@@ -125,6 +135,7 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   providerModels: { ...DEFAULT_PROVIDER_MODELS },
   verifiedModels: { ...DEFAULT_VERIFIED_MODELS },
   retryPolicy: createDefaultRetryPolicyMap(),
+  providerRetryPolicies: createDefaultProviderRetryPolicyMap(),
   concurrency: 3,
   workerCount: 2,
   bucketSize: 5,
@@ -302,7 +313,7 @@ function sanitizeBoolean(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback
 }
 
-function sanitizeRetryPolicyEntry(
+function sanitizeProviderRetryPolicyEntry(
   value: unknown,
   fallback: ProviderRetryPolicy,
 ): ProviderRetryPolicy {
@@ -340,12 +351,7 @@ function sanitizeRetryPolicyEntry(
 }
 
 function sanitizeProviderRetryPolicies(value: unknown): ProviderRetryPolicyMap {
-  const defaults: ProviderRetryPolicyMap = {
-    gemini: cloneDefaultRetryPolicy(),
-    gpt: cloneDefaultRetryPolicy(),
-    claude: cloneDefaultRetryPolicy(),
-    grok: cloneDefaultRetryPolicy(),
-  }
+  const defaults = createDefaultProviderRetryPolicyMap()
 
   if (!value || typeof value !== 'object') {
     return defaults
@@ -353,14 +359,14 @@ function sanitizeProviderRetryPolicies(value: unknown): ProviderRetryPolicyMap {
 
   const raw = value as Record<string, unknown>
   ;(Object.keys(defaults) as ProviderId[]).forEach((provider) => {
-    defaults[provider] = sanitizeRetryPolicyEntry(raw[provider], defaults[provider])
+    defaults[provider] = sanitizeProviderRetryPolicyEntry(raw[provider], defaults[provider])
   })
 
   return defaults
 }
 
 export function normalizeRetryPolicy(policy: ProviderRetryPolicy): ProviderRetryPolicy {
-  return sanitizeRetryPolicyEntry(policy, cloneDefaultRetryPolicy())
+  return sanitizeProviderRetryPolicyEntry(policy, cloneDefaultRetryPolicy())
 }
 
 export function loadPersistedSettings(): PersistedSettings {
@@ -380,6 +386,9 @@ export function loadPersistedSettings(): PersistedSettings {
     const providerModels = sanitizeProviderModels(parsed.providerModels)
     const verifiedModels = sanitizeVerifiedModels(parsed.verifiedModels)
     const retryPolicy = sanitizeRetryPolicy(parsed.retryPolicy)
+    const providerRetryPolicies = sanitizeProviderRetryPolicies(
+      parsed.providerRetryPolicies,
+    )
 
     return {
       selectedProviders,
@@ -390,6 +399,7 @@ export function loadPersistedSettings(): PersistedSettings {
       providerModels,
       verifiedModels,
       retryPolicy,
+      providerRetryPolicies,
       concurrency: sanitizeNumber(parsed.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
       workerCount: sanitizeNumber(parsed.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
       bucketSize: sanitizeNumber(parsed.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),
@@ -438,6 +448,9 @@ export function persistSettings(settings: PersistedSettings) {
   const providerModels = sanitizeProviderModels(settings.providerModels)
   const verifiedModels = sanitizeVerifiedModels(settings.verifiedModels)
   const retryPolicy = sanitizeRetryPolicy(settings.retryPolicy)
+  const providerRetryPolicies = sanitizeProviderRetryPolicies(
+    settings.providerRetryPolicies,
+  )
 
   ;(Object.keys(providerModels) as ProviderId[]).forEach((provider) => {
     const verifiedList = verifiedModels[provider] ?? []
@@ -459,6 +472,7 @@ export function persistSettings(settings: PersistedSettings) {
     providerModels,
     verifiedModels,
     retryPolicy,
+    providerRetryPolicies,
     concurrency: sanitizeNumber(settings.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
     workerCount: sanitizeNumber(settings.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
     bucketSize: sanitizeNumber(settings.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),

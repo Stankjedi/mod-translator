@@ -352,8 +352,26 @@ const createJob = (
   resumeHint: null,
 })
 
+function appendMetricEntry(
+  history: JobMetricEntry[],
+  metrics?: TranslationAttemptMetrics | null,
+): JobMetricEntry[] {
+  if (!metrics) {
+    return history
+  }
+
+  const entry: JobMetricEntry = {
+    ...metrics,
+    ts: Date.now(),
+  }
+
+  const nextHistory = [...history, entry]
+  return nextHistory.length > 100 ? nextHistory.slice(-100) : nextHistory
+}
+
 export function JobStoreProvider({ children }: { children: ReactNode }) {
-  const { activeProviderId, apiKeys, providerModels, useServerHints } = useSettingsStore()
+  const { activeProviderId, apiKeys, providerModels, autoTuneConcurrencyOn429 } =
+    useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
@@ -372,12 +390,43 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
   }, [state.currentJob?.id, state.currentJob?.providerApiKey])
 
   useEffect(() => {
-    if (!enableConcurrencyAutoTune) {
+    if (!autoTuneConcurrencyOn429) {
       rateLimitHitCountRef.current = 0
       lastRateLimitAtRef.current = null
       lastAutoTuneAtRef.current = null
     }
-  }, [enableConcurrencyAutoTune])
+  }, [autoTuneConcurrencyOn429])
+
+  const maybeAutoTuneConcurrency = useCallback(
+    (payload: TranslationProgressEventPayload) => {
+      if (!autoTuneConcurrencyOn429) {
+        return
+      }
+
+      const metrics = payload.metrics
+      if (!metrics) {
+        return
+      }
+
+      if (metrics.errorCode === 'RATE_LIMITED') {
+        const now = Date.now()
+        const lastAt = lastRateLimitAtRef.current
+        if (lastAt && now - lastAt > 60_000) {
+          rateLimitHitCountRef.current = 0
+        }
+        rateLimitHitCountRef.current += 1
+        lastRateLimitAtRef.current = now
+
+        if (rateLimitHitCountRef.current >= 3) {
+          lastAutoTuneAtRef.current = now
+          rateLimitHitCountRef.current = 0
+        }
+      } else if (metrics.success) {
+        rateLimitHitCountRef.current = 0
+      }
+    },
+    [autoTuneConcurrencyOn429],
+  )
 
   useEffect(() => {
     setState((prev) => {

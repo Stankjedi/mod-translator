@@ -63,12 +63,28 @@ export type RetryableErrorCode =
   | 'RATE_LIMITED'
   | 'NETWORK_TRANSIENT'
   | 'SERVER_TRANSIENT'
+  | 'NETWORK'
+  | 'TIMEOUT'
+  | 'SERVER_5XX'
+  | 'BAD_GATEWAY'
+  | 'SERVICE_UNAVAILABLE'
 
 export interface RetryPolicy {
   maxAttempts: number
   initialDelayMs: number
   maxDelayMs: number
   retryableErrors: RetryableErrorCode[]
+}
+
+export interface TranslationAttemptMetrics {
+  provider: ProviderId
+  modelId: string
+  durationMs: number
+  inputTokens?: number
+  outputTokens?: number
+  retries: number
+  success: boolean
+  errorCode?: RetryableErrorCode | null
 }
 
 export interface TranslationFileDescriptor {
@@ -109,6 +125,13 @@ export interface TranslationResumeHint {
   lineNumber: number
 }
 
+export interface TranslationCheckpoint {
+  currentFilePath?: string | null
+  nextLineIndex?: number | null
+  translatedCount: number
+  totalCount: number
+}
+
 export interface TranslationProgressEventPayload {
   jobId: string
   status: TranslationProgressState
@@ -127,6 +150,8 @@ export interface TranslationProgressEventPayload {
   }
   retry?: TranslationRetryInfo
   resumeHint?: TranslationResumeHint
+  checkpoint?: TranslationCheckpoint | null
+  metrics?: TranslationAttemptMetrics
 }
 
 export interface ModFileDescriptor {

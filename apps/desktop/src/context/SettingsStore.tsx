@@ -58,6 +58,7 @@ interface SettingsStoreValue extends SettingsState {
   setEnforcePlaceholderGuard: (enabled: boolean) => void
   setPrioritizeDllResources: (enabled: boolean) => void
   setEnableQualitySampling: (enabled: boolean) => void
+  setUseServerHints: (enabled: boolean) => void
   setProviderRetryPolicy: (provider: ProviderId, patch: Partial<ProviderRetryPolicy>) => void
 }
 
@@ -475,6 +476,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         providerModels: state.providerModels,
         verifiedModels: state.verifiedModels,
         retryPolicy: state.retryPolicy,
+        providerRetryPolicies: state.providerRetryPolicies,
         concurrency: state.concurrency,
         workerCount: state.workerCount,
         bucketSize: state.bucketSize,
@@ -482,19 +484,20 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         autoTuneConcurrencyOn429: state.autoTuneConcurrencyOn429,
         enableBackendLogging: state.enableBackendLogging,
         enforcePlaceholderGuard: state.enforcePlaceholderGuard,
-      prioritizeDllResources: state.prioritizeDllResources,
-      enableQualitySampling: state.enableQualitySampling,
-      useServerHints: state.useServerHints,
-    })
-  } catch (error) {
-    console.error('Failed to persist settings', error)
-  }
-}, [
+        prioritizeDllResources: state.prioritizeDllResources,
+        enableQualitySampling: state.enableQualitySampling,
+        useServerHints: state.useServerHints,
+      })
+    } catch (error) {
+      console.error('Failed to persist settings', error)
+    }
+  }, [
     state.selectedProviders,
     state.activeProviderId,
     state.providerModels,
     state.verifiedModels,
     state.retryPolicy,
+    state.providerRetryPolicies,
     state.concurrency,
     state.workerCount,
     state.bucketSize,
@@ -504,6 +507,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     state.enforcePlaceholderGuard,
     state.prioritizeDllResources,
     state.enableQualitySampling,
+    state.useServerHints,
   ])
 
   const setProviderEnabled = useCallback((provider: ProviderId, enabled: boolean) => {
@@ -698,6 +702,10 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, enableQualitySampling: enabled }))
   }, [])
 
+  const setUseServerHints = useCallback((enabled: boolean) => {
+    setState((prev) => ({ ...prev, useServerHints: enabled }))
+  }, [])
+
   const setProviderRetryPolicy = useCallback(
     (provider: ProviderId, patch: Partial<ProviderRetryPolicy>) => {
       setState((prev) => {
@@ -751,6 +759,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
       setEnableQualitySampling,
+      setUseServerHints,
       setProviderRetryPolicy,
     }),
     [
@@ -777,6 +786,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
       setEnableQualitySampling,
+      setUseServerHints,
       setProviderRetryPolicy,
     ],
   )
