@@ -17,6 +17,8 @@ import {
   persistSettings,
   type PersistedSettings,
   type ProviderId,
+  type ProviderRetryPolicy,
+  normalizeRetryPolicy,
 } from '../storage/settingsStorage'
 import type { RetryPolicy, RetryableErrorCode } from '../types/core'
 import { loadApiKeys, persistApiKeys, type ApiKeyMap } from '../storage/apiKeyStorage'
@@ -56,6 +58,7 @@ interface SettingsStoreValue extends SettingsState {
   setEnforcePlaceholderGuard: (enabled: boolean) => void
   setPrioritizeDllResources: (enabled: boolean) => void
   setEnableQualitySampling: (enabled: boolean) => void
+  setProviderRetryPolicy: (provider: ProviderId, patch: Partial<ProviderRetryPolicy>) => void
 }
 
 type ProviderModelSource = 'live' | 'fallback'
@@ -694,6 +697,34 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, enableQualitySampling: enabled }))
   }, [])
 
+  const setProviderRetryPolicy = useCallback(
+    (provider: ProviderId, patch: Partial<ProviderRetryPolicy>) => {
+      setState((prev) => {
+        const current = prev.providerRetryPolicies[provider]
+        const next = normalizeRetryPolicy({ ...current, ...patch })
+        if (
+          current.maxRetries === next.maxRetries &&
+          current.initialDelayMs === next.initialDelayMs &&
+          current.multiplier === next.multiplier &&
+          current.maxDelayMs === next.maxDelayMs &&
+          current.respectServerRetryAfter === next.respectServerRetryAfter &&
+          current.autoTuneConcurrencyOn429 === next.autoTuneConcurrencyOn429
+        ) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          providerRetryPolicies: {
+            ...prev.providerRetryPolicies,
+            [provider]: next,
+          },
+        }
+      })
+    },
+    [],
+  )
+
   const value = useMemo<SettingsStoreValue>(
     () => ({
       ...state,
@@ -719,6 +750,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
       setEnableQualitySampling,
+      setProviderRetryPolicy,
     }),
     [
       state,
@@ -744,6 +776,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
       setEnableQualitySampling,
+      setProviderRetryPolicy,
     ],
   )
 

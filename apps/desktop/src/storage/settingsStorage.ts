@@ -6,12 +6,41 @@ export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
 export type ProviderModelMap = Record<ProviderId, string>
 export type ProviderModelListMap = Record<ProviderId, string[]>
+export interface ProviderRetryPolicy {
+  maxRetries: number
+  initialDelayMs: number
+  multiplier: number
+  maxDelayMs: number
+  respectServerRetryAfter: boolean
+  autoTuneConcurrencyOn429: boolean
+}
+export type ProviderRetryPolicyMap = Record<ProviderId, ProviderRetryPolicy>
 
 export const PROVIDER_MODEL_OPTIONS: Record<ProviderId, string[]> = {
   gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
   gpt: ['gpt-4o-mini', 'gpt-4o'],
   claude: ['claude-3-5-sonnet-20240620', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'],
   grok: ['grok-2-1212'],
+}
+
+const DEFAULT_RETRY_POLICY: ProviderRetryPolicy = {
+  maxRetries: 4,
+  initialDelayMs: 750,
+  multiplier: 2,
+  maxDelayMs: 8000,
+  respectServerRetryAfter: true,
+  autoTuneConcurrencyOn429: true,
+}
+
+function cloneDefaultRetryPolicy(): ProviderRetryPolicy {
+  return { ...DEFAULT_RETRY_POLICY }
+}
+
+export const DEFAULT_PROVIDER_RETRY_POLICIES: ProviderRetryPolicyMap = {
+  gemini: cloneDefaultRetryPolicy(),
+  gpt: cloneDefaultRetryPolicy(),
+  claude: cloneDefaultRetryPolicy(),
+  grok: cloneDefaultRetryPolicy(),
 }
 
 export const DEFAULT_PROVIDER_MODELS: ProviderModelMap = {
@@ -259,8 +288,77 @@ function sanitizeNumber(value: unknown, fallback: number, min: number) {
   return Math.max(min, Math.round(parsed))
 }
 
+function sanitizeFloat(value: unknown, fallback: number, min: number) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+  return Math.max(min, parsed)
+}
+
 function sanitizeBoolean(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback
+}
+
+function sanitizeRetryPolicyEntry(
+  value: unknown,
+  fallback: ProviderRetryPolicy,
+): ProviderRetryPolicy {
+  const defaults = { ...fallback }
+  if (!value || typeof value !== 'object') {
+    return defaults
+  }
+
+  const raw = value as Record<string, unknown>
+  const maxRetries = sanitizeNumber(raw.maxRetries, defaults.maxRetries, 0)
+  const initialDelayMs = sanitizeNumber(raw.initialDelayMs, defaults.initialDelayMs, 0)
+  const multiplier = sanitizeFloat(raw.multiplier, defaults.multiplier, 1)
+  const maxDelayFallback = Math.max(defaults.maxDelayMs, initialDelayMs)
+  let maxDelayMs = sanitizeNumber(raw.maxDelayMs, maxDelayFallback, initialDelayMs)
+  if (maxDelayMs < initialDelayMs) {
+    maxDelayMs = initialDelayMs
+  }
+  const respectServerRetryAfter = sanitizeBoolean(
+    raw.respectServerRetryAfter,
+    defaults.respectServerRetryAfter,
+  )
+  const autoTuneConcurrencyOn429 = sanitizeBoolean(
+    raw.autoTuneConcurrencyOn429,
+    defaults.autoTuneConcurrencyOn429,
+  )
+
+  return {
+    maxRetries,
+    initialDelayMs,
+    multiplier,
+    maxDelayMs,
+    respectServerRetryAfter,
+    autoTuneConcurrencyOn429,
+  }
+}
+
+function sanitizeProviderRetryPolicies(value: unknown): ProviderRetryPolicyMap {
+  const defaults: ProviderRetryPolicyMap = {
+    gemini: cloneDefaultRetryPolicy(),
+    gpt: cloneDefaultRetryPolicy(),
+    claude: cloneDefaultRetryPolicy(),
+    grok: cloneDefaultRetryPolicy(),
+  }
+
+  if (!value || typeof value !== 'object') {
+    return defaults
+  }
+
+  const raw = value as Record<string, unknown>
+  ;(Object.keys(defaults) as ProviderId[]).forEach((provider) => {
+    defaults[provider] = sanitizeRetryPolicyEntry(raw[provider], defaults[provider])
+  })
+
+  return defaults
+}
+
+export function normalizeRetryPolicy(policy: ProviderRetryPolicy): ProviderRetryPolicy {
+  return sanitizeRetryPolicyEntry(policy, cloneDefaultRetryPolicy())
 }
 
 export function loadPersistedSettings(): PersistedSettings {
