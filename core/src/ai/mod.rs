@@ -18,6 +18,11 @@ pub enum TranslationError {
         provider: ProviderId,
         message: String,
     },
+    #[error("{provider} request rate limited: {message}")]
+    RateLimited {
+        provider: ProviderId,
+        message: String,
+    },
     #[error("{provider} model not allowed: {model_id} ({message})")]
     ModelForbiddenOrNotFound {
         provider: ProviderId,
@@ -95,6 +100,10 @@ fn map_translation_http_error(
         return TranslationError::InvalidApiKey { provider, message };
     }
 
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return TranslationError::RateLimited { provider, message };
+    }
+
     if status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND {
         if lowered.contains("insufficient_quota")
             || lowered.contains("insufficient quota")
@@ -108,12 +117,6 @@ fn map_translation_http_error(
             model_id: model_id.to_string(),
             message,
         };
-    }
-
-    if status == StatusCode::TOO_MANY_REQUESTS
-        && (lowered.contains("insufficient") || lowered.contains("quota"))
-    {
-        return TranslationError::QuotaOrPlanError { provider, message };
     }
 
     if lowered.contains("insufficient_quota") || lowered.contains("plan required") {

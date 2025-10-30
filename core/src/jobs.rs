@@ -9,10 +9,72 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+const DEFAULT_MAX_RETRY_ATTEMPTS: u32 = 4;
+const DEFAULT_RETRY_INITIAL_DELAY_MS: u64 = 1_000;
+const DEFAULT_RETRY_MAX_DELAY_MS: u64 = 8_000;
+const DEFAULT_RETRY_MULTIPLIER: f64 = 2.0;
+
+#[derive(Clone, Copy, Debug)]
+struct TranslationRetryPolicy {
+    max_attempts: u32,
+    initial_delay: Duration,
+    max_delay: Duration,
+    multiplier: f64,
+}
+
+impl TranslationRetryPolicy {
+    fn delay_after_failure(&self, attempt: u32) -> Duration {
+        if attempt >= self.max_attempts {
+            return Duration::ZERO;
+        }
+
+        let exponent = attempt.saturating_sub(1) as i32;
+        let mut delay = if exponent <= 0 {
+            self.initial_delay
+        } else {
+            self.initial_delay.mul_f64(self.multiplier.powi(exponent))
+        };
+
+        if delay > self.max_delay {
+            delay = self.max_delay;
+        }
+
+        delay
+    }
+
+    fn has_remaining_attempts(&self, attempt: u32) -> bool {
+        attempt < self.max_attempts
+    }
+
+    fn next_attempt_index(&self, attempt: u32) -> Option<u32> {
+        if self.has_remaining_attempts(attempt) {
+            Some(attempt + 1)
+        } else {
+            None
+        }
+    }
+
+    fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+}
+
+impl Default for TranslationRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: DEFAULT_MAX_RETRY_ATTEMPTS,
+            initial_delay: Duration::from_millis(DEFAULT_RETRY_INITIAL_DELAY_MS),
+            max_delay: Duration::from_millis(DEFAULT_RETRY_MAX_DELAY_MS),
+            multiplier: DEFAULT_RETRY_MULTIPLIER,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -414,68 +476,118 @@ async fn run_translation_job(
             }
         };
 
+        let retry_policy = TranslationRetryPolicy::default();
+
         for (index, segment) in segments.iter().enumerate() {
             let processed = index as u32;
 
             if cancel_flag.load(Ordering::SeqCst) {
-                emit_progress(
+                emit_cancelled_progress(
                     &app,
-                    TranslationProgressEventPayload {
-                        job_id: payload.job_id.clone(),
-                        status: "canceled".into(),
-                        progress_pct: Some(percentage(processed, total_segments)),
-                        cancel_requested: Some(true),
-                        log: Some("사용자가 작업을 중단했습니다.".into()),
-                        translated_count: Some(processed),
-                        total_count: Some(total_segments),
-                        file_name: last_file_name.clone(),
-                        file_success: last_file_success,
-                        file_errors: clone_errors(&file_errors),
-                        last_written: None,
-                    },
+                    &payload,
+                    processed,
+                    total_segments,
+                    &last_file_name,
+                    last_file_success,
+                    &file_errors,
                 );
                 return;
             }
 
-            let translated = match translate_text(
-                &client,
-                provider,
-                &api_key,
-                &payload.model_id,
-                &segment.text,
-                &source_lang,
-                &target_lang,
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err(error) => {
-                    let log_message = format_translation_error(segment, &error);
-                    let file_message = format_file_error_message(segment, &error);
-                    last_file_name = Some(segment.relative_path.clone());
-                    last_file_success = Some(false);
-                    file_errors.push(TranslationFileErrorEntry {
-                        file_path: segment.relative_path.clone(),
-                        message: file_message.clone(),
-                        code: Some(error_code_for(&error).into()),
-                    });
-                    emit_progress(
-                        &app,
-                        TranslationProgressEventPayload {
-                            job_id: payload.job_id.clone(),
-                            status: "failed".into(),
-                            progress_pct: Some(percentage(processed, total_segments)),
-                            cancel_requested: None,
-                            log: Some(log_message.clone()),
-                            translated_count: Some(processed),
-                            total_count: Some(total_segments),
-                            file_name: last_file_name.clone(),
-                            file_success: last_file_success,
-                            file_errors: clone_errors(&file_errors),
-                            last_written: None,
-                        },
-                    );
-                    return;
+            let mut attempt = 0;
+            let translated = loop {
+                attempt += 1;
+                match translate_text(
+                    &client,
+                    provider,
+                    &api_key,
+                    &payload.model_id,
+                    &segment.text,
+                    &source_lang,
+                    &target_lang,
+                )
+                .await
+                {
+                    Ok(value) => break value,
+                    Err(error) => {
+                        let can_retry =
+                            should_retry(&error) && retry_policy.has_remaining_attempts(attempt);
+                        if can_retry {
+                            let delay = retry_policy.delay_after_failure(attempt);
+                            let next_attempt = retry_policy
+                                .next_attempt_index(attempt)
+                                .unwrap_or(retry_policy.max_attempts());
+                            last_file_name = Some(segment.relative_path.clone());
+                            last_file_success = Some(false);
+                            let log_message = format!(
+                                "{} {}행 번역 실패 (cause: {}). Retrying in {:.1}s… (attempt {}/{})",
+                                segment.relative_path,
+                                segment.line_number,
+                                error_code_for(&error),
+                                delay.as_secs_f32(),
+                                next_attempt,
+                                retry_policy.max_attempts()
+                            );
+                            emit_progress(
+                                &app,
+                                TranslationProgressEventPayload {
+                                    job_id: payload.job_id.clone(),
+                                    status: "running".into(),
+                                    progress_pct: Some(percentage(processed, total_segments)),
+                                    cancel_requested: None,
+                                    log: Some(log_message),
+                                    translated_count: Some(processed),
+                                    total_count: Some(total_segments),
+                                    file_name: Some(segment.relative_path.clone()),
+                                    file_success: Some(false),
+                                    file_errors: clone_errors(&file_errors),
+                                    last_written: None,
+                                },
+                            );
+
+                            if wait_with_cancellation(&cancel_flag, delay).await {
+                                emit_cancelled_progress(
+                                    &app,
+                                    &payload,
+                                    processed,
+                                    total_segments,
+                                    &last_file_name,
+                                    last_file_success,
+                                    &file_errors,
+                                );
+                                return;
+                            }
+
+                            continue;
+                        }
+
+                        let log_message = format_translation_error(segment, &error);
+                        let file_message = format_file_error_message(segment, &error);
+                        last_file_name = Some(segment.relative_path.clone());
+                        last_file_success = Some(false);
+                        file_errors.push(TranslationFileErrorEntry {
+                            file_path: segment.relative_path.clone(),
+                            message: file_message.clone(),
+                            code: Some(error_code_for(&error).into()),
+                        });
+                        emit_progress(
+                            &app,
+                            TranslationProgressEventPayload {
+                                job_id: payload.job_id.clone(),
+                                status: "failed".into(),
+                                progress_pct: Some(percentage(processed, total_segments)),
+                                cancel_requested: None,
+                                log: Some(log_message.clone()),
+                                translated_count: Some(processed),
+                                total_count: Some(total_segments),
+                                file_name: last_file_name.clone(),
+                                file_success: last_file_success,
+                                file_errors: clone_errors(&file_errors),
+                                last_written: None,
+                            },
+                        );
+                        return;
+                    }
                 }
             };
 
@@ -513,42 +625,28 @@ async fn run_translation_job(
     }
 
     if cancel_flag.load(Ordering::SeqCst) {
-        emit_progress(
+        emit_cancelled_progress(
             &app,
-            TranslationProgressEventPayload {
-                job_id: payload.job_id.clone(),
-                status: "canceled".into(),
-                progress_pct: Some(percentage(processed_segments, total_segments)),
-                cancel_requested: Some(true),
-                log: Some("사용자가 작업을 중단했습니다.".into()),
-                translated_count: Some(processed_segments),
-                total_count: Some(total_segments),
-                file_name: last_file_name.clone(),
-                file_success: last_file_success,
-                file_errors: clone_errors(&file_errors),
-                last_written: None,
-            },
+            &payload,
+            processed_segments,
+            total_segments,
+            &last_file_name,
+            last_file_success,
+            &file_errors,
         );
         return;
     }
 
     for context in &mut file_contexts {
         if cancel_flag.load(Ordering::SeqCst) {
-            emit_progress(
+            emit_cancelled_progress(
                 &app,
-                TranslationProgressEventPayload {
-                    job_id: payload.job_id.clone(),
-                    status: "canceled".into(),
-                    progress_pct: Some(percentage(processed_segments, total_segments)),
-                    cancel_requested: Some(true),
-                    log: Some("사용자가 작업을 중단했습니다.".into()),
-                    translated_count: Some(processed_segments),
-                    total_count: Some(total_segments),
-                    file_name: last_file_name.clone(),
-                    file_success: last_file_success,
-                    file_errors: clone_errors(&file_errors),
-                    last_written: None,
-                },
+                &payload,
+                processed_segments,
+                total_segments,
+                &last_file_name,
+                last_file_success,
+                &file_errors,
             );
             return;
         }
@@ -802,6 +900,33 @@ fn emit_progress(app: &AppHandle, payload: TranslationProgressEventPayload) {
     }
 }
 
+fn emit_cancelled_progress(
+    app: &AppHandle,
+    payload: &StartTranslationJobPayload,
+    processed: u32,
+    total: u32,
+    last_file_name: &Option<String>,
+    last_file_success: Option<bool>,
+    file_errors: &[TranslationFileErrorEntry],
+) {
+    emit_progress(
+        app,
+        TranslationProgressEventPayload {
+            job_id: payload.job_id.clone(),
+            status: "canceled".into(),
+            progress_pct: Some(percentage(processed, total)),
+            cancel_requested: Some(true),
+            log: Some("사용자가 작업을 중단했습니다.".into()),
+            translated_count: Some(processed),
+            total_count: Some(total),
+            file_name: last_file_name.clone(),
+            file_success: last_file_success,
+            file_errors: clone_errors(file_errors),
+            last_written: None,
+        },
+    );
+}
+
 fn percentage(processed: u32, total: u32) -> f32 {
     if total == 0 {
         return 0.0;
@@ -809,9 +934,48 @@ fn percentage(processed: u32, total: u32) -> f32 {
     ((processed as f32) / (total as f32) * 100.0).clamp(0.0, 100.0)
 }
 
+fn should_retry(error: &TranslationError) -> bool {
+    matches!(
+        error,
+        TranslationError::NetworkOrHttp { .. } | TranslationError::RateLimited { .. }
+    )
+}
+
+async fn wait_with_cancellation(cancel_flag: &Arc<AtomicBool>, duration: Duration) -> bool {
+    if duration.is_zero() {
+        return cancel_flag.load(Ordering::SeqCst);
+    }
+
+    let mut elapsed = Duration::ZERO;
+    let poll_interval = Duration::from_millis(200);
+
+    while elapsed < duration {
+        if cancel_flag.load(Ordering::SeqCst) {
+            return true;
+        }
+
+        let remaining = duration.saturating_sub(elapsed);
+        let sleep_for = if remaining <= poll_interval {
+            remaining
+        } else {
+            poll_interval
+        };
+
+        if sleep_for.is_zero() {
+            break;
+        }
+
+        tauri::async_runtime::sleep(sleep_for).await;
+        elapsed += sleep_for;
+    }
+
+    cancel_flag.load(Ordering::SeqCst)
+}
+
 fn error_code_for(error: &TranslationError) -> &'static str {
     match error {
         TranslationError::InvalidApiKey { .. } => "INVALID_API_KEY",
+        TranslationError::RateLimited { .. } => "RATE_LIMITED",
         TranslationError::ModelForbiddenOrNotFound { .. } => "MODEL_FORBIDDEN",
         TranslationError::QuotaOrPlanError { .. } => "QUOTA_OR_PLAN",
         TranslationError::NetworkOrHttp { .. } => "NETWORK_ERROR",
@@ -829,6 +993,9 @@ fn format_translation_error(segment: &Segment, error: &TranslationError) -> Stri
             model_id, message, ..
         } => {
             format!("{location} 번역 중 모델 '{model_id}'을(를) 사용할 수 없습니다: {message}")
+        }
+        TranslationError::RateLimited { message, .. } => {
+            format!("{location} 번역 중 너무 많은 요청이 감지되었습니다: {message}")
         }
         TranslationError::QuotaOrPlanError { message, .. } => {
             format!("{location} 번역 중 요금제/할당량 제한으로 실패했습니다: {message}")
@@ -855,6 +1022,9 @@ fn format_file_error_message(segment: &Segment, error: &TranslationError) -> Str
         }
         TranslationError::InvalidApiKey { message, .. } => {
             format!("The API key was rejected by the provider: {message}")
+        }
+        TranslationError::RateLimited { message, .. } => {
+            format!("Translation request was throttled by the provider: {message}")
         }
         TranslationError::QuotaOrPlanError { message, .. } => {
             format!("Translation failed due to plan or quota limits: {message}")
