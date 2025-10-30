@@ -137,6 +137,11 @@ export interface EnqueueJobResult {
   error: EnqueueJobError | null
 }
 
+export interface CancelRequestResult {
+  success: boolean
+  previousStatus: JobState | null
+}
+
 export interface StartTranslationOptions {
   selectedFiles: string[]
   sourceLanguageGuess: string | null
@@ -153,7 +158,7 @@ interface JobStoreValue {
   loadFilesForCurrentJob: () => Promise<void>
   toggleCurrentJobFileSelection: (path: string) => void
   startTranslationForCurrentJob: (options: StartTranslationOptions) => Promise<void>
-  requestCancelCurrentJob: () => Promise<boolean>
+  requestCancelCurrentJob: () => Promise<CancelRequestResult>
   updateCurrentJobTargetLanguage: (value: string) => void
   updateCurrentJobOutputOverride: (value: string) => void
   dismissCurrentJob: () => void
@@ -773,12 +778,18 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
   const requestCancelCurrentJob = useCallback(async () => {
     const activeJob = state.currentJob
     if (!activeJob) {
-      return false
+      return { success: false, previousStatus: null }
     }
 
     if (activeJob.cancelRequested) {
-      return true
+      return { success: true, previousStatus: activeJob.status }
     }
+
+    if (activeJob.status !== 'pending' && activeJob.status !== 'running') {
+      return { success: false, previousStatus: activeJob.status }
+    }
+
+    const previousStatus = activeJob.status
 
     setState((prev) => {
       if (!prev.currentJob || prev.currentJob.id !== activeJob.id) {
@@ -794,15 +805,34 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       }
     })
 
-    appendLog('현재 작업 중단을 요청했습니다.')
+    if (previousStatus === 'pending') {
+      // wait for backend confirmation to append logs to avoid duplicates
+    } else {
+      appendLog('현재 작업 중단을 요청했습니다.')
+    }
 
     if (!isTauri()) {
-      return true
+      if (previousStatus === 'pending') {
+        const finalLog = createLogEntry('warn', 'User canceled while preparing.')
+        finalizeCurrentJob(
+          'canceled',
+          finalLog,
+          {
+            progress: activeJob.progress,
+            translatedCount: activeJob.translatedCount,
+            totalCount: activeJob.totalCount,
+            fileName: activeJob.latestFileName,
+            fileSuccess: activeJob.latestFileSuccess,
+          },
+        )
+      }
+
+      return { success: true, previousStatus }
     }
 
     try {
       await invoke('cancel_translation_job', { jobId: activeJob.id })
-      return true
+      return { success: true, previousStatus }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       appendLog(`작업 중단 요청에 실패했습니다: ${message}`, 'warn')
@@ -821,9 +851,9 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         }
       })
 
-      return false
+      return { success: false, previousStatus }
     }
-  }, [appendLog, state.currentJob])
+  }, [appendLog, finalizeCurrentJob, state.currentJob])
 
   const updateCurrentJobTargetLanguage = useCallback((value: string) => {
     setState((prev) => {
@@ -872,7 +902,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       const totalCount = payload.totalCount ?? 0
       const lastWritten = payload.lastWritten ?? null
 
-      if (status === 'running') {
+      if (status === 'running' || status === 'pending') {
         setState((prev) => {
           if (!prev.currentJob || prev.currentJob.id !== payload.jobId) {
             return prev
@@ -898,12 +928,16 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             typeof payload.totalCount === 'number'
               ? payload.totalCount
               : prev.currentJob.totalCount
+          const nextCancelRequested =
+            typeof payload.cancelRequested === 'boolean'
+              ? payload.cancelRequested
+              : prev.currentJob.cancelRequested
 
           return {
             ...prev,
             currentJob: {
               ...prev.currentJob,
-              status: 'running',
+              status,
               progress,
               translatedCount: nextTranslatedCount,
               totalCount: nextTotalCount,
@@ -912,6 +946,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               logs,
               fileErrors: updatedFileErrors,
               outputPath: nextOutputPath,
+              cancelRequested: nextCancelRequested,
             },
           }
         })

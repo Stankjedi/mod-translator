@@ -7,6 +7,7 @@ import DashboardView from './views/DashboardView'
 import ModManagementView from './views/ModManagementView'
 import ProgressView from './views/ProgressView'
 import SettingsView from './views/SettingsView'
+import { ToastProvider } from './context/ToastStore'
 import {
   getPolicyAcknowledged,
   setPolicyAcknowledged as persistPolicyAcknowledged,
@@ -145,7 +146,9 @@ function App() {
     <SettingsStoreProvider>
       <LibraryProvider>
         <JobStoreProvider>
-          <AppShell />
+          <ToastProvider>
+            <AppShell />
+          </ToastProvider>
         </JobStoreProvider>
       </LibraryProvider>
     </SettingsStoreProvider>

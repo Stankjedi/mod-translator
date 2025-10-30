@@ -3,6 +3,7 @@ import type { MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useJobStore } from '../context/JobStore'
+import { useToast } from '../context/ToastStore'
 import Chip, { type ChipTone } from '../ui/Chip'
 import type { JobState, LibraryStatus } from '../types/core'
 
@@ -42,12 +43,13 @@ function ModManagementView() {
   const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
   const [selectedGame, setSelectedGame] = useState<string>(ALL_GAMES)
   const [searchQuery, setSearchQuery] = useState('')
-  const { currentJob, queue, enqueueJob, cancelQueuedJob } = useJobStore()
+  const { currentJob, queue, enqueueJob, cancelQueuedJob, requestCancelCurrentJob } = useJobStore()
   const [actionMessage, setActionMessage] = useState<{
     type: 'success' | 'error'
     text: string
   } | null>(null)
   const navigate = useNavigate()
+  const { showToast } = useToast()
 
   const allMods = useMemo<ModRow[]>(() => {
     const deduped = new Map<string, ModRow>()
@@ -219,6 +221,31 @@ function ModManagementView() {
       }
     },
     [currentJob, enqueueJob, navigate, queue],
+  )
+
+  const handleCancelPreparingJob = useCallback(
+    async (event: MouseEvent<HTMLButtonElement>, modId: string) => {
+      event.stopPropagation()
+      setActionMessage(null)
+
+      if (!currentJob || currentJob.modId !== modId) {
+        return
+      }
+
+      const result = await requestCancelCurrentJob()
+      if (!result.success) {
+        setActionMessage({
+          type: 'error',
+          text: '준비 중인 작업을 취소하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+        })
+        return
+      }
+
+      if (result.previousStatus === 'pending') {
+        showToast('Preparing job canceled.', 'neutral')
+      }
+    },
+    [currentJob, requestCancelCurrentJob, showToast],
   )
 
   const handleCancelQueuedJob = useCallback(
@@ -406,6 +433,18 @@ function ModManagementView() {
                       <div className="flex flex-col gap-2">
                         <Chip label={badgeLabel} tone={badgeTone} />
                         <p className="text-[11px] text-slate-500">{note}</p>
+                        {isPending && jobId && (
+                          <button
+                            type="button"
+                            onClick={(event) => handleCancelPreparingJob(event, mod.id)}
+                            disabled={isCancelRequested}
+                            className="inline-flex w-fit items-center justify-center rounded-full border border-slate-600/70 px-3 py-1 text-[11px] font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                            title="Cancel preparing job"
+                            aria-label="Cancel preparing job"
+                          >
+                            취소
+                          </button>
+                        )}
                         {isQueued && jobId && (
                           <button
                             type="button"
