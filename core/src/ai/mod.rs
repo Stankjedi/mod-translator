@@ -1,6 +1,6 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::{Client, StatusCode};
+use reqwest::{header::HeaderMap, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -33,6 +33,13 @@ pub enum TranslationError {
     NetworkOrHttp {
         provider: ProviderId,
         message: String,
+    },
+    #[error("{provider} rate limited: {message}")]
+    RateLimited {
+        provider: ProviderId,
+        message: String,
+        retry_after_ms: Option<u64>,
+        used_server_hint: bool,
     },
     #[error("placeholder mismatch: {0:?}")]
     PlaceholderMismatch(Vec<String>),
@@ -78,11 +85,18 @@ impl TryFrom<&str> for ProviderId {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RetryAdvice {
+    delay_ms: u64,
+    used_server_hint: bool,
+}
+
 fn map_translation_http_error(
     provider: ProviderId,
     model_id: &str,
     status: StatusCode,
     body: String,
+    retry_advice: Option<RetryAdvice>,
 ) -> TranslationError {
     let message = if body.trim().is_empty() {
         status.to_string()
@@ -93,6 +107,19 @@ fn map_translation_http_error(
 
     if status == StatusCode::UNAUTHORIZED {
         return TranslationError::InvalidApiKey { provider, message };
+    }
+
+    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
+        let delay_ms = retry_advice.map(|advice| advice.delay_ms);
+        let used_server_hint = retry_advice
+            .map(|advice| advice.used_server_hint)
+            .unwrap_or(false);
+        return TranslationError::RateLimited {
+            provider,
+            message,
+            retry_after_ms: delay_ms,
+            used_server_hint,
+        };
     }
 
     if status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND {
@@ -110,17 +137,82 @@ fn map_translation_http_error(
         };
     }
 
-    if status == StatusCode::TOO_MANY_REQUESTS
-        && (lowered.contains("insufficient") || lowered.contains("quota"))
-    {
-        return TranslationError::QuotaOrPlanError { provider, message };
-    }
-
     if lowered.contains("insufficient_quota") || lowered.contains("plan required") {
         return TranslationError::QuotaOrPlanError { provider, message };
     }
 
     TranslationError::NetworkOrHttp { provider, message }
+}
+
+fn parse_retry_after(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(seconds) = trimmed.parse::<f64>() {
+        if seconds.is_finite() && seconds >= 0.0 {
+            let millis = (seconds * 1000.0).round();
+            if millis >= 0.0 {
+                return Some(millis as u64);
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_hint_from_body(body: &str) -> Option<RetryAdvice> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return None;
+    };
+
+    if let Some(ms) = value.get("estimated_wait_ms").and_then(|v| v.as_u64()) {
+        return Some(RetryAdvice {
+            delay_ms: ms,
+            used_server_hint: true,
+        });
+    }
+
+    if let Some(seconds) = value.get("retry_after").and_then(|v| v.as_f64()) {
+        if seconds.is_finite() && seconds >= 0.0 {
+            let millis = (seconds * 1000.0).round();
+            if millis >= 0.0 {
+                return Some(RetryAdvice {
+                    delay_ms: millis as u64,
+                    used_server_hint: true,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_retry_advice(headers: &HeaderMap, body: &str) -> Option<RetryAdvice> {
+    if let Some(value) = headers.get("x-server-hint-ms") {
+        if let Ok(text) = value.to_str() {
+            if let Ok(ms) = text.trim().parse::<u64>() {
+                return Some(RetryAdvice {
+                    delay_ms: ms,
+                    used_server_hint: true,
+                });
+            }
+        }
+    }
+
+    if let Some(value) = headers.get("retry-after") {
+        if let Ok(text) = value.to_str() {
+            if let Some(ms) = parse_retry_after(text) {
+                return Some(RetryAdvice {
+                    delay_ms: ms,
+                    used_server_hint: true,
+                });
+            }
+        }
+    }
+
+    parse_hint_from_body(body)
 }
 
 pub async fn translate_text(
@@ -230,24 +322,32 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
         })?;
 
     let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Gemini,
+            message: err.to_string(),
+        })?;
+
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        let retry_advice = extract_retry_advice(&headers, &body);
         return Err(map_translation_http_error(
             ProviderId::Gemini,
             trimmed_model,
             status,
             body,
+            retry_advice,
         ));
     }
 
     let parsed: GeminiResponse =
-        response
-            .json()
-            .await
-            .map_err(|err| TranslationError::NetworkOrHttp {
-                provider: ProviderId::Gemini,
-                message: err.to_string(),
-            })?;
+        serde_json::from_slice(&bytes).map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Gemini,
+            message: err.to_string(),
+        })?;
     let text = parsed
         .candidates
         .and_then(|candidates| candidates.into_iter().next())
@@ -307,24 +407,32 @@ async fn translate_with_gpt(
         })?;
 
     let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Gpt,
+            message: err.to_string(),
+        })?;
+
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        let retry_advice = extract_retry_advice(&headers, &body);
         return Err(map_translation_http_error(
             ProviderId::Gpt,
             trimmed_model,
             status,
             body,
+            retry_advice,
         ));
     }
 
     let parsed: OpenAiResponse =
-        response
-            .json()
-            .await
-            .map_err(|err| TranslationError::NetworkOrHttp {
-                provider: ProviderId::Gpt,
-                message: err.to_string(),
-            })?;
+        serde_json::from_slice(&bytes).map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Gpt,
+            message: err.to_string(),
+        })?;
     let text = parsed
         .choices
         .into_iter()
@@ -381,24 +489,32 @@ async fn translate_with_claude(
         })?;
 
     let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Claude,
+            message: err.to_string(),
+        })?;
+
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        let retry_advice = extract_retry_advice(&headers, &body);
         return Err(map_translation_http_error(
             ProviderId::Claude,
             trimmed_model,
             status,
             body,
+            retry_advice,
         ));
     }
 
     let parsed: AnthropicResponse =
-        response
-            .json()
-            .await
-            .map_err(|err| TranslationError::NetworkOrHttp {
-                provider: ProviderId::Claude,
-                message: err.to_string(),
-            })?;
+        serde_json::from_slice(&bytes).map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Claude,
+            message: err.to_string(),
+        })?;
     let text = parsed
         .content
         .unwrap_or_default()
@@ -457,24 +573,32 @@ async fn translate_with_grok(
         })?;
 
     let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Grok,
+            message: err.to_string(),
+        })?;
+
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&bytes).to_string();
+        let retry_advice = extract_retry_advice(&headers, &body);
         return Err(map_translation_http_error(
             ProviderId::Grok,
             trimmed_model,
             status,
             body,
+            retry_advice,
         ));
     }
 
     let parsed: OpenAiResponse =
-        response
-            .json()
-            .await
-            .map_err(|err| TranslationError::NetworkOrHttp {
-                provider: ProviderId::Grok,
-                message: err.to_string(),
-            })?;
+        serde_json::from_slice(&bytes).map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Grok,
+            message: err.to_string(),
+        })?;
     let text = parsed
         .choices
         .into_iter()

@@ -99,6 +99,17 @@ export interface TranslationProgressEventPayload {
     outputAbsolutePath: string
     outputRelativePath: string
   }
+  metrics?: TranslationAttemptMetrics
+}
+
+export interface TranslationAttemptMetrics {
+  provider: string
+  modelId: string
+  status: string
+  errorCode?: string
+  attempt: number
+  usedServerHint: boolean
+  totalBackoffMs: number
 }
 
 export interface ModFileDescriptor {

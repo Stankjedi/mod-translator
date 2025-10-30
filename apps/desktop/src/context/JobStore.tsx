@@ -18,6 +18,7 @@ import type {
   ProviderId,
   TranslationFileErrorEntry,
   TranslationProgressEventPayload,
+  TranslationAttemptMetrics,
 } from '../types/core'
 import { useSettingsStore } from './SettingsStore'
 
@@ -60,6 +61,10 @@ export interface JobLogEntry {
   level: JobLogLevel
 }
 
+export interface JobMetricEntry extends TranslationAttemptMetrics {
+  ts: number
+}
+
 export interface JobFileEntry {
   path: string
   relativePath: string
@@ -90,6 +95,7 @@ export interface TranslationJob {
   latestFileSuccess: boolean | null
   cancelRequested: boolean
   logs: JobLogEntry[]
+  metrics: JobMetricEntry[]
   files: JobFileEntry[] | null
   filesLoading: boolean
   fileListError: string | null
@@ -248,6 +254,36 @@ const applyFileErrorUpdates = (
   return merged
 }
 
+const appendMetricEntry = (
+  entries: JobMetricEntry[],
+  metric?: TranslationAttemptMetrics,
+): JobMetricEntry[] => {
+  if (!metric) {
+    return entries
+  }
+
+  const nextEntry: JobMetricEntry = {
+    ...metric,
+    ts: Date.now(),
+  }
+
+  const lastEntry = entries[entries.length - 1]
+  if (
+    lastEntry &&
+    lastEntry.provider === nextEntry.provider &&
+    lastEntry.modelId === nextEntry.modelId &&
+    lastEntry.status === nextEntry.status &&
+    lastEntry.attempt === nextEntry.attempt &&
+    (lastEntry.errorCode ?? '') === (nextEntry.errorCode ?? '') &&
+    lastEntry.usedServerHint === nextEntry.usedServerHint &&
+    lastEntry.totalBackoffMs === nextEntry.totalBackoffMs
+  ) {
+    return entries
+  }
+
+  return [...entries, nextEntry]
+}
+
 const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   ...job,
   status: 'pending',
@@ -258,6 +294,7 @@ const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   latestFileSuccess: null,
   cancelRequested: false,
   logs: [],
+  metrics: [],
   files: null,
   filesLoading: false,
   fileListError: null,
@@ -290,6 +327,7 @@ const createJob = (
   latestFileSuccess: null,
   cancelRequested: false,
   logs: [],
+  metrics: [],
   files: null,
   filesLoading: false,
   fileListError: null,
@@ -373,6 +411,11 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             ? applyFileErrorUpdates(prev.currentJob, payload)
             : prev.currentJob.fileErrors
 
+        const metricsHistory = appendMetricEntry(
+          prev.currentJob.metrics,
+          payload?.metrics,
+        )
+
         const finishedJob: TranslationJob = {
           ...prev.currentJob,
           status: nextState,
@@ -386,6 +429,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             ? [...prev.currentJob.logs, finalLogEntry]
             : prev.currentJob.logs,
           fileErrors: [...fileErrors],
+          metrics: metricsHistory,
           completedAt: Date.now(),
         }
 
@@ -482,6 +526,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             ...baseJob,
             status: 'failed',
             logs: [failureLog],
+            metrics: [...baseJob.metrics],
             completedAt: Date.now(),
           }
 
@@ -538,6 +583,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         ...job,
         status: 'canceled',
         cancelRequested: false,
+        metrics: [...job.metrics],
         completedAt: Date.now(),
       }
 
@@ -768,6 +814,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             modelId,
             translatedCount: 0,
             totalCount: 0,
+            metrics: [],
           },
         }
       })
@@ -932,6 +979,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             typeof payload.cancelRequested === 'boolean'
               ? payload.cancelRequested
               : prev.currentJob.cancelRequested
+          const nextMetrics = appendMetricEntry(prev.currentJob.metrics, payload.metrics)
 
           return {
             ...prev,
@@ -947,6 +995,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               fileErrors: updatedFileErrors,
               outputPath: nextOutputPath,
               cancelRequested: nextCancelRequested,
+              metrics: nextMetrics,
             },
           }
         })
