@@ -198,7 +198,7 @@ async fn translate_with_gemini(
 ) -> Result<String, TranslationError> {
     let prompt = format!(
         "Translate the following text from {source_lang} to {target_lang}. \
-Preserve any placeholders such as {0}, %1$s, or similar tokens exactly as they appear.\n\n{input}"
+Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they appear.\n\n{input}"
     );
 
     let trimmed_model = model_id.trim();
