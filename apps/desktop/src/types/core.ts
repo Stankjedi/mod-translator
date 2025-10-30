@@ -87,6 +87,7 @@ export interface TranslationProgressEventPayload {
   jobId: string
   status: TranslationProgressState
   progressPct?: number
+  cancelRequested?: boolean
   log?: string | null
   translatedCount?: number
   totalCount?: number

@@ -42,6 +42,8 @@ pub struct TranslationProgressEventPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress_pct: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_requested: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub log: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub translated_count: Option<u32>,
@@ -130,6 +132,7 @@ pub fn start_translation_job(
                     job_id: payload.job_id.clone(),
                     status: "failed".into(),
                     progress_pct: Some(0.0),
+                    cancel_requested: None,
                     log: Some(format!("지원하지 않는 번역기: {}", payload.provider)),
                     translated_count: Some(0),
                     total_count: Some(0),
@@ -151,6 +154,7 @@ pub fn start_translation_job(
                 job_id: payload.job_id.clone(),
                 status: "failed".into(),
                 progress_pct: Some(0.0),
+                cancel_requested: None,
                 log: Some("API 키가 설정되지 않았습니다.".into()),
                 translated_count: Some(0),
                 total_count: Some(0),
@@ -170,6 +174,7 @@ pub fn start_translation_job(
                 job_id: payload.job_id.clone(),
                 status: "failed".into(),
                 progress_pct: Some(0.0),
+                cancel_requested: None,
                 log: Some("번역 모델이 선택되지 않았습니다.".into()),
                 translated_count: Some(0),
                 total_count: Some(0),
@@ -222,16 +227,53 @@ pub fn start_translation_job(
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), String> {
-    let _ = app;
     let guard = ACTIVE_JOBS
         .lock()
         .map_err(|_| "job registry lock poisoned".to_string())?;
 
     if let Some(flag) = guard.get(&jobId) {
         flag.store(true, Ordering::SeqCst);
+        drop(guard);
+
+        emit_progress(
+            &app,
+            TranslationProgressEventPayload {
+                job_id: jobId,
+                status: "running".into(),
+                progress_pct: None,
+                cancel_requested: Some(true),
+                log: None,
+                translated_count: None,
+                total_count: None,
+                file_name: None,
+                file_success: None,
+                file_errors: None,
+                last_written: None,
+            },
+        );
+
         Ok(())
     } else {
-        Err(format!("job {jobId} not found"))
+        drop(guard);
+
+        emit_progress(
+            &app,
+            TranslationProgressEventPayload {
+                job_id: jobId,
+                status: "canceled".into(),
+                progress_pct: Some(0.0),
+                cancel_requested: Some(true),
+                log: Some("User canceled while preparing.".into()),
+                translated_count: Some(0),
+                total_count: Some(0),
+                file_name: None,
+                file_success: None,
+                file_errors: None,
+                last_written: None,
+            },
+        );
+
+        Ok(())
     }
 }
 
@@ -337,6 +379,7 @@ async fn run_translation_job(
             job_id: payload.job_id.clone(),
             status: "running".into(),
             progress_pct: Some(0.0),
+            cancel_requested: None,
             log: Some("번역을 준비하는 중입니다.".into()),
             translated_count: Some(0),
             total_count: Some(total_segments),
@@ -357,6 +400,7 @@ async fn run_translation_job(
                         job_id: payload.job_id.clone(),
                         status: "failed".into(),
                         progress_pct: Some(0.0),
+                        cancel_requested: None,
                         log: Some("HTTP 클라이언트를 초기화하지 못했습니다.".into()),
                         translated_count: Some(0),
                         total_count: Some(total_segments),
@@ -380,6 +424,7 @@ async fn run_translation_job(
                         job_id: payload.job_id.clone(),
                         status: "canceled".into(),
                         progress_pct: Some(percentage(processed, total_segments)),
+                        cancel_requested: Some(true),
                         log: Some("사용자가 작업을 중단했습니다.".into()),
                         translated_count: Some(processed),
                         total_count: Some(total_segments),
@@ -420,6 +465,7 @@ async fn run_translation_job(
                             job_id: payload.job_id.clone(),
                             status: "failed".into(),
                             progress_pct: Some(percentage(processed, total_segments)),
+                            cancel_requested: None,
                             log: Some(log_message.clone()),
                             translated_count: Some(processed),
                             total_count: Some(total_segments),
@@ -450,6 +496,7 @@ async fn run_translation_job(
                     job_id: payload.job_id.clone(),
                     status: "running".into(),
                     progress_pct: Some(percentage(processed_segments, total_segments)),
+                    cancel_requested: None,
                     log: Some(format!(
                         "{} {}행 번역 완료",
                         segment.relative_path, segment.line_number
@@ -472,6 +519,7 @@ async fn run_translation_job(
                 job_id: payload.job_id.clone(),
                 status: "canceled".into(),
                 progress_pct: Some(percentage(processed_segments, total_segments)),
+                cancel_requested: Some(true),
                 log: Some("사용자가 작업을 중단했습니다.".into()),
                 translated_count: Some(processed_segments),
                 total_count: Some(total_segments),
@@ -492,6 +540,7 @@ async fn run_translation_job(
                     job_id: payload.job_id.clone(),
                     status: "canceled".into(),
                     progress_pct: Some(percentage(processed_segments, total_segments)),
+                    cancel_requested: Some(true),
                     log: Some("사용자가 작업을 중단했습니다.".into()),
                     translated_count: Some(processed_segments),
                     total_count: Some(total_segments),
@@ -531,6 +580,7 @@ async fn run_translation_job(
                         job_id: payload.job_id.clone(),
                         status: "running".into(),
                         progress_pct: Some(percentage(processed_segments, total_segments)),
+                        cancel_requested: None,
                         log: Some(message),
                         translated_count: Some(processed_segments),
                         total_count: Some(total_segments),
@@ -564,6 +614,7 @@ async fn run_translation_job(
                     job_id: payload.job_id.clone(),
                     status: "running".into(),
                     progress_pct: Some(percentage(processed_segments, total_segments)),
+                    cancel_requested: None,
                     log: Some(message),
                     translated_count: Some(processed_segments),
                     total_count: Some(total_segments),
@@ -592,6 +643,7 @@ async fn run_translation_job(
                 job_id: payload.job_id.clone(),
                 status: "running".into(),
                 progress_pct: Some(percentage(processed_segments, total_segments)),
+                cancel_requested: None,
                 log: Some(format!(
                     "{} 번역 결과를 저장했습니다.",
                     context.relative_path
@@ -644,6 +696,7 @@ async fn run_translation_job(
             job_id: payload.job_id,
             status: final_status.into(),
             progress_pct: Some(final_progress),
+            cancel_requested: None,
             log: Some(final_log),
             translated_count: Some(processed_segments),
             total_count: Some(total_segments),

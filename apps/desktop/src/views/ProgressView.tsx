@@ -6,6 +6,7 @@ import {
   type JobFileEntry,
   providerLabelFor,
 } from '../context/JobStore'
+import { useToast } from '../context/ToastStore'
 import {
   useSettingsStore,
   type KeyValidationState,
@@ -89,6 +90,7 @@ function ProgressView() {
     updateCurrentJobOutputOverride,
     dismissCurrentJob,
   } = useJobStore()
+  const { showToast } = useToast()
   const { keyValidation } = useSettingsStore()
   const [selectionError, setSelectionError] = useState<string | null>(null)
   const [isStarting, setIsStarting] = useState(false)
@@ -199,13 +201,18 @@ function ProgressView() {
     targetLanguageDraft,
   ])
 
-  const handleStop = useCallback(async () => {
+  const handleCancel = useCallback(async () => {
     setCancelError(null)
     const result = await requestCancelCurrentJob()
-    if (!result) {
+    if (!result.success) {
       setCancelError('작업 중단 요청에 실패했습니다. 잠시 후 다시 시도해 주세요.')
+      return
     }
-  }, [requestCancelCurrentJob])
+
+    if (result.previousStatus === 'pending') {
+      showToast('Preparing job canceled.', 'neutral')
+    }
+  }, [requestCancelCurrentJob, showToast])
 
   const handleTargetLanguageChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -301,12 +308,15 @@ function ProgressView() {
     )
   }
 
+  const isPending = currentJob.status === 'pending'
+  const isRunning = currentJob.status === 'running'
+  const isCancelRequested = currentJob.cancelRequested
   const statusLabel =
-    currentJob.cancelRequested && currentJob.status === 'running'
+    isCancelRequested && (isRunning || isPending)
       ? '중단 요청됨…'
       : statusLabels[currentJob.status]
   const statusTone =
-    currentJob.cancelRequested && currentJob.status === 'running'
+    isCancelRequested && (isRunning || isPending)
       ? 'warning'
       : statusTones[currentJob.status]
   const progressBarClass = progressClasses[currentJob.status]
@@ -324,10 +334,20 @@ function ProgressView() {
     currentJob.status !== 'pending'
   const startDisabled =
     disableSelection || currentJob.status !== 'pending' || !selectedFilePaths.length
-  const showStopButton = currentJob.status === 'running'
+  const showCancelButton = isPending || isRunning
   const showDismissButton = isTerminalState
-  const stopButtonDisabled = currentJob.cancelRequested || currentJob.status !== 'running'
-  const stopButtonLabel = currentJob.cancelRequested ? '중단 요청됨…' : '중단'
+  const cancelButtonDisabled = isCancelRequested || (!isPending && !isRunning)
+  const cancelButtonLabel = isCancelRequested
+    ? isPending
+      ? '취소 요청됨…'
+      : '중단 요청됨…'
+    : isPending
+      ? '취소'
+      : '중단'
+  const cancelButtonClasses = isPending
+    ? 'inline-flex items-center justify-center rounded-full border border-slate-600/70 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60'
+    : 'inline-flex items-center justify-center rounded-full bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-rose-600/30 transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60'
+  const cancelButtonTitle = isPending ? 'Cancel preparing job' : 'Cancel running job'
   const providerDisplay = providerLabelFor(currentJob.providerId)
   const modelDisplay = currentJob.modelId
   const translatedSummary =
@@ -355,14 +375,16 @@ function ProgressView() {
           <Chip label={`번역기: ${providerDisplay}`} tone="idle" />
           {modelDisplay && <Chip label={`모델: ${modelDisplay}`} tone="idle" />}
           <Chip label={statusLabel} tone={statusTone} />
-          {showStopButton && (
+          {showCancelButton && (
             <button
               type="button"
-              onClick={handleStop}
-              disabled={stopButtonDisabled}
-              className="inline-flex items-center justify-center rounded-full bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-rose-600/30 transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={handleCancel}
+              disabled={cancelButtonDisabled}
+              className={cancelButtonClasses}
+              title={cancelButtonTitle}
+              aria-label={cancelButtonTitle}
             >
-              {stopButtonLabel}
+              {cancelButtonLabel}
             </button>
           )}
           {showDismissButton && (
