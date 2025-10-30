@@ -1,3 +1,5 @@
+pub mod retry;
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{Client, StatusCode};
