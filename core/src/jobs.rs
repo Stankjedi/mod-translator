@@ -271,6 +271,66 @@ struct FileContext {
     resume_line_index: usize,
 }
 
+fn provider_identifier(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Gemini => "gemini",
+        ProviderId::Gpt => "gpt",
+        ProviderId::Claude => "claude",
+        ProviderId::Grok => "grok",
+    }
+}
+
+fn build_metrics(
+    provider: ProviderId,
+    model_id: &str,
+    status: &str,
+    attempt: u32,
+    error_code: Option<&str>,
+    used_server_hint: bool,
+    total_backoff_ms: u64,
+) -> TranslationAttemptMetrics {
+    TranslationAttemptMetrics {
+        provider: provider_identifier(provider).to_string(),
+        model_id: model_id.to_string(),
+        status: status.to_string(),
+        error_code: error_code.map(|code| code.to_string()),
+        attempt,
+        used_server_hint,
+        total_backoff_ms,
+    }
+}
+
+fn compute_backoff_ms(attempt: u32) -> u64 {
+    if attempt == 0 {
+        return RATE_LIMIT_BASE_BACKOFF_MS;
+    }
+
+    let exponent = attempt.saturating_sub(1).min(10);
+    let multiplier = 1u64.saturating_shl(exponent);
+    let backoff = RATE_LIMIT_BASE_BACKOFF_MS.saturating_mul(multiplier);
+    backoff.min(RATE_LIMIT_MAX_BACKOFF_MS)
+}
+
+async fn wait_with_cancellation(cancel_flag: &Arc<AtomicBool>, delay_ms: u64) -> bool {
+    if delay_ms == 0 {
+        return cancel_flag.load(Ordering::SeqCst);
+    }
+
+    let mut elapsed = 0u64;
+    while elapsed < delay_ms {
+        if cancel_flag.load(Ordering::SeqCst) {
+            return true;
+        }
+
+        let remaining = delay_ms - elapsed;
+        let step = remaining.min(RATE_LIMIT_WAIT_SLICE_MS);
+        tauri::async_runtime::sleep(Duration::from_millis(step)).await;
+        elapsed = elapsed.saturating_add(step);
+    }
+
+    cancel_flag.load(Ordering::SeqCst)
+}
+
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn start_translation_job(
@@ -745,7 +805,60 @@ async fn run_translation_job(
                     );
                     return;
                 }
-            };
+            }
+
+            if canceled_during_wait || cancel_flag.load(Ordering::SeqCst) {
+                emit_progress(
+                    &app,
+                    TranslationProgressEventPayload {
+                        job_id: payload.job_id.clone(),
+                        status: "canceled".into(),
+                        progress_pct: Some(percentage(processed, total_segments)),
+                        cancel_requested: Some(true),
+                        log: Some("사용자가 작업을 중단했습니다.".into()),
+                        translated_count: Some(processed),
+                        total_count: Some(total_segments),
+                        file_name: last_file_name.clone(),
+                        file_success: last_file_success,
+                        file_errors: clone_errors(&file_errors),
+                        last_written: None,
+                        metrics: metrics_for_event.clone(),
+                    },
+                );
+                return;
+            }
+
+            if let Some(error) = failure {
+                let log_message = format_translation_error(segment, &error);
+                let file_message = format_file_error_message(segment, &error);
+                last_file_name = Some(segment.relative_path.clone());
+                last_file_success = Some(false);
+                file_errors.push(TranslationFileErrorEntry {
+                    file_path: segment.relative_path.clone(),
+                    message: file_message.clone(),
+                    code: Some(error_code_for(&error).into()),
+                });
+                emit_progress(
+                    &app,
+                    TranslationProgressEventPayload {
+                        job_id: payload.job_id.clone(),
+                        status: "failed".into(),
+                        progress_pct: Some(percentage(processed, total_segments)),
+                        cancel_requested: None,
+                        log: Some(log_message.clone()),
+                        translated_count: Some(processed),
+                        total_count: Some(total_segments),
+                        file_name: last_file_name.clone(),
+                        file_success: last_file_success,
+                        file_errors: clone_errors(&file_errors),
+                        last_written: None,
+                        metrics: metrics_for_event,
+                    },
+                );
+                return;
+            }
+
+            let translated_value = translated.expect("translation result should exist");
 
             if let Some(context) = file_contexts.get_mut(segment.file_index) {
                 if segment.line_index < context.translated_lines.len() {
@@ -1342,6 +1455,9 @@ fn format_file_error_message(segment: &Segment, error: &TranslationError) -> Str
         }
         TranslationError::IoError { message, .. } => {
             format!("A local I/O error occurred while processing the file: {message}")
+        }
+        TranslationError::RateLimited { message, .. } => {
+            format!("The translation provider rate limited the request: {message}")
         }
         TranslationError::PlaceholderMismatch(_) => format_translation_error(segment, error),
     }

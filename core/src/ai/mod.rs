@@ -124,6 +124,7 @@ fn map_translation_http_error(
     status: StatusCode,
     headers: HeaderMap,
     body: String,
+    retry_advice: Option<RetryAdvice>,
 ) -> TranslationError {
     let gemini_hints = if matches!(provider, ProviderId::Gemini) {
         parse_gemini_error_hints(&body)
@@ -186,6 +187,77 @@ fn map_translation_http_error(
         status: Some(status),
         message,
     }
+}
+
+fn parse_retry_after(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(seconds) = trimmed.parse::<f64>() {
+        if seconds.is_finite() && seconds >= 0.0 {
+            let millis = (seconds * 1000.0).round();
+            if millis >= 0.0 {
+                return Some(millis as u64);
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_hint_from_body(body: &str) -> Option<RetryAdvice> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return None;
+    };
+
+    if let Some(ms) = value.get("estimated_wait_ms").and_then(|v| v.as_u64()) {
+        return Some(RetryAdvice {
+            delay_ms: ms,
+            used_server_hint: true,
+        });
+    }
+
+    if let Some(seconds) = value.get("retry_after").and_then(|v| v.as_f64()) {
+        if seconds.is_finite() && seconds >= 0.0 {
+            let millis = (seconds * 1000.0).round();
+            if millis >= 0.0 {
+                return Some(RetryAdvice {
+                    delay_ms: millis as u64,
+                    used_server_hint: true,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_retry_advice(headers: &HeaderMap, body: &str) -> Option<RetryAdvice> {
+    if let Some(value) = headers.get("x-server-hint-ms") {
+        if let Ok(text) = value.to_str() {
+            if let Ok(ms) = text.trim().parse::<u64>() {
+                return Some(RetryAdvice {
+                    delay_ms: ms,
+                    used_server_hint: true,
+                });
+            }
+        }
+    }
+
+    if let Some(value) = headers.get("retry-after") {
+        if let Ok(text) = value.to_str() {
+            if let Some(ms) = parse_retry_after(text) {
+                return Some(RetryAdvice {
+                    delay_ms: ms,
+                    used_server_hint: true,
+                });
+            }
+        }
+    }
+
+    parse_hint_from_body(body)
 }
 
 pub async fn translate_text(
@@ -299,6 +371,15 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
         })?;
 
     let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Gemini,
+            message: err.to_string(),
+        })?;
+
     if !status.is_success() {
         let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
@@ -308,6 +389,7 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
             status,
             headers,
             body,
+            retry_advice,
         ));
     }
 
@@ -388,6 +470,15 @@ async fn translate_with_gpt(
         })?;
 
     let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Gpt,
+            message: err.to_string(),
+        })?;
+
     if !status.is_success() {
         let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
@@ -397,6 +488,7 @@ async fn translate_with_gpt(
             status,
             headers,
             body,
+            retry_advice,
         ));
     }
 
@@ -474,6 +566,15 @@ async fn translate_with_claude(
         })?;
 
     let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Claude,
+            message: err.to_string(),
+        })?;
+
     if !status.is_success() {
         let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
@@ -483,6 +584,7 @@ async fn translate_with_claude(
             status,
             headers,
             body,
+            retry_advice,
         ));
     }
 
@@ -562,6 +664,15 @@ async fn translate_with_grok(
         })?;
 
     let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| TranslationError::NetworkOrHttp {
+            provider: ProviderId::Grok,
+            message: err.to_string(),
+        })?;
+
     if !status.is_success() {
         let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
@@ -571,6 +682,7 @@ async fn translate_with_grok(
             status,
             headers,
             body,
+            retry_advice,
         ));
     }
 
