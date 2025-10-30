@@ -301,7 +301,18 @@ const createJob = (
 })
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
-  const { activeProviderId, apiKeys, providerModels } = useSettingsStore()
+  const {
+    activeProviderId,
+    apiKeys,
+    providerModels,
+    concurrency,
+    workerCount,
+    bucketSize,
+    enableConcurrencyAutoTune,
+    setConcurrency,
+    setWorkerCount,
+    setBucketSize,
+  } = useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
@@ -310,11 +321,22 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
   const activeJobIdRef = useRef<string | null>(null)
 
   const providerApiKeyRef = useRef<string>('')
+  const rateLimitHitCountRef = useRef(0)
+  const lastRateLimitAtRef = useRef<number | null>(null)
+  const lastAutoTuneAtRef = useRef<number | null>(null)
 
   useEffect(() => {
     activeJobIdRef.current = state.currentJob?.id ?? null
     providerApiKeyRef.current = state.currentJob?.providerApiKey ?? ''
   }, [state.currentJob?.id, state.currentJob?.providerApiKey])
+
+  useEffect(() => {
+    if (!enableConcurrencyAutoTune) {
+      rateLimitHitCountRef.current = 0
+      lastRateLimitAtRef.current = null
+      lastAutoTuneAtRef.current = null
+    }
+  }, [enableConcurrencyAutoTune])
 
   useEffect(() => {
     setState((prev) => {
@@ -429,6 +451,73 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       }
     })
   }, [])
+
+  const maybeAutoTuneConcurrency = useCallback(
+    (payload: TranslationProgressEventPayload) => {
+      if (!enableConcurrencyAutoTune) {
+        return
+      }
+
+      const isRateLimited =
+        payload.rateLimited === true ||
+        (payload.fileErrors?.some((entry) => entry.code === 'RATE_LIMITED') ?? false)
+
+      if (!isRateLimited) {
+        return
+      }
+
+      const now = Date.now()
+      const lastHit = lastRateLimitAtRef.current
+      if (lastHit && now - lastHit > 5 * 60 * 1000) {
+        rateLimitHitCountRef.current = 0
+      }
+
+      lastRateLimitAtRef.current = now
+      rateLimitHitCountRef.current += 1
+
+      if (rateLimitHitCountRef.current < 2) {
+        return
+      }
+
+      const lastAutoTune = lastAutoTuneAtRef.current ?? 0
+      if (lastAutoTune && now - lastAutoTune < 60_000) {
+        return
+      }
+
+      const nextConcurrency = Math.max(1, Math.ceil(concurrency / 2))
+      const nextWorkerCount = Math.max(1, Math.ceil(workerCount / 2))
+      const nextBucketSize = Math.max(1, Math.ceil(bucketSize / 2))
+
+      if (
+        nextConcurrency === concurrency &&
+        nextWorkerCount === workerCount &&
+        nextBucketSize === bucketSize
+      ) {
+        lastAutoTuneAtRef.current = now
+        rateLimitHitCountRef.current = 0
+        return
+      }
+
+      setConcurrency(nextConcurrency)
+      setWorkerCount(nextWorkerCount)
+      setBucketSize(nextBucketSize)
+
+      appendLog(`Concurrency auto-tuned to ${nextConcurrency} due to repeated 429s`)
+
+      lastAutoTuneAtRef.current = now
+      rateLimitHitCountRef.current = 0
+    },
+    [
+      enableConcurrencyAutoTune,
+      concurrency,
+      workerCount,
+      bucketSize,
+      setConcurrency,
+      setWorkerCount,
+      setBucketSize,
+      appendLog,
+    ],
+  )
 
   const enqueueJob = useCallback(
     (input: EnqueueJobInput): EnqueueJobResult => {
@@ -893,6 +982,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         return
       }
 
+      maybeAutoTuneConcurrency(payload)
+
       const status = payload.status ?? 'running'
       const trimmedLog = payload.log?.trim() ?? ''
       const progress = clampProgress(Math.round(payload.progressPct ?? 0))
@@ -993,7 +1084,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         )
       }
     },
-    [finalizeCurrentJob],
+    [finalizeCurrentJob, maybeAutoTuneConcurrency],
   )
 
   const dismissCurrentJob = useCallback(() => {

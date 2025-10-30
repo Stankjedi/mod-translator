@@ -35,6 +35,7 @@ export interface PersistedSettings {
   workerCount: number
   bucketSize: number
   refillMs: number
+  enableConcurrencyAutoTune: boolean
   enableBackendLogging: boolean
   enforcePlaceholderGuard: boolean
   prioritizeDllResources: boolean
@@ -50,6 +51,7 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   workerCount: 2,
   bucketSize: 5,
   refillMs: 750,
+  enableConcurrencyAutoTune: false,
   enableBackendLogging: false,
   enforcePlaceholderGuard: true,
   prioritizeDllResources: true,
@@ -179,6 +181,10 @@ export function loadPersistedSettings(): PersistedSettings {
       workerCount: sanitizeNumber(parsed.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
       bucketSize: sanitizeNumber(parsed.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),
       refillMs: sanitizeNumber(parsed.refillMs, DEFAULT_PERSISTED_SETTINGS.refillMs, 50),
+      enableConcurrencyAutoTune: sanitizeBoolean(
+        parsed.enableConcurrencyAutoTune,
+        DEFAULT_PERSISTED_SETTINGS.enableConcurrencyAutoTune,
+      ),
       enableBackendLogging: sanitizeBoolean(
         parsed.enableBackendLogging,
         DEFAULT_PERSISTED_SETTINGS.enableBackendLogging,
@@ -238,6 +244,7 @@ export function persistSettings(settings: PersistedSettings) {
     workerCount: sanitizeNumber(settings.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
     bucketSize: sanitizeNumber(settings.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),
     refillMs: sanitizeNumber(settings.refillMs, DEFAULT_PERSISTED_SETTINGS.refillMs, 50),
+    enableConcurrencyAutoTune: Boolean(settings.enableConcurrencyAutoTune),
     enableBackendLogging: Boolean(settings.enableBackendLogging),
     enforcePlaceholderGuard: Boolean(settings.enforcePlaceholderGuard),
     prioritizeDllResources: Boolean(settings.prioritizeDllResources),

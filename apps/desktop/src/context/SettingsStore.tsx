@@ -49,6 +49,7 @@ interface SettingsStoreValue extends SettingsState {
   setWorkerCount: (value: number) => void
   setBucketSize: (value: number) => void
   setRefillMs: (value: number) => void
+  setEnableConcurrencyAutoTune: (enabled: boolean) => void
   setEnableBackendLogging: (enabled: boolean) => void
   setEnforcePlaceholderGuard: (enabled: boolean) => void
   setPrioritizeDllResources: (enabled: boolean) => void
@@ -407,6 +408,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         workerCount: state.workerCount,
         bucketSize: state.bucketSize,
         refillMs: state.refillMs,
+        enableConcurrencyAutoTune: state.enableConcurrencyAutoTune,
         enableBackendLogging: state.enableBackendLogging,
         enforcePlaceholderGuard: state.enforcePlaceholderGuard,
         prioritizeDllResources: state.prioritizeDllResources,
@@ -424,6 +426,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     state.workerCount,
     state.bucketSize,
     state.refillMs,
+    state.enableConcurrencyAutoTune,
     state.enableBackendLogging,
     state.enforcePlaceholderGuard,
     state.prioritizeDllResources,
@@ -579,6 +582,10 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, refillMs: clampPositiveInteger(value, 50) }))
   }, [])
 
+  const setEnableConcurrencyAutoTune = useCallback((enabled: boolean) => {
+    setState((prev) => ({ ...prev, enableConcurrencyAutoTune: enabled }))
+  }, [])
+
   const setEnableBackendLogging = useCallback((enabled: boolean) => {
     setState((prev) => ({ ...prev, enableBackendLogging: enabled }))
   }, [])
@@ -614,6 +621,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setWorkerCount,
       setBucketSize,
       setRefillMs,
+      setEnableConcurrencyAutoTune,
       setEnableBackendLogging,
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
@@ -637,6 +645,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setWorkerCount,
       setBucketSize,
       setRefillMs,
+      setEnableConcurrencyAutoTune,
       setEnableBackendLogging,
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,

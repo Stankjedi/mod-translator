@@ -99,6 +99,7 @@ export interface TranslationProgressEventPayload {
     outputAbsolutePath: string
     outputRelativePath: string
   }
+  rateLimited?: boolean
 }
 
 export interface ModFileDescriptor {

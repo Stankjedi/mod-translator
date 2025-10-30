@@ -57,6 +57,8 @@ pub struct TranslationProgressEventPayload {
     pub file_errors: Option<Vec<TranslationFileErrorEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_written: Option<LastWrittenInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limited: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,6 +142,7 @@ pub fn start_translation_job(
                     file_success: None,
                     file_errors: None,
                     last_written: None,
+                    rate_limited: None,
                 },
             );
             return Err(format!("지원하지 않는 번역기: {}", payload.provider));
@@ -162,6 +165,7 @@ pub fn start_translation_job(
                 file_success: None,
                 file_errors: None,
                 last_written: None,
+                rate_limited: None,
             },
         );
         return Err("선택한 번역기의 API 키를 설정해 주세요.".into());
@@ -182,6 +186,7 @@ pub fn start_translation_job(
                 file_success: None,
                 file_errors: None,
                 last_written: None,
+                rate_limited: None,
             },
         );
         return Err("번역에 사용할 모델을 선택해 주세요.".into());
@@ -249,6 +254,7 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
                 file_success: None,
                 file_errors: None,
                 last_written: None,
+                rate_limited: None,
             },
         );
 
@@ -270,6 +276,7 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
                 file_success: None,
                 file_errors: None,
                 last_written: None,
+                rate_limited: None,
             },
         );
 
@@ -387,6 +394,7 @@ async fn run_translation_job(
             file_success: None,
             file_errors: clone_errors(&file_errors),
             last_written: None,
+            rate_limited: None,
         },
     );
 
@@ -408,6 +416,7 @@ async fn run_translation_job(
                         file_success: last_file_success,
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
+                        rate_limited: None,
                     },
                 );
                 return;
@@ -432,6 +441,7 @@ async fn run_translation_job(
                         file_success: last_file_success,
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
+                        rate_limited: None,
                     },
                 );
                 return;
@@ -452,6 +462,7 @@ async fn run_translation_job(
                 Err(error) => {
                     let log_message = format_translation_error(segment, &error);
                     let file_message = format_file_error_message(segment, &error);
+                    let rate_limited = matches!(error, TranslationError::RateLimited { .. });
                     last_file_name = Some(segment.relative_path.clone());
                     last_file_success = Some(false);
                     file_errors.push(TranslationFileErrorEntry {
@@ -473,6 +484,7 @@ async fn run_translation_job(
                             file_success: last_file_success,
                             file_errors: clone_errors(&file_errors),
                             last_written: None,
+                            rate_limited: rate_limited.then_some(true),
                         },
                     );
                     return;
@@ -507,6 +519,7 @@ async fn run_translation_job(
                     file_success: last_file_success,
                     file_errors: clone_errors(&file_errors),
                     last_written: None,
+                    rate_limited: None,
                 },
             );
         }
@@ -527,6 +540,7 @@ async fn run_translation_job(
                 file_success: last_file_success,
                 file_errors: clone_errors(&file_errors),
                 last_written: None,
+                rate_limited: None,
             },
         );
         return;
@@ -548,6 +562,7 @@ async fn run_translation_job(
                     file_success: last_file_success,
                     file_errors: clone_errors(&file_errors),
                     last_written: None,
+                    rate_limited: None,
                 },
             );
             return;
@@ -588,6 +603,7 @@ async fn run_translation_job(
                         file_success: last_file_success,
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
+                        rate_limited: None,
                     },
                 );
                 continue;
@@ -622,6 +638,7 @@ async fn run_translation_job(
                     file_success: last_file_success,
                     file_errors: clone_errors(&file_errors),
                     last_written: None,
+                    rate_limited: None,
                 },
             );
             continue;
@@ -658,6 +675,7 @@ async fn run_translation_job(
                     output_absolute_path: absolute_display,
                     output_relative_path: output_relative_display,
                 }),
+                rate_limited: None,
             },
         );
     }
@@ -704,6 +722,7 @@ async fn run_translation_job(
             file_success: last_file_success,
             file_errors: clone_errors(&file_errors),
             last_written: None,
+            rate_limited: None,
         },
     );
 }
@@ -812,6 +831,7 @@ fn percentage(processed: u32, total: u32) -> f32 {
 fn error_code_for(error: &TranslationError) -> &'static str {
     match error {
         TranslationError::InvalidApiKey { .. } => "INVALID_API_KEY",
+        TranslationError::RateLimited { .. } => "RATE_LIMITED",
         TranslationError::ModelForbiddenOrNotFound { .. } => "MODEL_FORBIDDEN",
         TranslationError::QuotaOrPlanError { .. } => "QUOTA_OR_PLAN",
         TranslationError::NetworkOrHttp { .. } => "NETWORK_ERROR",
@@ -824,6 +844,9 @@ fn format_translation_error(segment: &Segment, error: &TranslationError) -> Stri
     match error {
         TranslationError::InvalidApiKey { message, .. } => {
             format!("{location} 번역 중 API 키가 거부되었습니다: {message}")
+        }
+        TranslationError::RateLimited { message, .. } => {
+            format!("{location} 번역 중 속도 제한(429) 응답을 받았습니다: {message}")
         }
         TranslationError::ModelForbiddenOrNotFound {
             model_id, message, ..
@@ -855,6 +878,9 @@ fn format_file_error_message(segment: &Segment, error: &TranslationError) -> Str
         }
         TranslationError::InvalidApiKey { message, .. } => {
             format!("The API key was rejected by the provider: {message}")
+        }
+        TranslationError::RateLimited { message, .. } => {
+            format!("Translation failed due to provider rate limiting (429): {message}")
         }
         TranslationError::QuotaOrPlanError { message, .. } => {
             format!("Translation failed due to plan or quota limits: {message}")

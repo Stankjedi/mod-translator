@@ -141,6 +141,7 @@ function SettingsView() {
     workerCount,
     bucketSize,
     refillMs,
+    enableConcurrencyAutoTune,
     enableBackendLogging,
     enforcePlaceholderGuard,
     prioritizeDllResources,
@@ -149,6 +150,7 @@ function SettingsView() {
     setWorkerCount,
     setBucketSize,
     setRefillMs,
+    setEnableConcurrencyAutoTune,
     setEnableBackendLogging,
     setEnforcePlaceholderGuard,
     setPrioritizeDllResources,
@@ -682,6 +684,18 @@ function SettingsView() {
               />
               <p className="text-xs text-slate-500">{limitTexts.hints.refillMs}</p>
             </label>
+          </div>
+          <div className="mt-4 space-y-2 text-sm text-slate-300">
+            <label className="flex items-center justify-between gap-3">
+              <span>{limitTexts.autoTune}</span>
+              <input
+                type="checkbox"
+                checked={enableConcurrencyAutoTune}
+                onChange={(event) => setEnableConcurrencyAutoTune(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
+            </label>
+            <p className="text-xs text-slate-500">{limitTexts.hints.autoTune}</p>
           </div>
         </section>
 
