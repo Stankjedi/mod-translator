@@ -629,7 +629,7 @@ async fn run_translation_job(
             save_job_state(&payload.job_id, job_state.clone());
 
             if cancel_flag.load(Ordering::SeqCst) {
-                emit_progress(
+                emit_cancelled_progress(
                     &app,
                     TranslationProgressEventPayload {
                         job_id: payload.job_id.clone(),
@@ -735,7 +735,7 @@ async fn run_translation_job(
     }
 
     if cancel_flag.load(Ordering::SeqCst) {
-        emit_progress(
+        emit_cancelled_progress(
             &app,
             TranslationProgressEventPayload {
                 job_id: payload.job_id.clone(),
@@ -757,7 +757,7 @@ async fn run_translation_job(
 
     for context in &mut file_contexts {
         if cancel_flag.load(Ordering::SeqCst) {
-            emit_progress(
+            emit_cancelled_progress(
                 &app,
                 TranslationProgressEventPayload {
                     job_id: payload.job_id.clone(),
@@ -1042,11 +1042,76 @@ fn emit_progress(app: &AppHandle, payload: TranslationProgressEventPayload) {
     }
 }
 
+fn emit_cancelled_progress(
+    app: &AppHandle,
+    payload: &StartTranslationJobPayload,
+    processed: u32,
+    total: u32,
+    last_file_name: &Option<String>,
+    last_file_success: Option<bool>,
+    file_errors: &[TranslationFileErrorEntry],
+) {
+    emit_progress(
+        app,
+        TranslationProgressEventPayload {
+            job_id: payload.job_id.clone(),
+            status: "canceled".into(),
+            progress_pct: Some(percentage(processed, total)),
+            cancel_requested: Some(true),
+            log: Some("사용자가 작업을 중단했습니다.".into()),
+            translated_count: Some(processed),
+            total_count: Some(total),
+            file_name: last_file_name.clone(),
+            file_success: last_file_success,
+            file_errors: clone_errors(file_errors),
+            last_written: None,
+        },
+    );
+}
+
 fn percentage(processed: u32, total: u32) -> f32 {
     if total == 0 {
         return 0.0;
     }
     ((processed as f32) / (total as f32) * 100.0).clamp(0.0, 100.0)
+}
+
+fn should_retry(error: &TranslationError) -> bool {
+    matches!(
+        error,
+        TranslationError::NetworkOrHttp { .. } | TranslationError::RateLimited { .. }
+    )
+}
+
+async fn wait_with_cancellation(cancel_flag: &Arc<AtomicBool>, duration: Duration) -> bool {
+    if duration.is_zero() {
+        return cancel_flag.load(Ordering::SeqCst);
+    }
+
+    let mut elapsed = Duration::ZERO;
+    let poll_interval = Duration::from_millis(200);
+
+    while elapsed < duration {
+        if cancel_flag.load(Ordering::SeqCst) {
+            return true;
+        }
+
+        let remaining = duration.saturating_sub(elapsed);
+        let sleep_for = if remaining <= poll_interval {
+            remaining
+        } else {
+            poll_interval
+        };
+
+        if sleep_for.is_zero() {
+            break;
+        }
+
+        tauri::async_runtime::sleep(sleep_for).await;
+        elapsed += sleep_for;
+    }
+
+    cancel_flag.load(Ordering::SeqCst)
 }
 
 fn error_code_for(error: &TranslationError) -> &'static str {
