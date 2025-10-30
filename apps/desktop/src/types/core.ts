@@ -59,6 +59,18 @@ export type JobState =
 
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
+export type RetryableErrorCode =
+  | 'RATE_LIMITED'
+  | 'NETWORK_TRANSIENT'
+  | 'SERVER_TRANSIENT'
+
+export interface RetryPolicy {
+  maxAttempts: number
+  initialDelayMs: number
+  maxDelayMs: number
+  retryableErrors: RetryableErrorCode[]
+}
+
 export interface TranslationFileDescriptor {
   relativePath: string
   modInstallPath: string
@@ -80,7 +92,7 @@ export type TranslationProgressState = JobState
 export interface TranslationFileErrorEntry {
   filePath: string
   message: string
-  code?: string
+  code?: RetryableErrorCode | string
 }
 
 export interface TranslationProgressEventPayload {
