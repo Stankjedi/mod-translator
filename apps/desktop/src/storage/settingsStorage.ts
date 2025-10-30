@@ -39,6 +39,7 @@ export interface PersistedSettings {
   enforcePlaceholderGuard: boolean
   prioritizeDllResources: boolean
   enableQualitySampling: boolean
+  useServerHints: boolean
 }
 
 export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
@@ -54,6 +55,7 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   enforcePlaceholderGuard: true,
   prioritizeDllResources: true,
   enableQualitySampling: true,
+  useServerHints: true,
 }
 
 function isStorageAvailable() {
@@ -195,6 +197,10 @@ export function loadPersistedSettings(): PersistedSettings {
         parsed.enableQualitySampling,
         DEFAULT_PERSISTED_SETTINGS.enableQualitySampling,
       ),
+      useServerHints: sanitizeBoolean(
+        parsed.useServerHints,
+        DEFAULT_PERSISTED_SETTINGS.useServerHints,
+      ),
     }
   } catch (error) {
     console.error('Failed to parse persisted settings, using defaults.', error)
@@ -242,6 +248,7 @@ export function persistSettings(settings: PersistedSettings) {
     enforcePlaceholderGuard: Boolean(settings.enforcePlaceholderGuard),
     prioritizeDllResources: Boolean(settings.prioritizeDllResources),
     enableQualitySampling: Boolean(settings.enableQualitySampling),
+    useServerHints: Boolean(settings.useServerHints),
   }
 
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))

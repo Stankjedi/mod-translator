@@ -53,6 +53,7 @@ interface SettingsStoreValue extends SettingsState {
   setEnforcePlaceholderGuard: (enabled: boolean) => void
   setPrioritizeDllResources: (enabled: boolean) => void
   setEnableQualitySampling: (enabled: boolean) => void
+  setUseServerHints: (enabled: boolean) => void
 }
 
 type ProviderModelSource = 'live' | 'fallback'
@@ -409,13 +410,14 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         refillMs: state.refillMs,
         enableBackendLogging: state.enableBackendLogging,
         enforcePlaceholderGuard: state.enforcePlaceholderGuard,
-        prioritizeDllResources: state.prioritizeDllResources,
-        enableQualitySampling: state.enableQualitySampling,
-      })
-    } catch (error) {
-      console.error('Failed to persist settings', error)
-    }
-  }, [
+      prioritizeDllResources: state.prioritizeDllResources,
+      enableQualitySampling: state.enableQualitySampling,
+      useServerHints: state.useServerHints,
+    })
+  } catch (error) {
+    console.error('Failed to persist settings', error)
+  }
+}, [
     state.selectedProviders,
     state.activeProviderId,
     state.providerModels,
@@ -424,11 +426,12 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     state.workerCount,
     state.bucketSize,
     state.refillMs,
-    state.enableBackendLogging,
-    state.enforcePlaceholderGuard,
-    state.prioritizeDllResources,
-    state.enableQualitySampling,
-  ])
+  state.enableBackendLogging,
+  state.enforcePlaceholderGuard,
+  state.prioritizeDllResources,
+  state.enableQualitySampling,
+  state.useServerHints,
+])
 
   const setProviderEnabled = useCallback((provider: ProviderId, enabled: boolean) => {
     setState((prev) => {
@@ -595,6 +598,10 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, enableQualitySampling: enabled }))
   }, [])
 
+  const setUseServerHints = useCallback((enabled: boolean) => {
+    setState((prev) => ({ ...prev, useServerHints: enabled }))
+  }, [])
+
   const value = useMemo<SettingsStoreValue>(
     () => ({
       ...state,
@@ -618,6 +625,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
       setEnableQualitySampling,
+      setUseServerHints,
     }),
     [
       state,
@@ -641,6 +649,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
       setEnableQualitySampling,
+      setUseServerHints,
     ],
   )
 

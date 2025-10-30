@@ -1,10 +1,16 @@
+mod hints;
+
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::{Client, StatusCode};
+use reqwest::{header::HeaderMap, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use thiserror::Error;
+
+use self::hints::{
+    parse_gemini_error_hints, parse_retry_after_header, GeminiErrorHints, RetryHint,
+};
 
 static PLACEHOLDER_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(\{\d+\}|%\d*\$?s|%\d*\$?d|\$\{[^}]+\}|\\n|\\r|\\t)")
@@ -33,6 +39,8 @@ pub enum TranslationError {
     NetworkOrHttp {
         provider: ProviderId,
         message: String,
+        status: Option<StatusCode>,
+        retry_hint: Option<RetryHint>,
     },
     #[error("placeholder mismatch: {0:?}")]
     PlaceholderMismatch(Vec<String>),
@@ -78,12 +86,42 @@ impl TryFrom<&str> for ProviderId {
     }
 }
 
+impl TranslationError {
+    pub fn retry_hint(&self) -> Option<&RetryHint> {
+        match self {
+            TranslationError::NetworkOrHttp { retry_hint, .. } => retry_hint.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn status_code(&self) -> Option<StatusCode> {
+        match self {
+            TranslationError::NetworkOrHttp { status, .. } => *status,
+            _ => None,
+        }
+    }
+}
+
 fn map_translation_http_error(
     provider: ProviderId,
     model_id: &str,
     status: StatusCode,
+    headers: HeaderMap,
     body: String,
 ) -> TranslationError {
+    let gemini_hints = if matches!(provider, ProviderId::Gemini) {
+        parse_gemini_error_hints(&body)
+    } else {
+        GeminiErrorHints::default()
+    };
+
+    let mut retry_hint = parse_retry_after_header(&headers);
+    if let ProviderId::Gemini = provider {
+        if let Some(hint) = gemini_hints.retry_hint.clone() {
+            retry_hint = Some(hint);
+        }
+    }
+
     let message = if body.trim().is_empty() {
         status.to_string()
     } else {
@@ -96,7 +134,8 @@ fn map_translation_http_error(
     }
 
     if status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND {
-        if lowered.contains("insufficient_quota")
+        if gemini_hints.quota_failure
+            || lowered.contains("insufficient_quota")
             || lowered.contains("insufficient quota")
             || lowered.contains("plan required")
         {
@@ -111,16 +150,26 @@ fn map_translation_http_error(
     }
 
     if status == StatusCode::TOO_MANY_REQUESTS
-        && (lowered.contains("insufficient") || lowered.contains("quota"))
+        && (gemini_hints.quota_failure
+            || lowered.contains("insufficient")
+            || lowered.contains("quota"))
     {
         return TranslationError::QuotaOrPlanError { provider, message };
     }
 
-    if lowered.contains("insufficient_quota") || lowered.contains("plan required") {
+    if gemini_hints.quota_failure
+        || lowered.contains("insufficient_quota")
+        || lowered.contains("plan required")
+    {
         return TranslationError::QuotaOrPlanError { provider, message };
     }
 
-    TranslationError::NetworkOrHttp { provider, message }
+    TranslationError::NetworkOrHttp {
+        provider,
+        message,
+        status: Some(status),
+        retry_hint,
+    }
 }
 
 pub async fn translate_text(
@@ -206,6 +255,8 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
         return Err(TranslationError::NetworkOrHttp {
             provider: ProviderId::Gemini,
             message: "Gemini 모델이 지정되지 않았습니다.".into(),
+            status: None,
+            retry_hint: None,
         });
     }
     let normalized_model = if trimmed_model.starts_with("models/") {
@@ -227,15 +278,19 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
         .map_err(|err| TranslationError::NetworkOrHttp {
             provider: ProviderId::Gemini,
             message: err.to_string(),
+            status: None,
+            retry_hint: None,
         })?;
 
     let status = response.status();
     if !status.is_success() {
+        let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
         return Err(map_translation_http_error(
             ProviderId::Gemini,
             trimmed_model,
             status,
+            headers,
             body,
         ));
     }
@@ -247,6 +302,8 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
             .map_err(|err| TranslationError::NetworkOrHttp {
                 provider: ProviderId::Gemini,
                 message: err.to_string(),
+                status: None,
+                retry_hint: None,
             })?;
     let text = parsed
         .candidates
@@ -257,6 +314,8 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
         .ok_or_else(|| TranslationError::NetworkOrHttp {
             provider: ProviderId::Gemini,
             message: "Gemini 응답에서 결과를 찾지 못했습니다.".into(),
+            status: None,
+            retry_hint: None,
         })?;
 
     Ok(text)
@@ -279,6 +338,8 @@ async fn translate_with_gpt(
         return Err(TranslationError::NetworkOrHttp {
             provider: ProviderId::Gpt,
             message: "OpenAI 모델이 지정되지 않았습니다.".into(),
+            status: None,
+            retry_hint: None,
         });
     }
 
@@ -304,15 +365,19 @@ async fn translate_with_gpt(
         .map_err(|err| TranslationError::NetworkOrHttp {
             provider: ProviderId::Gpt,
             message: err.to_string(),
+            status: None,
+            retry_hint: None,
         })?;
 
     let status = response.status();
     if !status.is_success() {
+        let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
         return Err(map_translation_http_error(
             ProviderId::Gpt,
             trimmed_model,
             status,
+            headers,
             body,
         ));
     }
@@ -324,6 +389,8 @@ async fn translate_with_gpt(
             .map_err(|err| TranslationError::NetworkOrHttp {
                 provider: ProviderId::Gpt,
                 message: err.to_string(),
+                status: None,
+                retry_hint: None,
             })?;
     let text = parsed
         .choices
@@ -332,6 +399,8 @@ async fn translate_with_gpt(
         .ok_or_else(|| TranslationError::NetworkOrHttp {
             provider: ProviderId::Gpt,
             message: "GPT 응답에서 결과를 찾지 못했습니다.".into(),
+            status: None,
+            retry_hint: None,
         })?;
 
     Ok(text)
@@ -354,6 +423,8 @@ async fn translate_with_claude(
         return Err(TranslationError::NetworkOrHttp {
             provider: ProviderId::Claude,
             message: "Claude 모델이 지정되지 않았습니다.".into(),
+            status: None,
+            retry_hint: None,
         });
     }
 
@@ -378,15 +449,19 @@ async fn translate_with_claude(
         .map_err(|err| TranslationError::NetworkOrHttp {
             provider: ProviderId::Claude,
             message: err.to_string(),
+            status: None,
+            retry_hint: None,
         })?;
 
     let status = response.status();
     if !status.is_success() {
+        let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
         return Err(map_translation_http_error(
             ProviderId::Claude,
             trimmed_model,
             status,
+            headers,
             body,
         ));
     }
@@ -398,6 +473,8 @@ async fn translate_with_claude(
             .map_err(|err| TranslationError::NetworkOrHttp {
                 provider: ProviderId::Claude,
                 message: err.to_string(),
+                status: None,
+                retry_hint: None,
             })?;
     let text = parsed
         .content
@@ -407,6 +484,8 @@ async fn translate_with_claude(
         .ok_or_else(|| TranslationError::NetworkOrHttp {
             provider: ProviderId::Claude,
             message: "Claude 응답에서 결과를 찾지 못했습니다.".into(),
+            status: None,
+            retry_hint: None,
         })?;
 
     Ok(text)
@@ -429,6 +508,8 @@ async fn translate_with_grok(
         return Err(TranslationError::NetworkOrHttp {
             provider: ProviderId::Grok,
             message: "Grok 모델이 지정되지 않았습니다.".into(),
+            status: None,
+            retry_hint: None,
         });
     }
 
@@ -454,15 +535,19 @@ async fn translate_with_grok(
         .map_err(|err| TranslationError::NetworkOrHttp {
             provider: ProviderId::Grok,
             message: err.to_string(),
+            status: None,
+            retry_hint: None,
         })?;
 
     let status = response.status();
     if !status.is_success() {
+        let headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
         return Err(map_translation_http_error(
             ProviderId::Grok,
             trimmed_model,
             status,
+            headers,
             body,
         ));
     }
@@ -474,6 +559,8 @@ async fn translate_with_grok(
             .map_err(|err| TranslationError::NetworkOrHttp {
                 provider: ProviderId::Grok,
                 message: err.to_string(),
+                status: None,
+                retry_hint: None,
             })?;
     let text = parsed
         .choices
@@ -482,6 +569,8 @@ async fn translate_with_grok(
         .ok_or_else(|| TranslationError::NetworkOrHttp {
             provider: ProviderId::Grok,
             message: "Grok 응답에서 결과를 찾지 못했습니다.".into(),
+            status: None,
+            retry_hint: None,
         })?;
 
     Ok(text)

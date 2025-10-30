@@ -145,6 +145,7 @@ function SettingsView() {
     enforcePlaceholderGuard,
     prioritizeDllResources,
     enableQualitySampling,
+    useServerHints,
     setConcurrency,
     setWorkerCount,
     setBucketSize,
@@ -153,6 +154,7 @@ function SettingsView() {
     setEnforcePlaceholderGuard,
     setPrioritizeDllResources,
     setEnableQualitySampling,
+    setUseServerHints,
     setProviderModel,
   } = useSettingsStore()
   const activeProviderKey = activeProviderId ? apiKeys[activeProviderId] ?? '' : ''
@@ -694,6 +696,15 @@ function SettingsView() {
                 type="checkbox"
                 checked={enableBackendLogging}
                 onChange={(event) => setEnableBackendLogging(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3">
+              <span>서버 재시도 힌트 우선 사용</span>
+              <input
+                type="checkbox"
+                checked={useServerHints}
+                onChange={(event) => setUseServerHints(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-700 bg-slate-900"
               />
             </label>

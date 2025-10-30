@@ -73,6 +73,7 @@ export interface StartTranslationJobPayload {
   sourceLang: string | null
   targetLang: string | null
   outputOverrideDir?: string | null
+  useServerHints?: boolean
 }
 
 export type TranslationProgressState = JobState

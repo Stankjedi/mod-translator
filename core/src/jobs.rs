@@ -1,7 +1,7 @@
 use crate::ai::{translate_text, ProviderId, TranslationError};
-use log::warn;
+use log::{info, warn};
 use once_cell::sync::Lazy;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -9,7 +9,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+
+const MAX_RETRY_ATTEMPTS: usize = 3;
+const BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -32,6 +37,12 @@ pub struct StartTranslationJobPayload {
     pub source_lang: Option<String>,
     pub target_lang: Option<String>,
     pub output_override_dir: Option<String>,
+    #[serde(default = "default_use_server_hints")]
+    pub use_server_hints: bool,
+}
+
+const fn default_use_server_hints() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -437,7 +448,7 @@ async fn run_translation_job(
                 return;
             }
 
-            let translated = match translate_text(
+            let translated = match translate_segment_with_retry(
                 &client,
                 provider,
                 &api_key,
@@ -445,6 +456,7 @@ async fn run_translation_job(
                 &segment.text,
                 &source_lang,
                 &target_lang,
+                payload.use_server_hints,
             )
             .await
             {
@@ -807,6 +819,130 @@ fn percentage(processed: u32, total: u32) -> f32 {
         return 0.0;
     }
     ((processed as f32) / (total as f32) * 100.0).clamp(0.0, 100.0)
+}
+
+async fn translate_segment_with_retry(
+    client: &Client,
+    provider: ProviderId,
+    api_key: &str,
+    model_id: &str,
+    text: &str,
+    source_lang: &str,
+    target_lang: &str,
+    use_server_hints: bool,
+) -> Result<String, TranslationError> {
+    let mut attempt = 0_usize;
+    let mut backoff = BASE_RETRY_DELAY;
+
+    loop {
+        attempt += 1;
+        match translate_text(
+            client,
+            provider,
+            api_key,
+            model_id,
+            text,
+            source_lang,
+            target_lang,
+        )
+        .await
+        {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                if !should_retry(&error) || attempt >= MAX_RETRY_ATTEMPTS {
+                    return Err(error);
+                }
+
+                let (delay, used_hint) = determine_retry_delay(&error, use_server_hints, backoff);
+                log_retry_decision(provider, attempt, &error, delay, used_hint);
+
+                if !used_hint {
+                    backoff = next_backoff(backoff);
+                }
+
+                tauri::async_runtime::sleep(delay).await;
+            }
+        }
+    }
+}
+
+fn should_retry(error: &TranslationError) -> bool {
+    match error {
+        TranslationError::NetworkOrHttp { status, .. } => match status {
+            Some(code) if *code == StatusCode::TOO_MANY_REQUESTS => true,
+            Some(code) if *code == StatusCode::SERVICE_UNAVAILABLE => true,
+            Some(code) if *code == StatusCode::BAD_GATEWAY => true,
+            Some(code) if *code == StatusCode::GATEWAY_TIMEOUT => true,
+            Some(code) if *code == StatusCode::REQUEST_TIMEOUT => true,
+            Some(code) if code.is_server_error() => true,
+            Some(_) => false,
+            None => true,
+        },
+        _ => false,
+    }
+}
+
+fn determine_retry_delay(
+    error: &TranslationError,
+    use_server_hints: bool,
+    fallback: Duration,
+) -> (Duration, bool) {
+    if use_server_hints {
+        if let Some(hint) = error.retry_hint() {
+            return (hint.clamped_delay(), true);
+        }
+    }
+
+    (fallback.min(MAX_RETRY_DELAY), false)
+}
+
+fn next_backoff(current: Duration) -> Duration {
+    let next = current.mul_f32(2.0);
+    if next > MAX_RETRY_DELAY {
+        MAX_RETRY_DELAY
+    } else {
+        next
+    }
+}
+
+fn log_retry_decision(
+    provider: ProviderId,
+    attempt: usize,
+    error: &TranslationError,
+    delay: Duration,
+    used_hint: bool,
+) {
+    let delay_ms = delay.as_millis();
+
+    if used_hint {
+        if let Some(hint) = error.retry_hint() {
+            info!(
+                "retry scheduled: provider={} attempt={} delay_ms={} usedServerHint=true hintSource={} hintRaw={} status={:?}",
+                provider,
+                attempt,
+                delay_ms,
+                hint.source.as_str(),
+                hint.raw_value().unwrap_or("<none>"),
+                error.status_code()
+            );
+        } else {
+            info!(
+                "retry scheduled: provider={} attempt={} delay_ms={} usedServerHint=true status={:?}",
+                provider,
+                attempt,
+                delay_ms,
+                error.status_code()
+            );
+        }
+    } else {
+        info!(
+            "retry scheduled: provider={} attempt={} delay_ms={} usedServerHint=false status={:?}",
+            provider,
+            attempt,
+            delay_ms,
+            error.status_code()
+        );
+    }
 }
 
 fn error_code_for(error: &TranslationError) -> &'static str {

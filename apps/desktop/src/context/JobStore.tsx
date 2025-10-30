@@ -301,7 +301,7 @@ const createJob = (
 })
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
-  const { activeProviderId, apiKeys, providerModels } = useSettingsStore()
+  const { activeProviderId, apiKeys, providerModels, useServerHints } = useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
@@ -748,6 +748,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         targetLang: targetLanguage,
         files: filesPayload,
         outputOverrideDir: activeJob.outputOverrideDir,
+        useServerHints,
       })
 
       setState((prev) => {
