@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useI18n } from '../i18n/ko'
 import { maskApiKey } from '../storage/apiKeyStorage'
@@ -7,7 +8,7 @@ import {
   type KeyValidationState,
   type ProviderId,
 } from '../context/SettingsStore'
-import { type ProviderRetryPolicy } from '../storage/settingsStorage'
+import type { RetryPolicy, RetryableErrorCode } from '../types/core'
 
 const providers: Array<{ id: ProviderId; name: string; description: string }> = [
   {
@@ -32,8 +33,19 @@ const providers: Array<{ id: ProviderId; name: string; description: string }> = 
   },
 ]
 
-type RetryNumericField = 'maxRetries' | 'initialDelayMs' | 'multiplier' | 'maxDelayMs'
-type RetryBooleanField = 'respectServerRetryAfter' | 'autoTuneConcurrencyOn429'
+type RetryPolicyField = 'maxAttempts' | 'initialDelayMs' | 'maxDelayMs'
+
+const RETRYABLE_ERROR_CODES: RetryableErrorCode[] = [
+  'RATE_LIMITED',
+  'NETWORK_TRANSIENT',
+  'SERVER_TRANSIENT',
+]
+
+const RETRYABLE_ERROR_LABELS: Record<RetryableErrorCode, string> = {
+  RATE_LIMITED: '429: 요청 제한 (Rate Limit)',
+  NETWORK_TRANSIENT: '네트워크/연결 오류',
+  SERVER_TRANSIENT: '서버 오류 (5xx)',
+}
 
 function statusChip(state: KeyValidationState | null, checking: boolean) {
   if (checking) {
@@ -141,11 +153,13 @@ function SettingsView() {
     validationInFlight,
     modelDiscoveryState,
     providerModelNotices,
+    retryPolicy,
     revalidateProviderKey,
     concurrency,
     workerCount,
     bucketSize,
     refillMs,
+    autoTuneConcurrencyOn429,
     enableBackendLogging,
     enforcePlaceholderGuard,
     prioritizeDllResources,
@@ -155,6 +169,8 @@ function SettingsView() {
     setWorkerCount,
     setBucketSize,
     setRefillMs,
+    updateRetryPolicy,
+    setAutoTuneConcurrencyOn429,
     setEnableBackendLogging,
     setEnforcePlaceholderGuard,
     setPrioritizeDllResources,
@@ -178,6 +194,29 @@ function SettingsView() {
         })),
       ),
     [libraries],
+  )
+
+  const handleRetryPolicyNumberChange = useCallback(
+    (provider: ProviderId, field: RetryPolicyField) =>
+      (event: ChangeEvent<HTMLInputElement>) => {
+        updateRetryPolicy(provider, { [field]: Number(event.target.value) } as Partial<RetryPolicy>)
+      },
+    [updateRetryPolicy],
+  )
+
+  const handleRetryableErrorToggle = useCallback(
+    (provider: ProviderId, code: RetryableErrorCode) => {
+      const current = retryPolicy[provider]?.retryableErrors ?? []
+      const nextSet = new Set(current)
+      if (nextSet.has(code)) {
+        nextSet.delete(code)
+      } else {
+        nextSet.add(code)
+      }
+      const ordered = RETRYABLE_ERROR_CODES.filter((item) => nextSet.has(item))
+      updateRetryPolicy(provider, { retryableErrors: ordered })
+    },
+    [retryPolicy, updateRetryPolicy],
   )
 
   useEffect(() => {
@@ -803,6 +842,103 @@ function SettingsView() {
               />
               <p className="text-xs text-slate-500">{limitTexts.hints.refillMs}</p>
             </label>
+            <label className="md:col-span-2 xl:col-span-4 flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-300">
+              <span>429 응답 시 동시성 자동 조정</span>
+              <input
+                type="checkbox"
+                checked={autoTuneConcurrencyOn429}
+                onChange={(event) => setAutoTuneConcurrencyOn429(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
+            </label>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6 shadow-inner shadow-black/30">
+          <h3 className="text-lg font-semibold text-white">재시도 정책</h3>
+          <p className="mt-2 text-sm text-slate-400">
+            제공자별 최대 시도 횟수와 지연 시간을 조정하고, 재시도 대상 오류를 선택할 수 있습니다.
+          </p>
+          <div className="mt-4 space-y-4">
+            {providers.map((provider) => {
+              const policy = retryPolicy[provider.id]
+              if (!policy) {
+                return null
+              }
+              return (
+                <div
+                  key={provider.id}
+                  className="space-y-4 rounded-xl border border-slate-800/60 bg-slate-950/30 p-4"
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-white">{provider.name}</p>
+                      <p className="text-xs text-slate-400">{provider.description}</p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 text-xs text-slate-300 sm:grid-cols-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] uppercase tracking-wide text-slate-500">최대 시도 횟수</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={policy.maxAttempts}
+                          onChange={handleRetryPolicyNumberChange(provider.id, 'maxAttempts')}
+                          className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] uppercase tracking-wide text-slate-500">초기 지연(ms)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={50}
+                          value={policy.initialDelayMs}
+                          onChange={handleRetryPolicyNumberChange(provider.id, 'initialDelayMs')}
+                          className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] uppercase tracking-wide text-slate-500">최대 지연(ms)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={50}
+                          value={policy.maxDelayMs}
+                          onChange={handleRetryPolicyNumberChange(provider.id, 'maxDelayMs')}
+                          className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500">재시도 대상 오류</p>
+                    <div className="mt-2 flex flex-wrap gap-3">
+                      {RETRYABLE_ERROR_CODES.map((code) => {
+                        const checked = policy.retryableErrors.includes(code)
+                        return (
+                          <label
+                            key={code}
+                            className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${
+                              checked
+                                ? 'border-brand-500/60 bg-brand-500/10 text-brand-100'
+                                : 'border-slate-700 bg-slate-900/50 text-slate-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => handleRetryableErrorToggle(provider.id, code)}
+                              className="h-3.5 w-3.5 rounded border-slate-700 bg-slate-900"
+                            />
+                            <span>{RETRYABLE_ERROR_LABELS[code]}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </section>
 
