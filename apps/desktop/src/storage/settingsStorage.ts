@@ -1,3 +1,5 @@
+import type { RetryPolicy, RetryableErrorCode } from '../types/core'
+
 const STORAGE_KEY = 'mod_translator_settings_v1'
 
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
@@ -26,15 +28,61 @@ const DEFAULT_VERIFIED_MODELS: ProviderModelListMap = {
   grok: [],
 }
 
+const RETRYABLE_ERROR_CODES: RetryableErrorCode[] = [
+  'RATE_LIMITED',
+  'NETWORK_TRANSIENT',
+  'SERVER_TRANSIENT',
+]
+
+function createDefaultRetryPolicy(overrides?: Partial<RetryPolicy>): RetryPolicy {
+  return {
+    maxAttempts: overrides?.maxAttempts ?? 3,
+    initialDelayMs: overrides?.initialDelayMs ?? 500,
+    maxDelayMs: overrides?.maxDelayMs ?? 10_000,
+    retryableErrors: [
+      ...(overrides?.retryableErrors?.length
+        ? sanitizeRetryableErrors(overrides.retryableErrors, RETRYABLE_ERROR_CODES)
+        : RETRYABLE_ERROR_CODES),
+    ],
+  }
+}
+
+const DEFAULT_RETRY_POLICIES: Record<ProviderId, RetryPolicy> = {
+  gemini: createDefaultRetryPolicy(),
+  gpt: createDefaultRetryPolicy(),
+  claude: createDefaultRetryPolicy(),
+  grok: createDefaultRetryPolicy(),
+}
+
+function cloneRetryPolicy(policy: RetryPolicy): RetryPolicy {
+  return {
+    maxAttempts: policy.maxAttempts,
+    initialDelayMs: policy.initialDelayMs,
+    maxDelayMs: policy.maxDelayMs,
+    retryableErrors: [...policy.retryableErrors],
+  }
+}
+
+function createDefaultRetryPolicyMap(): Record<ProviderId, RetryPolicy> {
+  return {
+    gemini: cloneRetryPolicy(DEFAULT_RETRY_POLICIES.gemini),
+    gpt: cloneRetryPolicy(DEFAULT_RETRY_POLICIES.gpt),
+    claude: cloneRetryPolicy(DEFAULT_RETRY_POLICIES.claude),
+    grok: cloneRetryPolicy(DEFAULT_RETRY_POLICIES.grok),
+  }
+}
+
 export interface PersistedSettings {
   selectedProviders: ProviderId[]
   activeProviderId: ProviderId
   providerModels: ProviderModelMap
   verifiedModels: ProviderModelListMap
+  retryPolicy: Record<ProviderId, RetryPolicy>
   concurrency: number
   workerCount: number
   bucketSize: number
   refillMs: number
+  autoTuneConcurrencyOn429: boolean
   enableBackendLogging: boolean
   enforcePlaceholderGuard: boolean
   prioritizeDllResources: boolean
@@ -46,10 +94,12 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   activeProviderId: 'gemini',
   providerModels: { ...DEFAULT_PROVIDER_MODELS },
   verifiedModels: { ...DEFAULT_VERIFIED_MODELS },
+  retryPolicy: createDefaultRetryPolicyMap(),
   concurrency: 3,
   workerCount: 2,
   bucketSize: 5,
   refillMs: 750,
+  autoTuneConcurrencyOn429: true,
   enableBackendLogging: false,
   enforcePlaceholderGuard: true,
   prioritizeDllResources: true,
@@ -124,6 +174,69 @@ function sanitizeVerifiedModels(value: unknown): ProviderModelListMap {
   return defaults
 }
 
+function sanitizeRetryableErrors(
+  value: unknown,
+  fallback: RetryableErrorCode[],
+): RetryableErrorCode[] {
+  if (!Array.isArray(value)) {
+    return [...fallback]
+  }
+
+  const normalized = value
+    .map((item) => (typeof item === 'string' ? item.trim().toUpperCase() : ''))
+    .filter((item): item is RetryableErrorCode =>
+      RETRYABLE_ERROR_CODES.includes(item as RetryableErrorCode),
+    )
+
+  if (!normalized.length) {
+    return [...fallback]
+  }
+
+  const orderedSet = new Set<RetryableErrorCode>()
+  normalized.forEach((item) => {
+    orderedSet.add(item)
+  })
+
+  return RETRYABLE_ERROR_CODES.filter((code) => orderedSet.has(code))
+}
+
+function sanitizeRetryPolicyEntry(value: unknown, fallback: RetryPolicy): RetryPolicy {
+  const base = cloneRetryPolicy(fallback)
+  if (!value || typeof value !== 'object') {
+    return base
+  }
+
+  const record = value as Record<string, unknown>
+  const maxAttempts = sanitizeNumber(record.maxAttempts, base.maxAttempts, 1)
+  const initialDelayMs = sanitizeNumber(record.initialDelayMs, base.initialDelayMs, 0)
+  const maxDelayCandidate = sanitizeNumber(record.maxDelayMs, base.maxDelayMs, 0)
+  const retryableErrors = sanitizeRetryableErrors(record.retryableErrors, base.retryableErrors)
+
+  return {
+    maxAttempts,
+    initialDelayMs,
+    maxDelayMs: Math.max(initialDelayMs, maxDelayCandidate),
+    retryableErrors,
+  }
+}
+
+function sanitizeRetryPolicy(value: unknown): Record<ProviderId, RetryPolicy> {
+  const defaults = createDefaultRetryPolicyMap()
+  if (!value || typeof value !== 'object') {
+    return defaults
+  }
+
+  const entries = value as Record<string, unknown>
+  ;(Object.keys(defaults) as ProviderId[]).forEach((provider) => {
+    defaults[provider] = sanitizeRetryPolicyEntry(
+      entries[provider],
+      DEFAULT_RETRY_POLICIES[provider],
+    )
+  })
+
+  return defaults
+}
+
 function sanitizeActiveProvider(
   value: unknown,
   selectedProviders: ProviderId[],
@@ -166,6 +279,7 @@ export function loadPersistedSettings(): PersistedSettings {
     const selectedProviders = sanitizeProviders(parsed.selectedProviders)
     const providerModels = sanitizeProviderModels(parsed.providerModels)
     const verifiedModels = sanitizeVerifiedModels(parsed.verifiedModels)
+    const retryPolicy = sanitizeRetryPolicy(parsed.retryPolicy)
 
     return {
       selectedProviders,
@@ -175,10 +289,15 @@ export function loadPersistedSettings(): PersistedSettings {
       ),
       providerModels,
       verifiedModels,
+      retryPolicy,
       concurrency: sanitizeNumber(parsed.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
       workerCount: sanitizeNumber(parsed.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
       bucketSize: sanitizeNumber(parsed.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),
       refillMs: sanitizeNumber(parsed.refillMs, DEFAULT_PERSISTED_SETTINGS.refillMs, 50),
+      autoTuneConcurrencyOn429: sanitizeBoolean(
+        parsed.autoTuneConcurrencyOn429,
+        DEFAULT_PERSISTED_SETTINGS.autoTuneConcurrencyOn429,
+      ),
       enableBackendLogging: sanitizeBoolean(
         parsed.enableBackendLogging,
         DEFAULT_PERSISTED_SETTINGS.enableBackendLogging,
@@ -214,6 +333,7 @@ export function persistSettings(settings: PersistedSettings) {
   )
   const providerModels = sanitizeProviderModels(settings.providerModels)
   const verifiedModels = sanitizeVerifiedModels(settings.verifiedModels)
+  const retryPolicy = sanitizeRetryPolicy(settings.retryPolicy)
 
   ;(Object.keys(providerModels) as ProviderId[]).forEach((provider) => {
     const verifiedList = verifiedModels[provider] ?? []
@@ -234,10 +354,12 @@ export function persistSettings(settings: PersistedSettings) {
     activeProviderId,
     providerModels,
     verifiedModels,
+    retryPolicy,
     concurrency: sanitizeNumber(settings.concurrency, DEFAULT_PERSISTED_SETTINGS.concurrency, 1),
     workerCount: sanitizeNumber(settings.workerCount, DEFAULT_PERSISTED_SETTINGS.workerCount, 1),
     bucketSize: sanitizeNumber(settings.bucketSize, DEFAULT_PERSISTED_SETTINGS.bucketSize, 1),
     refillMs: sanitizeNumber(settings.refillMs, DEFAULT_PERSISTED_SETTINGS.refillMs, 50),
+    autoTuneConcurrencyOn429: Boolean(settings.autoTuneConcurrencyOn429),
     enableBackendLogging: Boolean(settings.enableBackendLogging),
     enforcePlaceholderGuard: Boolean(settings.enforcePlaceholderGuard),
     prioritizeDllResources: Boolean(settings.prioritizeDllResources),
