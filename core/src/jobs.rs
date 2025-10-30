@@ -1,24 +1,168 @@
 use crate::ai::{translate_text, ProviderId, TranslationError};
-use log::warn;
+use log::{info, warn};
 use once_cell::sync::Lazy;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::{DefaultHasher, Entry};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::SystemTime;
 use tauri::{AppHandle, Emitter};
+
+const MAX_RETRY_ATTEMPTS: usize = 3;
+const BASE_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
-const RATE_LIMIT_BASE_BACKOFF_MS: u64 = 1_000;
-const RATE_LIMIT_MAX_BACKOFF_MS: u64 = 60_000;
-const RATE_LIMIT_WAIT_SLICE_MS: u64 = 250;
+static JOB_STATES: Lazy<Mutex<HashMap<String, JobState>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationCheckpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_line_index: Option<u32>,
+    pub translated_count: u32,
+    pub total_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileSignature {
+    modified: Option<SystemTime>,
+    hash: u64,
+    len: u64,
+}
+
+#[derive(Debug, Clone)]
+struct FileProgress {
+    signature: FileSignature,
+    replacements: HashMap<usize, String>,
+}
+
+impl FileProgress {
+    fn new(signature: FileSignature) -> Self {
+        Self {
+            signature,
+            replacements: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct JobState {
+    checkpoint: TranslationCheckpoint,
+    files: HashMap<String, FileProgress>,
+}
+
+impl JobState {
+    fn new() -> Self {
+        Self {
+            checkpoint: TranslationCheckpoint::default(),
+            files: HashMap::new(),
+        }
+    }
+}
+
+fn load_job_state(job_id: &str) -> Option<JobState> {
+    JOB_STATES
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(job_id).cloned())
+}
+
+fn save_job_state(job_id: &str, state: JobState) {
+    if let Ok(mut guard) = JOB_STATES.lock() {
+        guard.insert(job_id.to_string(), state);
+    }
+}
+
+fn clear_job_state(job_id: &str) {
+    if let Ok(mut guard) = JOB_STATES.lock() {
+        guard.remove(job_id);
+    }
+}
+
+fn current_checkpoint(job_id: &str) -> Option<TranslationCheckpoint> {
+    JOB_STATES
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(job_id).map(|state| state.checkpoint.clone()))
+}
+
+fn compute_file_signature(path: &Path, content: &str) -> FileSignature {
+    let metadata = fs::metadata(path).ok();
+    let modified = metadata.as_ref().and_then(|data| data.modified().ok());
+    let len = metadata
+        .as_ref()
+        .map(|data| data.len())
+        .unwrap_or_else(|| content.len() as u64);
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    let hash = hasher.finish();
+    FileSignature {
+        modified,
+        hash,
+        len,
+    }
+}
+
+fn apply_stored_translations(
+    job_state: &JobState,
+    file_contexts: &mut [FileContext],
+    segments: &[Segment],
+) -> u32 {
+    let mut processed = 0u32;
+    for segment in segments {
+        let Some(file_progress) = job_state.files.get(&segment.relative_path) else {
+            break;
+        };
+        let Some(replacement) = file_progress.replacements.get(&segment.line_index) else {
+            break;
+        };
+        if let Some(context) = file_contexts.get_mut(segment.file_index) {
+            context.translated_lines[segment.line_index] = Some(replacement.clone());
+        }
+        processed += 1;
+    }
+    processed
+}
+
+fn update_checkpoint_for_next_segment(
+    job_state: &mut JobState,
+    segments: &[Segment],
+    processed_segments: u32,
+) {
+    job_state.checkpoint.total_count = segments.len() as u32;
+    job_state.checkpoint.translated_count = processed_segments;
+    if let Some(next_segment) = segments.get(processed_segments as usize) {
+        job_state.checkpoint.current_file_path = Some(next_segment.relative_path.clone());
+        job_state.checkpoint.next_line_index = Some(next_segment.line_index as u32);
+    } else {
+        job_state.checkpoint.current_file_path = None;
+        job_state.checkpoint.next_line_index = None;
+    }
+}
+
+fn set_checkpoint_for_pending_segment(
+    job_state: &mut JobState,
+    segment: &Segment,
+    total_segments: u32,
+    processed_segments: u32,
+) {
+    job_state.checkpoint.total_count = total_segments;
+    job_state.checkpoint.translated_count = processed_segments;
+    job_state.checkpoint.current_file_path = Some(segment.relative_path.clone());
+    job_state.checkpoint.next_line_index = Some(segment.line_index as u32);
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +182,10 @@ pub struct StartTranslationJobPayload {
     pub source_lang: Option<String>,
     pub target_lang: Option<String>,
     pub output_override_dir: Option<String>,
+    #[serde(default)]
+    pub resume_from_checkpoint: bool,
+    #[serde(default)]
+    pub reset_resume_state: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,7 +212,7 @@ pub struct TranslationProgressEventPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_written: Option<LastWrittenInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub metrics: Option<TranslationAttemptMetrics>,
+    pub checkpoint: Option<TranslationCheckpoint>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,15 +234,18 @@ pub struct TranslationFileErrorEntry {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TranslationAttemptMetrics {
-    pub provider: String,
-    pub model_id: String,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
+pub struct RetryStatusPayload {
     pub attempt: u32,
-    pub used_server_hint: bool,
-    pub total_backoff_ms: u64,
+    pub max_attempts: u32,
+    pub delay_seconds: u32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeHintPayload {
+    pub file_path: String,
+    pub line_number: u32,
 }
 
 #[derive(Debug)]
@@ -114,6 +265,10 @@ struct FileContext {
     lines: Vec<String>,
     translated_lines: Vec<Option<String>>,
     had_trailing_newline: bool,
+    output_relative_path: PathBuf,
+    output_absolute_path: PathBuf,
+    resume_metadata_path: PathBuf,
+    resume_line_index: usize,
 }
 
 fn provider_identifier(provider: ProviderId) -> &'static str {
@@ -188,6 +343,8 @@ pub fn start_translation_job(
     targetLang: Option<String>,
     files: Vec<TranslationFileInput>,
     outputOverrideDir: Option<String>,
+    resumeFromCheckpoint: Option<bool>,
+    resetResumeState: Option<bool>,
 ) -> Result<(), String> {
     let mut payload = StartTranslationJobPayload {
         job_id: jobId,
@@ -198,7 +355,11 @@ pub fn start_translation_job(
         source_lang: sourceLang,
         target_lang: targetLang,
         output_override_dir: outputOverrideDir,
+        resume_from_checkpoint: false,
+        reset_resume_state: false,
     };
+    payload.resume_from_checkpoint = resumeFromCheckpoint.unwrap_or(false);
+    payload.reset_resume_state = resetResumeState.unwrap_or(false);
     payload.model_id = payload.model_id.trim().to_string();
     if payload.files.is_empty() {
         return Err("번역할 파일을 하나 이상 선택해야 합니다.".into());
@@ -221,7 +382,7 @@ pub fn start_translation_job(
                     file_success: None,
                     file_errors: None,
                     last_written: None,
-                    metrics: None,
+                    checkpoint: None,
                 },
             );
             return Err(format!("지원하지 않는 번역기: {}", payload.provider));
@@ -244,7 +405,7 @@ pub fn start_translation_job(
                 file_success: None,
                 file_errors: None,
                 last_written: None,
-                metrics: None,
+                checkpoint: None,
             },
         );
         return Err("선택한 번역기의 API 키를 설정해 주세요.".into());
@@ -265,7 +426,7 @@ pub fn start_translation_job(
                 file_success: None,
                 file_errors: None,
                 last_written: None,
-                metrics: None,
+                checkpoint: None,
             },
         );
         return Err("번역에 사용할 모델을 선택해 주세요.".into());
@@ -319,6 +480,7 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
         flag.store(true, Ordering::SeqCst);
         drop(guard);
 
+        let checkpoint = current_checkpoint(&jobId);
         emit_progress(
             &app,
             TranslationProgressEventPayload {
@@ -333,7 +495,7 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
                 file_success: None,
                 file_errors: None,
                 last_written: None,
-                metrics: None,
+                checkpoint,
             },
         );
 
@@ -341,6 +503,7 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
     } else {
         drop(guard);
 
+        let checkpoint = current_checkpoint(&jobId);
         emit_progress(
             &app,
             TranslationProgressEventPayload {
@@ -355,7 +518,7 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
                 file_success: None,
                 file_errors: None,
                 last_written: None,
-                metrics: None,
+                checkpoint,
             },
         );
 
@@ -388,10 +551,14 @@ async fn run_translation_job(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
+    let resume_from_checkpoint = payload.resume_from_checkpoint;
+    let reset_resume_state = payload.reset_resume_state;
 
     let mut file_contexts: Vec<FileContext> = Vec::new();
     let mut segments: Vec<Segment> = Vec::new();
     let mut file_errors: Vec<TranslationFileErrorEntry> = Vec::new();
+    let mut job_state = load_job_state(&payload.job_id).unwrap_or_else(JobState::new);
+    let mut changed_files: Vec<String> = Vec::new();
 
     for file in &payload.files {
         let relative_path = PathBuf::from(&file.relative_path);
@@ -418,6 +585,13 @@ async fn run_translation_job(
 
         let had_trailing_newline = content.ends_with('\n');
         let lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+        let output_relative_path = derive_output_relative_path(&file.relative_path, &target_lang);
+        let base_root = override_root
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| mod_root.clone());
+        let output_absolute_path = base_root.join(&output_relative_path);
+        let resume_metadata_path = build_resume_metadata_path(&output_absolute_path);
 
         let mut context = FileContext {
             relative_path: file.relative_path.clone(),
@@ -425,13 +599,36 @@ async fn run_translation_job(
             lines,
             translated_lines: Vec::new(),
             had_trailing_newline,
+            output_relative_path,
+            output_absolute_path,
+            resume_metadata_path,
+            resume_line_index: 0,
         };
         context.translated_lines = vec![None; context.lines.len()];
+
+        let signature = compute_file_signature(&source_file_path, &content);
+        match job_state.files.entry(context.relative_path.clone()) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().signature != signature {
+                    entry.get_mut().signature = signature.clone();
+                    entry.get_mut().replacements.clear();
+                    changed_files.push(context.relative_path.clone());
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(FileProgress::new(signature.clone()));
+            }
+        }
 
         let file_index = file_contexts.len();
         for (line_index, line) in context.lines.iter().enumerate() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
+                continue;
+            }
+
+            if line_index < context.resume_line_index {
+                already_processed_segments += 1;
                 continue;
             }
 
@@ -455,7 +652,33 @@ async fn run_translation_job(
     }
 
     let total_segments = segments.len() as u32;
-    let mut processed_segments: u32 = 0;
+    let mut processed_segments =
+        apply_stored_translations(&job_state, &mut file_contexts, &segments);
+    update_checkpoint_for_next_segment(&mut job_state, &segments, processed_segments);
+    save_job_state(&payload.job_id, job_state.clone());
+
+    for changed in changed_files {
+        emit_progress(
+            &app,
+            TranslationProgressEventPayload {
+                job_id: payload.job_id.clone(),
+                status: "running".into(),
+                progress_pct: Some(percentage(processed_segments, total_segments)),
+                cancel_requested: None,
+                log: Some(format!(
+                    "원본 파일이 변경되어 체크포인트를 초기화했습니다: {}",
+                    changed
+                )),
+                translated_count: Some(processed_segments),
+                total_count: Some(total_segments),
+                file_name: None,
+                file_success: None,
+                file_errors: clone_errors(&file_errors),
+                last_written: None,
+                checkpoint: Some(job_state.checkpoint.clone()),
+            },
+        );
+    }
     let mut last_file_name: Option<String> = None;
     let mut last_file_success: Option<bool> = None;
 
@@ -464,20 +687,20 @@ async fn run_translation_job(
         TranslationProgressEventPayload {
             job_id: payload.job_id.clone(),
             status: "running".into(),
-            progress_pct: Some(0.0),
+            progress_pct: Some(percentage(processed_segments, total_segments)),
             cancel_requested: None,
             log: Some("번역을 준비하는 중입니다.".into()),
-            translated_count: Some(0),
+            translated_count: Some(processed_segments),
             total_count: Some(total_segments),
             file_name: None,
             file_success: None,
             file_errors: clone_errors(&file_errors),
             last_written: None,
-            metrics: None,
+            checkpoint: Some(job_state.checkpoint.clone()),
         },
     );
 
-    if total_segments > 0 {
+    if total_segments > processed_segments {
         let client = match Client::builder().build() {
             Ok(client) => client,
             Err(_err) => {
@@ -489,24 +712,36 @@ async fn run_translation_job(
                         progress_pct: Some(0.0),
                         cancel_requested: None,
                         log: Some("HTTP 클라이언트를 초기화하지 못했습니다.".into()),
-                        translated_count: Some(0),
+                        translated_count: Some(processed_segments),
                         total_count: Some(total_segments),
                         file_name: last_file_name.clone(),
                         file_success: last_file_success,
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
-                        metrics: None,
+                        checkpoint: Some(job_state.checkpoint.clone()),
                     },
                 );
                 return;
             }
         };
 
-        for (index, segment) in segments.iter().enumerate() {
+        for (index, segment) in segments
+            .iter()
+            .enumerate()
+            .skip(processed_segments as usize)
+        {
             let processed = index as u32;
 
+            set_checkpoint_for_pending_segment(
+                &mut job_state,
+                segment,
+                total_segments,
+                processed_segments,
+            );
+            save_job_state(&payload.job_id, job_state.clone());
+
             if cancel_flag.load(Ordering::SeqCst) {
-                emit_progress(
+                emit_cancelled_progress(
                     &app,
                     TranslationProgressEventPayload {
                         job_id: payload.job_id.clone(),
@@ -514,156 +749,61 @@ async fn run_translation_job(
                         progress_pct: Some(percentage(processed, total_segments)),
                         cancel_requested: Some(true),
                         log: Some("사용자가 작업을 중단했습니다.".into()),
-                        translated_count: Some(processed),
+                        translated_count: Some(processed_segments),
                         total_count: Some(total_segments),
                         file_name: last_file_name.clone(),
                         file_success: last_file_success,
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
-                        metrics: None,
+                        checkpoint: Some(job_state.checkpoint.clone()),
                     },
                 );
                 return;
             }
 
-            let mut attempt: u32 = 0;
-            let mut total_backoff_ms: u64 = 0;
-            let mut used_server_hint = false;
-            let mut metrics_for_event: Option<TranslationAttemptMetrics> = None;
-            let mut translated: Option<String> = None;
-            let mut failure: Option<TranslationError> = None;
-            let mut canceled_during_wait = false;
-
-            loop {
-                attempt = attempt.saturating_add(1);
-                match translate_text(
-                    &client,
-                    provider,
-                    &api_key,
-                    &payload.model_id,
-                    &segment.text,
-                    &source_lang,
-                    &target_lang,
-                )
-                .await
-                {
-                    Ok(value) => {
-                        metrics_for_event = Some(build_metrics(
-                            provider,
-                            &payload.model_id,
-                            "success",
-                            attempt,
-                            None,
-                            used_server_hint,
-                            total_backoff_ms,
-                        ));
-                        translated = Some(value);
-                        break;
-                    }
-                    Err(TranslationError::RateLimited {
-                        message,
-                        retry_after_ms,
-                        used_server_hint: hint_used,
-                        ..
-                    }) => {
-                        let message_text = message.clone();
-                        used_server_hint = used_server_hint || hint_used;
-                        let delay_ms =
-                            retry_after_ms.unwrap_or_else(|| compute_backoff_ms(attempt));
-                        total_backoff_ms = total_backoff_ms.saturating_add(delay_ms);
-                        let wait_metrics = build_metrics(
-                            provider,
-                            &payload.model_id,
-                            "rate_limited",
-                            attempt,
-                            Some("RATE_LIMITED"),
-                            used_server_hint,
-                            total_backoff_ms,
-                        );
-                        let wait_seconds = delay_ms as f64 / 1000.0;
-                        let hint_phrase = if hint_used || retry_after_ms.is_some() {
-                            format!("서버 힌트에 따라 {:.1}초 대기", wait_seconds)
-                        } else {
-                            format!("{:.1}초 대기", wait_seconds)
-                        };
-                        let wait_message = format!(
-                            "429 응답으로 {hint_phrase} 후 재시도합니다. ({}/{})",
-                            attempt + 1,
-                            RATE_LIMIT_MAX_ATTEMPTS
-                        );
-                        emit_progress(
-                            &app,
-                            TranslationProgressEventPayload {
-                                job_id: payload.job_id.clone(),
-                                status: "running".into(),
-                                progress_pct: Some(percentage(processed, total_segments)),
-                                cancel_requested: Some(false),
-                                log: Some(wait_message),
-                                translated_count: Some(processed),
-                                total_count: Some(total_segments),
-                                file_name: last_file_name.clone(),
-                                file_success: last_file_success,
-                                file_errors: clone_errors(&file_errors),
-                                last_written: None,
-                                metrics: Some(wait_metrics.clone()),
-                            },
-                        );
-                        metrics_for_event = Some(wait_metrics);
-
-                        if attempt >= RATE_LIMIT_MAX_ATTEMPTS {
-                            failure = Some(TranslationError::RateLimited {
-                                provider,
-                                message: message_text,
-                                retry_after_ms,
-                                used_server_hint,
-                            });
-                            break;
-                        }
-
-                        if wait_with_cancellation(&cancel_flag, delay_ms).await {
-                            canceled_during_wait = true;
-                            metrics_for_event = Some(build_metrics(
-                                provider,
-                                &payload.model_id,
-                                "canceled",
-                                attempt,
-                                Some("RATE_LIMITED"),
-                                used_server_hint,
-                                total_backoff_ms,
-                            ));
-                            break;
-                        }
-
-                        if cancel_flag.load(Ordering::SeqCst) {
-                            canceled_during_wait = true;
-                            metrics_for_event = Some(build_metrics(
-                                provider,
-                                &payload.model_id,
-                                "canceled",
-                                attempt,
-                                Some("RATE_LIMITED"),
-                                used_server_hint,
-                                total_backoff_ms,
-                            ));
-                            break;
-                        }
-
-                        continue;
-                    }
-                    Err(other_error) => {
-                        let code = error_code_for(&other_error).to_string();
-                        metrics_for_event = Some(build_metrics(
-                            provider,
-                            &payload.model_id,
-                            "failed",
-                            attempt,
-                            Some(&code),
-                            used_server_hint,
-                            total_backoff_ms,
-                        ));
-                        failure = Some(other_error);
-                        break;
-                    }
+            let translated = match translate_segment_with_retry(
+                &client,
+                provider,
+                &api_key,
+                &payload.model_id,
+                &segment.text,
+                &source_lang,
+                &target_lang,
+                payload.use_server_hints,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let log_message = format_translation_error(segment, &error);
+                    let file_message = format_file_error_message(segment, &error);
+                    let rate_limited = matches!(error, TranslationError::RateLimited { .. });
+                    last_file_name = Some(segment.relative_path.clone());
+                    last_file_success = Some(false);
+                    file_errors.push(TranslationFileErrorEntry {
+                        file_path: segment.relative_path.clone(),
+                        message: file_message.clone(),
+                        code: Some(error_code_for(&error).into()),
+                    });
+                    save_job_state(&payload.job_id, job_state.clone());
+                    emit_progress(
+                        &app,
+                        TranslationProgressEventPayload {
+                            job_id: payload.job_id.clone(),
+                            status: "failed".into(),
+                            progress_pct: Some(percentage(processed, total_segments)),
+                            cancel_requested: None,
+                            log: Some(log_message.clone()),
+                            translated_count: Some(processed_segments),
+                            total_count: Some(total_segments),
+                            file_name: last_file_name.clone(),
+                            file_success: last_file_success,
+                            file_errors: clone_errors(&file_errors),
+                            last_written: None,
+                            checkpoint: Some(job_state.checkpoint.clone()),
+                        },
+                    );
+                    return;
                 }
             }
 
@@ -722,15 +862,21 @@ async fn run_translation_job(
 
             if let Some(context) = file_contexts.get_mut(segment.file_index) {
                 if segment.line_index < context.translated_lines.len() {
-                    let replacement =
-                        format!("{}{}{}", segment.prefix, translated_value, segment.suffix);
-                    context.translated_lines[segment.line_index] = Some(replacement);
+                    let replacement = format!("{}{}{}", segment.prefix, translated, segment.suffix);
+                    context.translated_lines[segment.line_index] = Some(replacement.clone());
+                    if let Some(progress) = job_state.files.get_mut(&segment.relative_path) {
+                        progress
+                            .replacements
+                            .insert(segment.line_index, replacement);
+                    }
                 }
             }
 
             processed_segments = processed + 1;
             last_file_name = Some(segment.relative_path.clone());
             last_file_success = Some(true);
+            update_checkpoint_for_next_segment(&mut job_state, &segments, processed_segments);
+            save_job_state(&payload.job_id, job_state.clone());
 
             emit_progress(
                 &app,
@@ -749,14 +895,14 @@ async fn run_translation_job(
                     file_success: last_file_success,
                     file_errors: clone_errors(&file_errors),
                     last_written: None,
-                    metrics: metrics_for_event,
+                    checkpoint: Some(job_state.checkpoint.clone()),
                 },
             );
         }
     }
 
     if cancel_flag.load(Ordering::SeqCst) {
-        emit_progress(
+        emit_cancelled_progress(
             &app,
             TranslationProgressEventPayload {
                 job_id: payload.job_id.clone(),
@@ -770,7 +916,7 @@ async fn run_translation_job(
                 file_success: last_file_success,
                 file_errors: clone_errors(&file_errors),
                 last_written: None,
-                metrics: None,
+                checkpoint: Some(job_state.checkpoint.clone()),
             },
         );
         return;
@@ -778,7 +924,7 @@ async fn run_translation_job(
 
     for context in &mut file_contexts {
         if cancel_flag.load(Ordering::SeqCst) {
-            emit_progress(
+            emit_cancelled_progress(
                 &app,
                 TranslationProgressEventPayload {
                     job_id: payload.job_id.clone(),
@@ -792,18 +938,14 @@ async fn run_translation_job(
                     file_success: last_file_success,
                     file_errors: clone_errors(&file_errors),
                     last_written: None,
-                    metrics: None,
+                    checkpoint: Some(job_state.checkpoint.clone()),
                 },
             );
             return;
         }
 
-        let output_relative = derive_output_relative_path(&context.relative_path, &target_lang);
-        let base_root = override_root
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| context.mod_install_path.clone());
-        let output_absolute_path = base_root.join(&output_relative);
+        let output_absolute_path = context.output_absolute_path.clone();
+        let output_relative = context.output_relative_path.clone();
 
         if let Some(parent_dir) = output_absolute_path.parent() {
             if let Err(err) = fs::create_dir_all(parent_dir) {
@@ -819,6 +961,7 @@ async fn run_translation_job(
                     message: message.clone(),
                     code: Some("WRITE_FAILED".into()),
                 });
+                save_job_state(&payload.job_id, job_state.clone());
                 emit_progress(
                     &app,
                     TranslationProgressEventPayload {
@@ -833,7 +976,7 @@ async fn run_translation_job(
                         file_success: last_file_success,
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
-                        metrics: None,
+                        checkpoint: Some(job_state.checkpoint.clone()),
                     },
                 );
                 continue;
@@ -854,6 +997,7 @@ async fn run_translation_job(
                 message: message.clone(),
                 code: Some("WRITE_FAILED".into()),
             });
+            save_job_state(&payload.job_id, job_state.clone());
             emit_progress(
                 &app,
                 TranslationProgressEventPayload {
@@ -868,7 +1012,7 @@ async fn run_translation_job(
                     file_success: last_file_success,
                     file_errors: clone_errors(&file_errors),
                     last_written: None,
-                    metrics: None,
+                    checkpoint: Some(job_state.checkpoint.clone()),
                 },
             );
             continue;
@@ -905,7 +1049,7 @@ async fn run_translation_job(
                     output_absolute_path: absolute_display,
                     output_relative_path: output_relative_display,
                 }),
-                metrics: None,
+                checkpoint: Some(job_state.checkpoint.clone()),
             },
         );
     }
@@ -938,6 +1082,12 @@ async fn run_translation_job(
         final_progress = 100.0;
     }
 
+    if final_status == "completed" {
+        clear_job_state(&payload.job_id);
+    } else {
+        save_job_state(&payload.job_id, job_state.clone());
+    }
+
     emit_progress(
         &app,
         TranslationProgressEventPayload {
@@ -952,9 +1102,24 @@ async fn run_translation_job(
             file_success: last_file_success,
             file_errors: clone_errors(&file_errors),
             last_written: None,
-            metrics: None,
+            checkpoint: if final_status == "completed" {
+                None
+            } else {
+                Some(job_state.checkpoint.clone())
+            },
         },
     );
+
+    if final_status == "completed" {
+        for context in &file_contexts {
+            if let Err(err) = clear_resume_metadata(&context.resume_metadata_path) {
+                warn!(
+                    "failed to clean resume metadata for {}: {}",
+                    context.relative_path, err
+                );
+            }
+        }
+    }
 }
 
 fn clone_errors(errors: &[TranslationFileErrorEntry]) -> Option<Vec<TranslationFileErrorEntry>> {
@@ -1045,10 +1210,121 @@ fn normalize_relative_display(path: &Path) -> String {
         .join("/")
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ResumeMetadata {
+    next_line_index: usize,
+}
+
+fn build_resume_metadata_path(output_path: &Path) -> PathBuf {
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let metadata_dir = parent.join(RESUME_DIR_NAME);
+    let file_name = output_path
+        .file_name()
+        .map(|name| format!("{}.resume.json", name.to_string_lossy()))
+        .unwrap_or_else(|| "resume.json".to_string());
+    metadata_dir.join(file_name)
+}
+
+fn load_resume_metadata(path: &Path) -> Option<ResumeMetadata> {
+    if !path.exists() {
+        return None;
+    }
+
+    match fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str::<ResumeMetadata>(&contents) {
+            Ok(metadata) => Some(metadata),
+            Err(error) => {
+                warn!(
+                    "failed to parse resume metadata {}: {}",
+                    path.to_string_lossy(),
+                    error
+                );
+                None
+            }
+        },
+        Err(error) => {
+            warn!(
+                "failed to read resume metadata {}: {}",
+                path.to_string_lossy(),
+                error
+            );
+            None
+        }
+    }
+}
+
+fn save_resume_metadata(path: &Path, metadata: &ResumeMetadata) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("resume metadata directory error: {err}"))?;
+    }
+    let serialized = serde_json::to_vec(metadata)
+        .map_err(|err| format!("resume metadata serialization error: {err}"))?;
+    fs::write(path, serialized).map_err(|err| format!("resume metadata write error: {err}"))
+}
+
+fn clear_resume_metadata(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("failed to remove resume metadata: {err}")),
+    }
+}
+
+fn persist_partial_translation(context: &FileContext) -> Result<(), String> {
+    if let Some(parent) = context.output_absolute_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("output directory creation failed: {err}"))?;
+    }
+
+    let contents = render_translated_file(context);
+    fs::write(&context.output_absolute_path, contents)
+        .map_err(|err| format!("partial output write failed: {err}"))?;
+
+    let metadata = ResumeMetadata {
+        next_line_index: context.resume_line_index,
+    };
+    save_resume_metadata(&context.resume_metadata_path, &metadata)
+}
+
+fn should_retry_error(error: &TranslationError) -> bool {
+    matches!(
+        error,
+        TranslationError::NetworkOrHttp { .. } | TranslationError::QuotaOrPlanError { .. }
+    )
+}
+
 fn emit_progress(app: &AppHandle, payload: TranslationProgressEventPayload) {
     if let Err(error) = app.emit("translation-progress", payload) {
         warn!("failed to emit translation progress: {}", error);
     }
+}
+
+fn emit_cancelled_progress(
+    app: &AppHandle,
+    payload: &StartTranslationJobPayload,
+    processed: u32,
+    total: u32,
+    last_file_name: &Option<String>,
+    last_file_success: Option<bool>,
+    file_errors: &[TranslationFileErrorEntry],
+) {
+    emit_progress(
+        app,
+        TranslationProgressEventPayload {
+            job_id: payload.job_id.clone(),
+            status: "canceled".into(),
+            progress_pct: Some(percentage(processed, total)),
+            cancel_requested: Some(true),
+            log: Some("사용자가 작업을 중단했습니다.".into()),
+            translated_count: Some(processed),
+            total_count: Some(total),
+            file_name: last_file_name.clone(),
+            file_success: last_file_success,
+            file_errors: clone_errors(file_errors),
+            last_written: None,
+        },
+    );
 }
 
 fn percentage(processed: u32, total: u32) -> f32 {
@@ -1058,36 +1334,87 @@ fn percentage(processed: u32, total: u32) -> f32 {
     ((processed as f32) / (total as f32) * 100.0).clamp(0.0, 100.0)
 }
 
+fn should_retry(error: &TranslationError) -> bool {
+    matches!(
+        error,
+        TranslationError::NetworkOrHttp { .. } | TranslationError::RateLimited { .. }
+    )
+}
+
+async fn wait_with_cancellation(cancel_flag: &Arc<AtomicBool>, duration: Duration) -> bool {
+    if duration.is_zero() {
+        return cancel_flag.load(Ordering::SeqCst);
+    }
+
+    let mut elapsed = Duration::ZERO;
+    let poll_interval = Duration::from_millis(200);
+
+    while elapsed < duration {
+        if cancel_flag.load(Ordering::SeqCst) {
+            return true;
+        }
+
+        let remaining = duration.saturating_sub(elapsed);
+        let sleep_for = if remaining <= poll_interval {
+            remaining
+        } else {
+            poll_interval
+        };
+
+        if sleep_for.is_zero() {
+            break;
+        }
+
+        tauri::async_runtime::sleep(sleep_for).await;
+        elapsed += sleep_for;
+    }
+
+    cancel_flag.load(Ordering::SeqCst)
+}
+
 fn error_code_for(error: &TranslationError) -> &'static str {
     match error {
-        TranslationError::InvalidApiKey { .. } => "INVALID_API_KEY",
-        TranslationError::ModelForbiddenOrNotFound { .. } => "MODEL_FORBIDDEN",
-        TranslationError::QuotaOrPlanError { .. } => "QUOTA_OR_PLAN",
-        TranslationError::NetworkOrHttp { .. } => "NETWORK_ERROR",
         TranslationError::RateLimited { .. } => "RATE_LIMITED",
+        TranslationError::NetworkTransient { .. } => "NETWORK_TRANSIENT",
+        TranslationError::ServerTransient { .. } => "SERVER_TRANSIENT",
+        TranslationError::Unauthorized { .. } => "UNAUTHORIZED",
+        TranslationError::Forbidden { .. } => "FORBIDDEN",
+        TranslationError::ModelNotFound { .. } => "MODEL_NOT_FOUND",
         TranslationError::PlaceholderMismatch(_) => "PLACEHOLDER_MISMATCH",
+        TranslationError::IoError { .. } => "IO_ERROR",
     }
 }
 
 fn format_translation_error(segment: &Segment, error: &TranslationError) -> String {
     let location = format!("{} {}행", segment.relative_path, segment.line_number);
     match error {
-        TranslationError::InvalidApiKey { message, .. } => {
+        TranslationError::Unauthorized { message, .. } => {
             format!("{location} 번역 중 API 키가 거부되었습니다: {message}")
         }
-        TranslationError::ModelForbiddenOrNotFound {
+        TranslationError::Forbidden { message, .. } => {
+            format!("{location} 번역 중 요청이 거부되었습니다: {message}")
+        }
+        TranslationError::ModelNotFound {
             model_id, message, ..
         } => {
             format!("{location} 번역 중 모델 '{model_id}'을(를) 사용할 수 없습니다: {message}")
         }
-        TranslationError::QuotaOrPlanError { message, .. } => {
-            format!("{location} 번역 중 요금제/할당량 제한으로 실패했습니다: {message}")
+        TranslationError::RateLimited { message, .. } => {
+            format!("{location} 번역 중 429 응답으로 제한되었습니다: {message}")
         }
-        TranslationError::NetworkOrHttp { message, .. } => {
+        TranslationError::NetworkTransient { message, .. } => {
             format!("{location} 번역 중 네트워크 오류가 발생했습니다: {message}")
         }
-        TranslationError::RateLimited { message, .. } => {
-            format!("{location} 번역 중 서버 속도 제한 응답을 받았습니다: {message}")
+        TranslationError::ServerTransient {
+            status, message, ..
+        } => {
+            let status_text = status
+                .map(|code| format!(" (상태 {code})"))
+                .unwrap_or_default();
+            format!("{location} 번역 중 서버 오류가 발생했습니다{status_text}: {message}")
+        }
+        TranslationError::IoError { message, .. } => {
+            format!("{location} 번역 파일 처리 중 I/O 오류가 발생했습니다: {message}")
         }
         TranslationError::PlaceholderMismatch(missing) => {
             if missing.is_empty() {
@@ -1101,19 +1428,33 @@ fn format_translation_error(segment: &Segment, error: &TranslationError) -> Stri
 
 fn format_file_error_message(segment: &Segment, error: &TranslationError) -> String {
     match error {
-        TranslationError::ModelForbiddenOrNotFound {
+        TranslationError::ModelNotFound {
             model_id, message, ..
         } => {
-            format!("The selected model '{model_id}' is not available for this API key: {message}",)
+            format!("The selected model '{model_id}' is not available: {message}")
         }
-        TranslationError::InvalidApiKey { message, .. } => {
+        TranslationError::Unauthorized { message, .. } => {
             format!("The API key was rejected by the provider: {message}")
         }
-        TranslationError::QuotaOrPlanError { message, .. } => {
-            format!("Translation failed due to plan or quota limits: {message}")
+        TranslationError::Forbidden { message, .. } => {
+            format!("The provider rejected the request: {message}")
         }
-        TranslationError::NetworkOrHttp { message, .. } => {
-            format!("Translation request failed due to a network or HTTP error: {message}")
+        TranslationError::RateLimited { message, .. } => {
+            format!("Translation was rate limited by the provider: {message}")
+        }
+        TranslationError::NetworkTransient { message, .. } => {
+            format!("Translation request failed due to a transient network error: {message}")
+        }
+        TranslationError::ServerTransient {
+            status, message, ..
+        } => {
+            let status_text = status
+                .map(|code| format!(" (status {code})"))
+                .unwrap_or_default();
+            format!("Translation request failed due to a server-side error{status_text}: {message}")
+        }
+        TranslationError::IoError { message, .. } => {
+            format!("A local I/O error occurred while processing the file: {message}")
         }
         TranslationError::RateLimited { message, .. } => {
             format!("The translation provider rate limited the request: {message}")

@@ -59,6 +59,18 @@ export type JobState =
 
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
 
+export type RetryableErrorCode =
+  | 'RATE_LIMITED'
+  | 'NETWORK_TRANSIENT'
+  | 'SERVER_TRANSIENT'
+
+export interface RetryPolicy {
+  maxAttempts: number
+  initialDelayMs: number
+  maxDelayMs: number
+  retryableErrors: RetryableErrorCode[]
+}
+
 export interface TranslationFileDescriptor {
   relativePath: string
   modInstallPath: string
@@ -73,6 +85,8 @@ export interface StartTranslationJobPayload {
   sourceLang: string | null
   targetLang: string | null
   outputOverrideDir?: string | null
+  resumeFromCheckpoint?: boolean
+  resetResumeState?: boolean
 }
 
 export type TranslationProgressState = JobState
@@ -80,7 +94,19 @@ export type TranslationProgressState = JobState
 export interface TranslationFileErrorEntry {
   filePath: string
   message: string
-  code?: string
+  code?: RetryableErrorCode | string
+}
+
+export interface TranslationRetryInfo {
+  attempt: number
+  maxAttempts: number
+  delaySeconds: number
+  reason: string
+}
+
+export interface TranslationResumeHint {
+  filePath: string
+  lineNumber: number
 }
 
 export interface TranslationProgressEventPayload {
@@ -99,17 +125,8 @@ export interface TranslationProgressEventPayload {
     outputAbsolutePath: string
     outputRelativePath: string
   }
-  metrics?: TranslationAttemptMetrics
-}
-
-export interface TranslationAttemptMetrics {
-  provider: string
-  modelId: string
-  status: string
-  errorCode?: string
-  attempt: number
-  usedServerHint: boolean
-  totalBackoffMs: number
+  retry?: TranslationRetryInfo
+  resumeHint?: TranslationResumeHint
 }
 
 export interface ModFileDescriptor {
