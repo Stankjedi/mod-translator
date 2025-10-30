@@ -34,6 +34,9 @@ const providers: Array<{ id: ProviderId; name: string; description: string }> = 
 ]
 
 type RetryPolicyField = 'maxAttempts' | 'initialDelayMs' | 'maxDelayMs'
+type RetryNumericField = 'maxRetries' | 'initialDelayMs' | 'multiplier' | 'maxDelayMs'
+type RetryBooleanField = 'respectServerRetryAfter' | 'autoTuneConcurrencyOn429'
+type ProviderRetryPolicy = import('../storage/settingsStorage').ProviderRetryPolicy
 
 const RETRYABLE_ERROR_CODES: RetryableErrorCode[] = [
   'RATE_LIMITED',
@@ -41,7 +44,7 @@ const RETRYABLE_ERROR_CODES: RetryableErrorCode[] = [
   'SERVER_TRANSIENT',
 ]
 
-const RETRYABLE_ERROR_LABELS: Record<RetryableErrorCode, string> = {
+const RETRYABLE_ERROR_LABELS: Partial<Record<RetryableErrorCode, string>> = {
   RATE_LIMITED: '429: 요청 제한 (Rate Limit)',
   NETWORK_TRANSIENT: '네트워크/연결 오류',
   SERVER_TRANSIENT: '서버 오류 (5xx)',
@@ -164,6 +167,7 @@ function SettingsView() {
     enforcePlaceholderGuard,
     prioritizeDllResources,
     enableQualitySampling,
+    useServerHints,
     providerRetryPolicies,
     setConcurrency,
     setWorkerCount,
@@ -931,7 +935,7 @@ function SettingsView() {
                               onChange={() => handleRetryableErrorToggle(provider.id, code)}
                               className="h-3.5 w-3.5 rounded border-slate-700 bg-slate-900"
                             />
-                            <span>{RETRYABLE_ERROR_LABELS[code]}</span>
+                            <span>{RETRYABLE_ERROR_LABELS[code] ?? code}</span>
                           </label>
                         )
                       })}
@@ -946,8 +950,8 @@ function SettingsView() {
               <span>{limitTexts.autoTune}</span>
               <input
                 type="checkbox"
-                checked={enableConcurrencyAutoTune}
-                onChange={(event) => setEnableConcurrencyAutoTune(event.target.checked)}
+                checked={autoTuneConcurrencyOn429}
+                onChange={(event) => setAutoTuneConcurrencyOn429(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-700 bg-slate-900"
               />
             </label>
