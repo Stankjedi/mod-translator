@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import { useLibraryContext } from '../context/LibraryContext'
 import { useI18n } from '../i18n/ko'
 import { maskApiKey } from '../storage/apiKeyStorage'
@@ -7,6 +8,7 @@ import {
   type KeyValidationState,
   type ProviderId,
 } from '../context/SettingsStore'
+import type { RetryPolicy, RetryableErrorCode } from '../types/core'
 
 const providers: Array<{ id: ProviderId; name: string; description: string }> = [
   {
@@ -30,6 +32,20 @@ const providers: Array<{ id: ProviderId; name: string; description: string }> = 
     description: 'xAI 모델을 통해 빠른 응답과 유연한 문체를 제공합니다.',
   },
 ]
+
+type RetryPolicyField = 'maxAttempts' | 'initialDelayMs' | 'maxDelayMs'
+
+const RETRYABLE_ERROR_CODES: RetryableErrorCode[] = [
+  'RATE_LIMITED',
+  'NETWORK_TRANSIENT',
+  'SERVER_TRANSIENT',
+]
+
+const RETRYABLE_ERROR_LABELS: Record<RetryableErrorCode, string> = {
+  RATE_LIMITED: '429: 요청 제한 (Rate Limit)',
+  NETWORK_TRANSIENT: '네트워크/연결 오류',
+  SERVER_TRANSIENT: '서버 오류 (5xx)',
+}
 
 function statusChip(state: KeyValidationState | null, checking: boolean) {
   if (checking) {
@@ -107,6 +123,7 @@ function SettingsView() {
   const i18n = useI18n()
   const steamTexts = i18n.settings.steam
   const limitTexts = i18n.settings.limits
+  const retryTexts = i18n.settings.retry
   const formatDetectedNote = useMemo(
     () =>
       (path: string) =>
@@ -136,26 +153,31 @@ function SettingsView() {
     validationInFlight,
     modelDiscoveryState,
     providerModelNotices,
+    retryPolicy,
     revalidateProviderKey,
     concurrency,
     workerCount,
     bucketSize,
     refillMs,
+    autoTuneConcurrencyOn429,
     enableBackendLogging,
     enforcePlaceholderGuard,
     prioritizeDllResources,
     enableQualitySampling,
-    useServerHints,
+    providerRetryPolicies,
     setConcurrency,
     setWorkerCount,
     setBucketSize,
     setRefillMs,
+    updateRetryPolicy,
+    setAutoTuneConcurrencyOn429,
     setEnableBackendLogging,
     setEnforcePlaceholderGuard,
     setPrioritizeDllResources,
     setEnableQualitySampling,
     setUseServerHints,
     setProviderModel,
+    setProviderRetryPolicy,
   } = useSettingsStore()
   const activeProviderKey = activeProviderId ? apiKeys[activeProviderId] ?? '' : ''
   const activeProviderKeyMissing = Boolean(activeProviderId) && !activeProviderKey.trim()
@@ -173,6 +195,29 @@ function SettingsView() {
         })),
       ),
     [libraries],
+  )
+
+  const handleRetryPolicyNumberChange = useCallback(
+    (provider: ProviderId, field: RetryPolicyField) =>
+      (event: ChangeEvent<HTMLInputElement>) => {
+        updateRetryPolicy(provider, { [field]: Number(event.target.value) } as Partial<RetryPolicy>)
+      },
+    [updateRetryPolicy],
+  )
+
+  const handleRetryableErrorToggle = useCallback(
+    (provider: ProviderId, code: RetryableErrorCode) => {
+      const current = retryPolicy[provider]?.retryableErrors ?? []
+      const nextSet = new Set(current)
+      if (nextSet.has(code)) {
+        nextSet.delete(code)
+      } else {
+        nextSet.add(code)
+      }
+      const ordered = RETRYABLE_ERROR_CODES.filter((item) => nextSet.has(item))
+      updateRetryPolicy(provider, { retryableErrors: ordered })
+    },
+    [retryPolicy, updateRetryPolicy],
   )
 
   useEffect(() => {
@@ -401,6 +446,22 @@ function SettingsView() {
                 }
                 return '아직 검증된 모델이 없어 알려진 기본 모델 목록을 표시합니다. 사용 전 키를 확인해 주세요.'
               })()
+              const retryPolicy = providerRetryPolicies[provider.id]
+              const handleRetryNumberChange = (field: RetryNumericField) =>
+                (event: ChangeEvent<HTMLInputElement>) => {
+                  const value = Number(event.target.value)
+                  setProviderRetryPolicy(
+                    provider.id,
+                    { [field]: value } as Partial<ProviderRetryPolicy>,
+                  )
+                }
+              const handleRetryToggleChange = (field: RetryBooleanField) =>
+                (event: ChangeEvent<HTMLInputElement>) => {
+                  setProviderRetryPolicy(
+                    provider.id,
+                    { [field]: event.target.checked } as Partial<ProviderRetryPolicy>,
+                  )
+                }
               return (
                 <div
                   key={provider.id}
@@ -571,6 +632,104 @@ function SettingsView() {
                       </div>
                     </div>
                   </div>
+                  <div className="mt-5 rounded-xl border border-slate-800/60 bg-slate-950/60 p-4">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-200">
+                        {retryTexts.title}
+                      </span>
+                      <p className="text-[11px] text-slate-500 sm:text-right">
+                        {retryTexts.description}
+                      </p>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1 text-xs text-slate-300">
+                        <span>{retryTexts.fields.maxRetries.label}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={retryPolicy.maxRetries}
+                          onChange={handleRetryNumberChange('maxRetries')}
+                          className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-brand-500 focus:ring-brand-500 sm:text-sm"
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          {retryTexts.fields.maxRetries.hint}
+                        </p>
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs text-slate-300">
+                        <span>{retryTexts.fields.initialDelayMs.label}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={50}
+                          value={retryPolicy.initialDelayMs}
+                          onChange={handleRetryNumberChange('initialDelayMs')}
+                          className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-brand-500 focus:ring-brand-500 sm:text-sm"
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          {retryTexts.fields.initialDelayMs.hint}
+                        </p>
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs text-slate-300">
+                        <span>{retryTexts.fields.multiplier.label}</span>
+                        <input
+                          type="number"
+                          min={1}
+                          step={0.1}
+                          value={retryPolicy.multiplier}
+                          onChange={handleRetryNumberChange('multiplier')}
+                          className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-brand-500 focus:ring-brand-500 sm:text-sm"
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          {retryTexts.fields.multiplier.hint}
+                        </p>
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs text-slate-300">
+                        <span>{retryTexts.fields.maxDelayMs.label}</span>
+                        <input
+                          type="number"
+                          min={retryPolicy.initialDelayMs}
+                          step={50}
+                          value={retryPolicy.maxDelayMs}
+                          onChange={handleRetryNumberChange('maxDelayMs')}
+                          className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-brand-500 focus:ring-brand-500 sm:text-sm"
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          {retryTexts.fields.maxDelayMs.hint}
+                        </p>
+                      </label>
+                    </div>
+                    <div className="mt-3 space-y-3 text-xs text-slate-300">
+                      <div>
+                        <label className="flex items-center justify-between gap-3">
+                          <span>{retryTexts.toggles.respectServerHints.label}</span>
+                          <input
+                            type="checkbox"
+                            checked={retryPolicy.respectServerRetryAfter}
+                            onChange={handleRetryToggleChange('respectServerRetryAfter')}
+                            className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+                          />
+                        </label>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          {retryTexts.toggles.respectServerHints.hint}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="flex items-center justify-between gap-3">
+                          <span>{retryTexts.toggles.autoTune429.label}</span>
+                          <input
+                            type="checkbox"
+                            checked={retryPolicy.autoTuneConcurrencyOn429}
+                            onChange={handleRetryToggleChange('autoTuneConcurrencyOn429')}
+                            className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+                          />
+                        </label>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          {retryTexts.toggles.autoTune429.hint}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
                   <p className="mt-2 text-[11px] text-slate-500">
                     API 키는 로컬 장치에 암호화되지 않은 상태로 저장되므로 보안에 유의하세요.
                   </p>
@@ -684,6 +843,103 @@ function SettingsView() {
               />
               <p className="text-xs text-slate-500">{limitTexts.hints.refillMs}</p>
             </label>
+            <label className="md:col-span-2 xl:col-span-4 flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm text-slate-300">
+              <span>429 응답 시 동시성 자동 조정</span>
+              <input
+                type="checkbox"
+                checked={autoTuneConcurrencyOn429}
+                onChange={(event) => setAutoTuneConcurrencyOn429(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
+            </label>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6 shadow-inner shadow-black/30">
+          <h3 className="text-lg font-semibold text-white">재시도 정책</h3>
+          <p className="mt-2 text-sm text-slate-400">
+            제공자별 최대 시도 횟수와 지연 시간을 조정하고, 재시도 대상 오류를 선택할 수 있습니다.
+          </p>
+          <div className="mt-4 space-y-4">
+            {providers.map((provider) => {
+              const policy = retryPolicy[provider.id]
+              if (!policy) {
+                return null
+              }
+              return (
+                <div
+                  key={provider.id}
+                  className="space-y-4 rounded-xl border border-slate-800/60 bg-slate-950/30 p-4"
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-white">{provider.name}</p>
+                      <p className="text-xs text-slate-400">{provider.description}</p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 text-xs text-slate-300 sm:grid-cols-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] uppercase tracking-wide text-slate-500">최대 시도 횟수</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={policy.maxAttempts}
+                          onChange={handleRetryPolicyNumberChange(provider.id, 'maxAttempts')}
+                          className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] uppercase tracking-wide text-slate-500">초기 지연(ms)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={50}
+                          value={policy.initialDelayMs}
+                          onChange={handleRetryPolicyNumberChange(provider.id, 'initialDelayMs')}
+                          className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[11px] uppercase tracking-wide text-slate-500">최대 지연(ms)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={50}
+                          value={policy.maxDelayMs}
+                          onChange={handleRetryPolicyNumberChange(provider.id, 'maxDelayMs')}
+                          className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:border-brand-500 focus:ring-brand-500"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500">재시도 대상 오류</p>
+                    <div className="mt-2 flex flex-wrap gap-3">
+                      {RETRYABLE_ERROR_CODES.map((code) => {
+                        const checked = policy.retryableErrors.includes(code)
+                        return (
+                          <label
+                            key={code}
+                            className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition ${
+                              checked
+                                ? 'border-brand-500/60 bg-brand-500/10 text-brand-100'
+                                : 'border-slate-700 bg-slate-900/50 text-slate-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => handleRetryableErrorToggle(provider.id, code)}
+                              className="h-3.5 w-3.5 rounded border-slate-700 bg-slate-900"
+                            />
+                            <span>{RETRYABLE_ERROR_LABELS[code]}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </section>
 

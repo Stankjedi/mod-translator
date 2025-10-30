@@ -89,6 +89,8 @@ function ProgressView() {
     updateCurrentJobTargetLanguage,
     updateCurrentJobOutputOverride,
     dismissCurrentJob,
+    resumeCurrentJobFromCheckpoint,
+    restartCurrentJobFromStart,
   } = useJobStore()
   const { showToast } = useToast()
   const { keyValidation } = useSettingsStore()
@@ -98,6 +100,9 @@ function ProgressView() {
   const [openError, setOpenError] = useState<string | null>(null)
   const [targetLanguageDraft, setTargetLanguageDraft] = useState(DEFAULT_TARGET_LANGUAGE)
   const [outputOverrideDraft, setOutputOverrideDraft] = useState('')
+  const [isResuming, setIsResuming] = useState(false)
+  const [isRestarting, setIsRestarting] = useState(false)
+  const [retrySecondsRemaining, setRetrySecondsRemaining] = useState<number | null>(null)
   const activeJobId = currentJob?.id ?? null
   const shouldLoadFiles = Boolean(
     activeJobId && !currentJob?.files && !currentJob?.filesLoading && !currentJob?.fileListError,
@@ -108,6 +113,8 @@ function ProgressView() {
     setIsStarting(false)
     setCancelError(null)
     setOpenError(null)
+    setIsResuming(false)
+    setIsRestarting(false)
   }, [activeJobId])
 
   useEffect(() => {
@@ -117,6 +124,26 @@ function ProgressView() {
   useEffect(() => {
     setOutputOverrideDraft(currentJob?.outputOverrideDir ?? '')
   }, [currentJob?.outputOverrideDir])
+
+  useEffect(() => {
+    const retryStatus = currentJob?.retryStatus
+    if (!retryStatus) {
+      setRetrySecondsRemaining(null)
+      return
+    }
+
+    const updateCountdown = () => {
+      const elapsed = Math.floor((Date.now() - retryStatus.scheduledAt) / 1000)
+      const remaining = Math.max(0, retryStatus.delaySeconds - elapsed)
+      setRetrySecondsRemaining(remaining)
+    }
+
+    updateCountdown()
+    const intervalId = window.setInterval(updateCountdown, 1000)
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [currentJob?.retryStatus])
 
   useEffect(() => {
     if (!activeJobId || !shouldLoadFiles) {
@@ -291,6 +318,52 @@ function ProgressView() {
     }
   }, [currentJob, keyValidation])
 
+  const retryChipLabel = useMemo(() => {
+    if (!currentJob?.retryStatus) {
+      return null
+    }
+    const remaining = retrySecondsRemaining ?? currentJob.retryStatus.delaySeconds
+    return `Retrying in ${remaining}s… (${currentJob.retryStatus.attempt}/${currentJob.retryStatus.maxAttempts})`
+  }, [currentJob?.retryStatus, retrySecondsRemaining])
+  const showResumeControls = Boolean(currentJob?.status === 'failed' && currentJob?.resumeHint)
+  const resumeLineNumber = currentJob?.resumeHint?.lineNumber ?? null
+  const resumeButtonLabel = resumeLineNumber
+    ? `Resume from line ${resumeLineNumber}`
+    : 'Resume from last line'
+  const restartButtonLabel = 'Restart from file start'
+
+  const handleResume = useCallback(async () => {
+    if (isResuming) {
+      return
+    }
+    setIsResuming(true)
+    try {
+      await resumeCurrentJobFromCheckpoint()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      appendLog(`Resume request failed: ${message}`, 'error')
+      showToast(`Resume failed: ${message}`, 'error')
+    } finally {
+      setIsResuming(false)
+    }
+  }, [appendLog, isResuming, resumeCurrentJobFromCheckpoint, showToast])
+
+  const handleRestart = useCallback(async () => {
+    if (isRestarting) {
+      return
+    }
+    setIsRestarting(true)
+    try {
+      await restartCurrentJobFromStart()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      appendLog(`Restart request failed: ${message}`, 'error')
+      showToast(`Restart failed: ${message}`, 'error')
+    } finally {
+      setIsRestarting(false)
+    }
+  }, [appendLog, isRestarting, restartCurrentJobFromStart, showToast])
+
   if (!currentJob) {
     return (
       <div className="mx-auto flex max-w-3xl flex-col items-center justify-center gap-6 rounded-2xl border border-slate-800/60 bg-slate-900/60 p-10 text-center text-slate-300">
@@ -375,6 +448,31 @@ function ProgressView() {
           <Chip label={`번역기: ${providerDisplay}`} tone="idle" />
           {modelDisplay && <Chip label={`모델: ${modelDisplay}`} tone="idle" />}
           <Chip label={statusLabel} tone={statusTone} />
+          {retryChipLabel && currentJob.retryStatus && (
+            <span title={currentJob.retryStatus.reason}>
+              <Chip label={retryChipLabel} tone="warning" />
+            </span>
+          )}
+          {showResumeControls && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleResume}
+                disabled={isResuming}
+                className="inline-flex items-center justify-center rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow shadow-emerald-600/30 transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isResuming ? 'Resuming…' : resumeButtonLabel}
+              </button>
+              <button
+                type="button"
+                onClick={handleRestart}
+                disabled={isRestarting}
+                className="inline-flex items-center justify-center rounded-full border border-slate-600/70 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isRestarting ? 'Restarting…' : restartButtonLabel}
+              </button>
+            </div>
+          )}
           {showCancelButton && (
             <button
               type="button"
