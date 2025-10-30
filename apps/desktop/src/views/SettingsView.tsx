@@ -941,6 +941,18 @@ function SettingsView() {
               )
             })}
           </div>
+          <div className="mt-4 space-y-2 text-sm text-slate-300">
+            <label className="flex items-center justify-between gap-3">
+              <span>{limitTexts.autoTune}</span>
+              <input
+                type="checkbox"
+                checked={enableConcurrencyAutoTune}
+                onChange={(event) => setEnableConcurrencyAutoTune(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-700 bg-slate-900"
+              />
+            </label>
+            <p className="text-xs text-slate-500">{limitTexts.hints.autoTune}</p>
+          </div>
         </section>
 
         <section className="rounded-2xl border border-slate-800/60 bg-slate-900/60 p-6 shadow-inner shadow-black/30">

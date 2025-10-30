@@ -717,6 +717,7 @@ async fn run_translation_job(
                 Err(error) => {
                     let log_message = format_translation_error(segment, &error);
                     let file_message = format_file_error_message(segment, &error);
+                    let rate_limited = matches!(error, TranslationError::RateLimited { .. });
                     last_file_name = Some(segment.relative_path.clone());
                     last_file_success = Some(false);
                     file_errors.push(TranslationFileErrorEntry {

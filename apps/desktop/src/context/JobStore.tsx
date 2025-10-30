@@ -354,11 +354,22 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
   const activeJobIdRef = useRef<string | null>(null)
 
   const providerApiKeyRef = useRef<string>('')
+  const rateLimitHitCountRef = useRef(0)
+  const lastRateLimitAtRef = useRef<number | null>(null)
+  const lastAutoTuneAtRef = useRef<number | null>(null)
 
   useEffect(() => {
     activeJobIdRef.current = state.currentJob?.id ?? null
     providerApiKeyRef.current = state.currentJob?.providerApiKey ?? ''
   }, [state.currentJob?.id, state.currentJob?.providerApiKey])
+
+  useEffect(() => {
+    if (!enableConcurrencyAutoTune) {
+      rateLimitHitCountRef.current = 0
+      lastRateLimitAtRef.current = null
+      lastAutoTuneAtRef.current = null
+    }
+  }, [enableConcurrencyAutoTune])
 
   useEffect(() => {
     setState((prev) => {
@@ -1057,6 +1068,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         return
       }
 
+      maybeAutoTuneConcurrency(payload)
+
       const status = payload.status ?? 'running'
       const trimmedLog = payload.log?.trim() ?? ''
       const progress = clampProgress(Math.round(payload.progressPct ?? 0))
@@ -1173,7 +1186,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         )
       }
     },
-    [finalizeCurrentJob],
+    [finalizeCurrentJob, maybeAutoTuneConcurrency],
   )
 
   const dismissCurrentJob = useCallback(() => {
