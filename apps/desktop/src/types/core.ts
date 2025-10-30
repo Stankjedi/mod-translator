@@ -85,6 +85,8 @@ export interface StartTranslationJobPayload {
   sourceLang: string | null
   targetLang: string | null
   outputOverrideDir?: string | null
+  resumeFromCheckpoint?: boolean
+  resetResumeState?: boolean
 }
 
 export type TranslationProgressState = JobState
@@ -93,6 +95,18 @@ export interface TranslationFileErrorEntry {
   filePath: string
   message: string
   code?: RetryableErrorCode | string
+}
+
+export interface TranslationRetryInfo {
+  attempt: number
+  maxAttempts: number
+  delaySeconds: number
+  reason: string
+}
+
+export interface TranslationResumeHint {
+  filePath: string
+  lineNumber: number
 }
 
 export interface TranslationProgressEventPayload {
@@ -111,6 +125,8 @@ export interface TranslationProgressEventPayload {
     outputAbsolutePath: string
     outputRelativePath: string
   }
+  retry?: TranslationRetryInfo
+  resumeHint?: TranslationResumeHint
 }
 
 export interface ModFileDescriptor {

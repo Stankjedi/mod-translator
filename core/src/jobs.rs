@@ -178,6 +178,10 @@ pub struct StartTranslationJobPayload {
     pub source_lang: Option<String>,
     pub target_lang: Option<String>,
     pub output_override_dir: Option<String>,
+    #[serde(default)]
+    pub resume_from_checkpoint: bool,
+    #[serde(default)]
+    pub reset_resume_state: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,6 +228,22 @@ pub struct TranslationFileErrorEntry {
     pub code: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryStatusPayload {
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub delay_seconds: u32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeHintPayload {
+    pub file_path: String,
+    pub line_number: u32,
+}
+
 #[derive(Debug)]
 struct Segment {
     file_index: usize,
@@ -241,6 +261,10 @@ struct FileContext {
     lines: Vec<String>,
     translated_lines: Vec<Option<String>>,
     had_trailing_newline: bool,
+    output_relative_path: PathBuf,
+    output_absolute_path: PathBuf,
+    resume_metadata_path: PathBuf,
+    resume_line_index: usize,
 }
 
 #[tauri::command]
@@ -255,6 +279,8 @@ pub fn start_translation_job(
     targetLang: Option<String>,
     files: Vec<TranslationFileInput>,
     outputOverrideDir: Option<String>,
+    resumeFromCheckpoint: Option<bool>,
+    resetResumeState: Option<bool>,
 ) -> Result<(), String> {
     let mut payload = StartTranslationJobPayload {
         job_id: jobId,
@@ -265,7 +291,11 @@ pub fn start_translation_job(
         source_lang: sourceLang,
         target_lang: targetLang,
         output_override_dir: outputOverrideDir,
+        resume_from_checkpoint: false,
+        reset_resume_state: false,
     };
+    payload.resume_from_checkpoint = resumeFromCheckpoint.unwrap_or(false);
+    payload.reset_resume_state = resetResumeState.unwrap_or(false);
     payload.model_id = payload.model_id.trim().to_string();
     if payload.files.is_empty() {
         return Err("번역할 파일을 하나 이상 선택해야 합니다.".into());
@@ -457,6 +487,8 @@ async fn run_translation_job(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
+    let resume_from_checkpoint = payload.resume_from_checkpoint;
+    let reset_resume_state = payload.reset_resume_state;
 
     let mut file_contexts: Vec<FileContext> = Vec::new();
     let mut segments: Vec<Segment> = Vec::new();
@@ -489,6 +521,13 @@ async fn run_translation_job(
 
         let had_trailing_newline = content.ends_with('\n');
         let lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+        let output_relative_path = derive_output_relative_path(&file.relative_path, &target_lang);
+        let base_root = override_root
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| mod_root.clone());
+        let output_absolute_path = base_root.join(&output_relative_path);
+        let resume_metadata_path = build_resume_metadata_path(&output_absolute_path);
 
         let mut context = FileContext {
             relative_path: file.relative_path.clone(),
@@ -496,6 +535,10 @@ async fn run_translation_job(
             lines,
             translated_lines: Vec::new(),
             had_trailing_newline,
+            output_relative_path,
+            output_absolute_path,
+            resume_metadata_path,
+            resume_line_index: 0,
         };
         context.translated_lines = vec![None; context.lines.len()];
 
@@ -517,6 +560,11 @@ async fn run_translation_job(
         for (line_index, line) in context.lines.iter().enumerate() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
+                continue;
+            }
+
+            if line_index < context.resume_line_index {
+                already_processed_segments += 1;
                 continue;
             }
 
@@ -777,12 +825,8 @@ async fn run_translation_job(
             return;
         }
 
-        let output_relative = derive_output_relative_path(&context.relative_path, &target_lang);
-        let base_root = override_root
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| context.mod_install_path.clone());
-        let output_absolute_path = base_root.join(&output_relative);
+        let output_absolute_path = context.output_absolute_path.clone();
+        let output_relative = context.output_relative_path.clone();
 
         if let Some(parent_dir) = output_absolute_path.parent() {
             if let Err(err) = fs::create_dir_all(parent_dir) {
@@ -946,6 +990,17 @@ async fn run_translation_job(
             },
         },
     );
+
+    if final_status == "completed" {
+        for context in &file_contexts {
+            if let Err(err) = clear_resume_metadata(&context.resume_metadata_path) {
+                warn!(
+                    "failed to clean resume metadata for {}: {}",
+                    context.relative_path, err
+                );
+            }
+        }
+    }
 }
 
 fn clone_errors(errors: &[TranslationFileErrorEntry]) -> Option<Vec<TranslationFileErrorEntry>> {
@@ -1034,6 +1089,90 @@ fn normalize_relative_display(path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ResumeMetadata {
+    next_line_index: usize,
+}
+
+fn build_resume_metadata_path(output_path: &Path) -> PathBuf {
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let metadata_dir = parent.join(RESUME_DIR_NAME);
+    let file_name = output_path
+        .file_name()
+        .map(|name| format!("{}.resume.json", name.to_string_lossy()))
+        .unwrap_or_else(|| "resume.json".to_string());
+    metadata_dir.join(file_name)
+}
+
+fn load_resume_metadata(path: &Path) -> Option<ResumeMetadata> {
+    if !path.exists() {
+        return None;
+    }
+
+    match fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str::<ResumeMetadata>(&contents) {
+            Ok(metadata) => Some(metadata),
+            Err(error) => {
+                warn!(
+                    "failed to parse resume metadata {}: {}",
+                    path.to_string_lossy(),
+                    error
+                );
+                None
+            }
+        },
+        Err(error) => {
+            warn!(
+                "failed to read resume metadata {}: {}",
+                path.to_string_lossy(),
+                error
+            );
+            None
+        }
+    }
+}
+
+fn save_resume_metadata(path: &Path, metadata: &ResumeMetadata) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("resume metadata directory error: {err}"))?;
+    }
+    let serialized = serde_json::to_vec(metadata)
+        .map_err(|err| format!("resume metadata serialization error: {err}"))?;
+    fs::write(path, serialized).map_err(|err| format!("resume metadata write error: {err}"))
+}
+
+fn clear_resume_metadata(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("failed to remove resume metadata: {err}")),
+    }
+}
+
+fn persist_partial_translation(context: &FileContext) -> Result<(), String> {
+    if let Some(parent) = context.output_absolute_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("output directory creation failed: {err}"))?;
+    }
+
+    let contents = render_translated_file(context);
+    fs::write(&context.output_absolute_path, contents)
+        .map_err(|err| format!("partial output write failed: {err}"))?;
+
+    let metadata = ResumeMetadata {
+        next_line_index: context.resume_line_index,
+    };
+    save_resume_metadata(&context.resume_metadata_path, &metadata)
+}
+
+fn should_retry_error(error: &TranslationError) -> bool {
+    matches!(
+        error,
+        TranslationError::NetworkOrHttp { .. } | TranslationError::QuotaOrPlanError { .. }
+    )
 }
 
 fn emit_progress(app: &AppHandle, payload: TranslationProgressEventPayload) {
