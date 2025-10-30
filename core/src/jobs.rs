@@ -811,30 +811,47 @@ fn percentage(processed: u32, total: u32) -> f32 {
 
 fn error_code_for(error: &TranslationError) -> &'static str {
     match error {
-        TranslationError::InvalidApiKey { .. } => "INVALID_API_KEY",
-        TranslationError::ModelForbiddenOrNotFound { .. } => "MODEL_FORBIDDEN",
-        TranslationError::QuotaOrPlanError { .. } => "QUOTA_OR_PLAN",
-        TranslationError::NetworkOrHttp { .. } => "NETWORK_ERROR",
+        TranslationError::RateLimited { .. } => "RATE_LIMITED",
+        TranslationError::NetworkTransient { .. } => "NETWORK_TRANSIENT",
+        TranslationError::ServerTransient { .. } => "SERVER_TRANSIENT",
+        TranslationError::Unauthorized { .. } => "UNAUTHORIZED",
+        TranslationError::Forbidden { .. } => "FORBIDDEN",
+        TranslationError::ModelNotFound { .. } => "MODEL_NOT_FOUND",
         TranslationError::PlaceholderMismatch(_) => "PLACEHOLDER_MISMATCH",
+        TranslationError::IoError { .. } => "IO_ERROR",
     }
 }
 
 fn format_translation_error(segment: &Segment, error: &TranslationError) -> String {
     let location = format!("{} {}행", segment.relative_path, segment.line_number);
     match error {
-        TranslationError::InvalidApiKey { message, .. } => {
+        TranslationError::Unauthorized { message, .. } => {
             format!("{location} 번역 중 API 키가 거부되었습니다: {message}")
         }
-        TranslationError::ModelForbiddenOrNotFound {
+        TranslationError::Forbidden { message, .. } => {
+            format!("{location} 번역 중 요청이 거부되었습니다: {message}")
+        }
+        TranslationError::ModelNotFound {
             model_id, message, ..
         } => {
             format!("{location} 번역 중 모델 '{model_id}'을(를) 사용할 수 없습니다: {message}")
         }
-        TranslationError::QuotaOrPlanError { message, .. } => {
-            format!("{location} 번역 중 요금제/할당량 제한으로 실패했습니다: {message}")
+        TranslationError::RateLimited { message, .. } => {
+            format!("{location} 번역 중 429 응답으로 제한되었습니다: {message}")
         }
-        TranslationError::NetworkOrHttp { message, .. } => {
+        TranslationError::NetworkTransient { message, .. } => {
             format!("{location} 번역 중 네트워크 오류가 발생했습니다: {message}")
+        }
+        TranslationError::ServerTransient {
+            status, message, ..
+        } => {
+            let status_text = status
+                .map(|code| format!(" (상태 {code})"))
+                .unwrap_or_default();
+            format!("{location} 번역 중 서버 오류가 발생했습니다{status_text}: {message}")
+        }
+        TranslationError::IoError { message, .. } => {
+            format!("{location} 번역 파일 처리 중 I/O 오류가 발생했습니다: {message}")
         }
         TranslationError::PlaceholderMismatch(missing) => {
             if missing.is_empty() {
@@ -848,19 +865,33 @@ fn format_translation_error(segment: &Segment, error: &TranslationError) -> Stri
 
 fn format_file_error_message(segment: &Segment, error: &TranslationError) -> String {
     match error {
-        TranslationError::ModelForbiddenOrNotFound {
+        TranslationError::ModelNotFound {
             model_id, message, ..
         } => {
-            format!("The selected model '{model_id}' is not available for this API key: {message}",)
+            format!("The selected model '{model_id}' is not available: {message}")
         }
-        TranslationError::InvalidApiKey { message, .. } => {
+        TranslationError::Unauthorized { message, .. } => {
             format!("The API key was rejected by the provider: {message}")
         }
-        TranslationError::QuotaOrPlanError { message, .. } => {
-            format!("Translation failed due to plan or quota limits: {message}")
+        TranslationError::Forbidden { message, .. } => {
+            format!("The provider rejected the request: {message}")
         }
-        TranslationError::NetworkOrHttp { message, .. } => {
-            format!("Translation request failed due to a network or HTTP error: {message}")
+        TranslationError::RateLimited { message, .. } => {
+            format!("Translation was rate limited by the provider: {message}")
+        }
+        TranslationError::NetworkTransient { message, .. } => {
+            format!("Translation request failed due to a transient network error: {message}")
+        }
+        TranslationError::ServerTransient {
+            status, message, ..
+        } => {
+            let status_text = status
+                .map(|code| format!(" (status {code})"))
+                .unwrap_or_default();
+            format!("Translation request failed due to a server-side error{status_text}: {message}")
+        }
+        TranslationError::IoError { message, .. } => {
+            format!("A local I/O error occurred while processing the file: {message}")
         }
         TranslationError::PlaceholderMismatch(_) => format_translation_error(segment, error),
     }
