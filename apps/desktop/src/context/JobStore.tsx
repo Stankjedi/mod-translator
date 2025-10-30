@@ -99,6 +99,21 @@ export interface TranslationJob {
   targetLanguage: string
   createdAt: number
   completedAt?: number
+  retryStatus: JobRetryStatus | null
+  resumeHint: JobResumeHint | null
+}
+
+export interface JobRetryStatus {
+  attempt: number
+  maxAttempts: number
+  delaySeconds: number
+  scheduledAt: number
+  reason: string
+}
+
+export interface JobResumeHint {
+  filePath: string
+  lineNumber: number
 }
 
 interface JobStoreState {
@@ -162,6 +177,8 @@ interface JobStoreValue {
   updateCurrentJobTargetLanguage: (value: string) => void
   updateCurrentJobOutputOverride: (value: string) => void
   dismissCurrentJob: () => void
+  resumeCurrentJobFromCheckpoint: () => Promise<void>
+  restartCurrentJobFromStart: () => Promise<void>
 }
 
 const JobStoreContext = createContext<JobStoreValue | undefined>(undefined)
@@ -248,6 +265,29 @@ const applyFileErrorUpdates = (
   return merged
 }
 
+const buildTranslationFilesPayload = (
+  job: TranslationJob,
+  selectedFiles: string[],
+): { relativePath: string; modInstallPath: string }[] => {
+  const selectedSet = new Set(selectedFiles)
+  let filesPayload = (job.files ?? [])
+    .filter((file) => selectedSet.has(file.path))
+    .map((file) => ({
+      relativePath: file.relativePath,
+      modInstallPath: file.modInstallPath,
+    }))
+
+  if (!filesPayload.length) {
+    const fallbackRoot = job.installPath.trim()
+    filesPayload = selectedFiles.map((filePath) => ({
+      relativePath: filePath,
+      modInstallPath: fallbackRoot,
+    }))
+  }
+
+  return filesPayload
+}
+
 const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   ...job,
   status: 'pending',
@@ -263,6 +303,8 @@ const prepareJobForActivation = (job: TranslationJob): TranslationJob => ({
   fileListError: null,
   fileErrors: [],
   selectedFiles: [...job.selectedFiles],
+  retryStatus: null,
+  resumeHint: null,
 })
 
 const createJob = (
@@ -298,21 +340,12 @@ const createJob = (
   sourceLanguageGuess: DEFAULT_SOURCE_LANGUAGE,
   targetLanguage: DEFAULT_TARGET_LANGUAGE,
   createdAt: Date.now(),
+  retryStatus: null,
+  resumeHint: null,
 })
 
 export function JobStoreProvider({ children }: { children: ReactNode }) {
-  const {
-    activeProviderId,
-    apiKeys,
-    providerModels,
-    concurrency,
-    workerCount,
-    bucketSize,
-    enableConcurrencyAutoTune,
-    setConcurrency,
-    setWorkerCount,
-    setBucketSize,
-  } = useSettingsStore()
+  const { activeProviderId, apiKeys, providerModels, useServerHints } = useSettingsStore()
   const [state, setState] = useState<JobStoreState>({
     currentJob: null,
     queue: [],
@@ -409,6 +442,13 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             : prev.currentJob.logs,
           fileErrors: [...fileErrors],
           completedAt: Date.now(),
+          retryStatus: null,
+          resumeHint: payload?.resumeHint
+            ? {
+                filePath: payload.resumeHint.filePath,
+                lineNumber: payload.resumeHint.lineNumber,
+              }
+            : prev.currentJob.resumeHint,
         }
 
         const existingIndex = prev.completedJobs.findIndex((job) => job.id === finishedJob.id)
@@ -452,72 +492,127 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const maybeAutoTuneConcurrency = useCallback(
-    (payload: TranslationProgressEventPayload) => {
-      if (!enableConcurrencyAutoTune) {
-        return
+  const resumeCurrentJobFromCheckpoint = useCallback(async () => {
+    if (!isTauri()) {
+      throw new Error('재개 기능은 데스크톱 환경에서만 사용할 수 있습니다.')
+    }
+
+    const activeJob = state.currentJob
+    if (!activeJob || activeJob.status !== 'failed') {
+      throw new Error('재개 가능한 실패한 작업이 없습니다.')
+    }
+
+    const modelId = activeJob.modelId.trim()
+    if (!modelId) {
+      throw new Error('번역에 사용할 모델을 선택해 주세요.')
+    }
+
+    const selectedFiles = activeJob.selectedFiles.length
+      ? [...activeJob.selectedFiles]
+      : (activeJob.files ?? [])
+          .filter((file) => file.selected)
+          .map((file) => file.path)
+
+    if (!selectedFiles.length) {
+      throw new Error('재개할 파일 정보를 찾을 수 없습니다.')
+    }
+
+    const filesPayload = buildTranslationFilesPayload(activeJob, selectedFiles)
+
+    await invoke('start_translation_job', {
+      jobId: activeJob.id,
+      provider: activeJob.providerId,
+      apiKey: activeJob.providerApiKey,
+      modelId,
+      sourceLang: activeJob.sourceLanguageGuess,
+      targetLang: activeJob.targetLanguage,
+      files: filesPayload,
+      outputOverrideDir: activeJob.outputOverrideDir,
+      resumeFromCheckpoint: true,
+      resetResumeState: false,
+    })
+
+    appendLog('이전 실패 지점부터 번역을 재개합니다.')
+
+    setState((prev) => {
+      if (!prev.currentJob || prev.currentJob.id !== activeJob.id) {
+        return prev
       }
 
-      const isRateLimited =
-        payload.rateLimited === true ||
-        (payload.fileErrors?.some((entry) => entry.code === 'RATE_LIMITED') ?? false)
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          status: 'running',
+          cancelRequested: false,
+          retryStatus: null,
+        },
+      }
+    })
+  }, [appendLog, state.currentJob])
 
-      if (!isRateLimited) {
-        return
+  const restartCurrentJobFromStart = useCallback(async () => {
+    if (!isTauri()) {
+      throw new Error('재시작 기능은 데스크톱 환경에서만 사용할 수 있습니다.')
+    }
+
+    const activeJob = state.currentJob
+    if (!activeJob || activeJob.status !== 'failed') {
+      throw new Error('재시작 가능한 실패한 작업이 없습니다.')
+    }
+
+    const modelId = activeJob.modelId.trim()
+    if (!modelId) {
+      throw new Error('번역에 사용할 모델을 선택해 주세요.')
+    }
+
+    const selectedFiles = activeJob.selectedFiles.length
+      ? [...activeJob.selectedFiles]
+      : (activeJob.files ?? [])
+          .filter((file) => file.selected)
+          .map((file) => file.path)
+
+    if (!selectedFiles.length) {
+      throw new Error('재시작할 파일 정보를 찾을 수 없습니다.')
+    }
+
+    const filesPayload = buildTranslationFilesPayload(activeJob, selectedFiles)
+
+    await invoke('start_translation_job', {
+      jobId: activeJob.id,
+      provider: activeJob.providerId,
+      apiKey: activeJob.providerApiKey,
+      modelId,
+      sourceLang: activeJob.sourceLanguageGuess,
+      targetLang: activeJob.targetLanguage,
+      files: filesPayload,
+      outputOverrideDir: activeJob.outputOverrideDir,
+      resumeFromCheckpoint: false,
+      resetResumeState: true,
+    })
+
+    appendLog('파일 처음부터 번역을 다시 시작합니다.')
+
+    setState((prev) => {
+      if (!prev.currentJob || prev.currentJob.id !== activeJob.id) {
+        return prev
       }
 
-      const now = Date.now()
-      const lastHit = lastRateLimitAtRef.current
-      if (lastHit && now - lastHit > 5 * 60 * 1000) {
-        rateLimitHitCountRef.current = 0
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          status: 'running',
+          progress: 0,
+          translatedCount: 0,
+          totalCount: 0,
+          cancelRequested: false,
+          retryStatus: null,
+          resumeHint: null,
+        },
       }
-
-      lastRateLimitAtRef.current = now
-      rateLimitHitCountRef.current += 1
-
-      if (rateLimitHitCountRef.current < 2) {
-        return
-      }
-
-      const lastAutoTune = lastAutoTuneAtRef.current ?? 0
-      if (lastAutoTune && now - lastAutoTune < 60_000) {
-        return
-      }
-
-      const nextConcurrency = Math.max(1, Math.ceil(concurrency / 2))
-      const nextWorkerCount = Math.max(1, Math.ceil(workerCount / 2))
-      const nextBucketSize = Math.max(1, Math.ceil(bucketSize / 2))
-
-      if (
-        nextConcurrency === concurrency &&
-        nextWorkerCount === workerCount &&
-        nextBucketSize === bucketSize
-      ) {
-        lastAutoTuneAtRef.current = now
-        rateLimitHitCountRef.current = 0
-        return
-      }
-
-      setConcurrency(nextConcurrency)
-      setWorkerCount(nextWorkerCount)
-      setBucketSize(nextBucketSize)
-
-      appendLog(`Concurrency auto-tuned to ${nextConcurrency} due to repeated 429s`)
-
-      lastAutoTuneAtRef.current = now
-      rateLimitHitCountRef.current = 0
-    },
-    [
-      enableConcurrencyAutoTune,
-      concurrency,
-      workerCount,
-      bucketSize,
-      setConcurrency,
-      setWorkerCount,
-      setBucketSize,
-      appendLog,
-    ],
-  )
+    })
+  }, [appendLog, state.currentJob])
 
   const enqueueJob = useCallback(
     (input: EnqueueJobInput): EnqueueJobResult => {
@@ -812,21 +907,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       const targetLanguage = options.targetLanguage ?? activeJob.targetLanguage
       const sourceLanguage = options.sourceLanguageGuess ?? activeJob.sourceLanguageGuess
 
-      const selectedSet = new Set(options.selectedFiles)
-      let filesPayload = (activeJob.files ?? [])
-        .filter((file) => selectedSet.has(file.path))
-        .map((file) => ({
-          relativePath: file.relativePath,
-          modInstallPath: file.modInstallPath,
-        }))
-
-      if (!filesPayload.length) {
-        const fallbackRoot = activeJob.installPath.trim()
-        filesPayload = options.selectedFiles.map((filePath) => ({
-          relativePath: filePath,
-          modInstallPath: fallbackRoot,
-        }))
-      }
+      const filesPayload = buildTranslationFilesPayload(activeJob, options.selectedFiles)
 
       await invoke('start_translation_job', {
         jobId: activeJob.id,
@@ -837,6 +918,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
         targetLang: targetLanguage,
         files: filesPayload,
         outputOverrideDir: activeJob.outputOverrideDir,
+        resumeFromCheckpoint: false,
+        resetResumeState: true,
       })
 
       setState((prev) => {
@@ -857,6 +940,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             modelId,
             translatedCount: 0,
             totalCount: 0,
+            retryStatus: null,
+            resumeHint: null,
           },
         }
       })
@@ -976,6 +1061,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+
   const handleTranslationProgressPayload = useCallback(
     (payload: TranslationProgressEventPayload) => {
       if (!payload || !activeJobIdRef.current || activeJobIdRef.current !== payload.jobId) {
@@ -1023,6 +1109,20 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             typeof payload.cancelRequested === 'boolean'
               ? payload.cancelRequested
               : prev.currentJob.cancelRequested
+          const retryPayload = payload.retry ?? null
+          const resumePayload = payload.resumeHint ?? null
+          const nextRetryStatus = retryPayload
+            ? {
+                attempt: retryPayload.attempt,
+                maxAttempts: retryPayload.maxAttempts,
+                delaySeconds: retryPayload.delaySeconds,
+                scheduledAt: Date.now(),
+                reason: retryPayload.reason,
+              }
+            : null
+          const nextResumeHint = resumePayload
+            ? { filePath: resumePayload.filePath, lineNumber: resumePayload.lineNumber }
+            : prev.currentJob.resumeHint
 
           return {
             ...prev,
@@ -1038,6 +1138,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
               fileErrors: updatedFileErrors,
               outputPath: nextOutputPath,
               cancelRequested: nextCancelRequested,
+              retryStatus: nextRetryStatus,
+              resumeHint: nextResumeHint,
             },
           }
         })
@@ -1164,6 +1266,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       updateCurrentJobTargetLanguage,
       updateCurrentJobOutputOverride,
       dismissCurrentJob,
+      resumeCurrentJobFromCheckpoint,
+      restartCurrentJobFromStart,
     }),
     [
       state.currentJob,
@@ -1179,6 +1283,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       updateCurrentJobTargetLanguage,
       updateCurrentJobOutputOverride,
       dismissCurrentJob,
+      resumeCurrentJobFromCheckpoint,
+      restartCurrentJobFromStart,
     ],
   )
 

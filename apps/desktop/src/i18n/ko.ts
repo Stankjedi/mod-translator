@@ -33,6 +33,38 @@ export const dictionary = {
         autoTune: '429 응답이 반복되면 동시성과 토큰 버킷을 자동으로 낮춥니다.',
       },
     },
+    retry: {
+      title: '재시도 정책',
+      description: '429/503 응답에 대비해 지수 백오프와 보호 장치를 조정하세요.',
+      fields: {
+        maxRetries: {
+          label: '최대 재시도 횟수',
+          hint: '실패한 요청을 다시 시도할 최대 횟수입니다. 0이면 재시도하지 않습니다.',
+        },
+        initialDelayMs: {
+          label: '초기 대기 시간(ms)',
+          hint: '첫 재시도를 하기 전에 기다리는 시간입니다.',
+        },
+        multiplier: {
+          label: '증가 배수',
+          hint: '재시도할 때마다 대기 시간이 곱해지는 배수입니다.',
+        },
+        maxDelayMs: {
+          label: '최대 대기 시간(ms)',
+          hint: '대기 시간이 이 값을 초과하지 않도록 제한합니다.',
+        },
+      },
+      toggles: {
+        respectServerHints: {
+          label: '서버 힌트 준수 (Retry-After)',
+          hint: '서버가 Retry-After 헤더를 보낼 경우 해당 지시를 우선합니다.',
+        },
+        autoTune429: {
+          label: '429 발생 시 동시성 자동 조정',
+          hint: '429 응답이 반복되면 동시 작업 수를 줄여 제한을 완화합니다.',
+        },
+      },
+    },
   },
 } as const
 
