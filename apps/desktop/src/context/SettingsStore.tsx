@@ -18,6 +18,7 @@ import {
   type PersistedSettings,
   type ProviderId,
 } from '../storage/settingsStorage'
+import type { RetryPolicy, RetryableErrorCode } from '../types/core'
 import { loadApiKeys, persistApiKeys, type ApiKeyMap } from '../storage/apiKeyStorage'
 
 export type { ProviderId }
@@ -49,6 +50,8 @@ interface SettingsStoreValue extends SettingsState {
   setWorkerCount: (value: number) => void
   setBucketSize: (value: number) => void
   setRefillMs: (value: number) => void
+  updateRetryPolicy: (provider: ProviderId, updates: Partial<RetryPolicy>) => void
+  setAutoTuneConcurrencyOn429: (enabled: boolean) => void
   setEnableBackendLogging: (enabled: boolean) => void
   setEnforcePlaceholderGuard: (enabled: boolean) => void
   setPrioritizeDllResources: (enabled: boolean) => void
@@ -100,7 +103,7 @@ function mergeModelOptions(primary: string[] | undefined, fallback: string[]): s
   return [...normalizedPrimary, ...extras]
 }
 
-function arraysEqual(a: string[], b: string[]) {
+function arraysEqual<T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>) {
   if (a.length !== b.length) return false
   return a.every((value, index) => value === b[index])
 }
@@ -108,6 +111,71 @@ function arraysEqual(a: string[], b: string[]) {
 const clampPositiveInteger = (value: number, minimum: number) => {
   if (!Number.isFinite(value)) return minimum
   return Math.max(minimum, Math.round(value))
+}
+
+const clampNonNegativeInteger = (value: number, minimum = 0) => {
+  if (!Number.isFinite(value)) return minimum
+  return Math.max(minimum, Math.round(value))
+}
+
+const RETRYABLE_ERROR_CODES: RetryableErrorCode[] = [
+  'RATE_LIMITED',
+  'NETWORK_TRANSIENT',
+  'SERVER_TRANSIENT',
+]
+
+function normalizeRetryableErrorList(
+  list: ReadonlyArray<RetryableErrorCode> | undefined,
+  fallback: ReadonlyArray<RetryableErrorCode>,
+): RetryableErrorCode[] {
+  if (!list || list.length === 0) {
+    return [...fallback]
+  }
+
+  const allowed = new Set(RETRYABLE_ERROR_CODES)
+  const ordered = new Set<RetryableErrorCode>()
+  list.forEach((item) => {
+    if (allowed.has(item)) {
+      ordered.add(item)
+    }
+  })
+
+  if (ordered.size === 0) {
+    fallback.forEach((item) => ordered.add(item))
+  }
+
+  return RETRYABLE_ERROR_CODES.filter((code) => ordered.has(code))
+}
+
+function normalizeRetryPolicyForProvider(
+  provider: ProviderId,
+  current: RetryPolicy,
+  updates: Partial<RetryPolicy>,
+): RetryPolicy {
+  const fallback = DEFAULT_PERSISTED_SETTINGS.retryPolicy[provider]
+  const maxAttempts = clampPositiveInteger(
+    updates.maxAttempts ?? current.maxAttempts ?? fallback.maxAttempts,
+    1,
+  )
+  const initialDelayMs = clampNonNegativeInteger(
+    updates.initialDelayMs ?? current.initialDelayMs ?? fallback.initialDelayMs,
+    0,
+  )
+  const rawMaxDelay = clampNonNegativeInteger(
+    updates.maxDelayMs ?? current.maxDelayMs ?? fallback.maxDelayMs,
+    0,
+  )
+  const retryableErrors = normalizeRetryableErrorList(
+    updates.retryableErrors ?? current.retryableErrors,
+    fallback.retryableErrors,
+  )
+
+  return {
+    maxAttempts,
+    initialDelayMs,
+    maxDelayMs: Math.max(initialDelayMs, rawMaxDelay),
+    retryableErrors,
+  }
 }
 
 export function SettingsStoreProvider({ children }: { children: ReactNode }) {
@@ -403,10 +471,12 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         activeProviderId: state.activeProviderId,
         providerModels: state.providerModels,
         verifiedModels: state.verifiedModels,
+        retryPolicy: state.retryPolicy,
         concurrency: state.concurrency,
         workerCount: state.workerCount,
         bucketSize: state.bucketSize,
         refillMs: state.refillMs,
+        autoTuneConcurrencyOn429: state.autoTuneConcurrencyOn429,
         enableBackendLogging: state.enableBackendLogging,
         enforcePlaceholderGuard: state.enforcePlaceholderGuard,
         prioritizeDllResources: state.prioritizeDllResources,
@@ -420,10 +490,12 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     state.activeProviderId,
     state.providerModels,
     state.verifiedModels,
+    state.retryPolicy,
     state.concurrency,
     state.workerCount,
     state.bucketSize,
     state.refillMs,
+    state.autoTuneConcurrencyOn429,
     state.enableBackendLogging,
     state.enforcePlaceholderGuard,
     state.prioritizeDllResources,
@@ -579,6 +651,33 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, refillMs: clampPositiveInteger(value, 50) }))
   }, [])
 
+  const updateRetryPolicy = useCallback((provider: ProviderId, updates: Partial<RetryPolicy>) => {
+    setState((prev) => {
+      const current = prev.retryPolicy[provider]
+      const next = normalizeRetryPolicyForProvider(provider, current, updates)
+      if (
+        next.maxAttempts === current.maxAttempts &&
+        next.initialDelayMs === current.initialDelayMs &&
+        next.maxDelayMs === current.maxDelayMs &&
+        arraysEqual(next.retryableErrors, current.retryableErrors)
+      ) {
+        return prev
+      }
+
+      return {
+        ...prev,
+        retryPolicy: {
+          ...prev.retryPolicy,
+          [provider]: next,
+        },
+      }
+    })
+  }, [])
+
+  const setAutoTuneConcurrencyOn429 = useCallback((enabled: boolean) => {
+    setState((prev) => ({ ...prev, autoTuneConcurrencyOn429: enabled }))
+  }, [])
+
   const setEnableBackendLogging = useCallback((enabled: boolean) => {
     setState((prev) => ({ ...prev, enableBackendLogging: enabled }))
   }, [])
@@ -614,6 +713,8 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setWorkerCount,
       setBucketSize,
       setRefillMs,
+      updateRetryPolicy,
+      setAutoTuneConcurrencyOn429,
       setEnableBackendLogging,
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
@@ -637,6 +738,8 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setWorkerCount,
       setBucketSize,
       setRefillMs,
+      updateRetryPolicy,
+      setAutoTuneConcurrencyOn429,
       setEnableBackendLogging,
       setEnforcePlaceholderGuard,
       setPrioritizeDllResources,
