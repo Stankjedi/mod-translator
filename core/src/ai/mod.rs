@@ -1,3 +1,4 @@
+pub mod hints;
 pub mod retry;
 
 use once_cell::sync::Lazy;
@@ -105,14 +106,15 @@ impl TryFrom<&str> for ProviderId {
 impl TranslationError {
     pub fn retry_hint(&self) -> Option<&RetryHint> {
         match self {
-            TranslationError::NetworkOrHttp { retry_hint, .. } => retry_hint.as_ref(),
+            TranslationError::ModelNotFound { retry_hint, .. } => retry_hint.as_ref(),
             _ => None,
         }
     }
 
     pub fn status_code(&self) -> Option<StatusCode> {
         match self {
-            TranslationError::NetworkOrHttp { status, .. } => *status,
+            TranslationError::ServerTransient { status, .. } => *status,
+            TranslationError::ModelNotFound { status, .. } => *status,
             _ => None,
         }
     }
@@ -124,7 +126,6 @@ fn map_translation_http_error(
     status: StatusCode,
     headers: HeaderMap,
     body: String,
-    retry_advice: Option<RetryAdvice>,
 ) -> TranslationError {
     let gemini_hints = if matches!(provider, ProviderId::Gemini) {
         parse_gemini_error_hints(&body)
@@ -133,9 +134,11 @@ fn map_translation_http_error(
     };
 
     let mut retry_hint = parse_retry_after_header(&headers);
-    if let ProviderId::Gemini = provider {
-        if let Some(hint) = gemini_hints.retry_hint.clone() {
-            retry_hint = Some(hint);
+    if retry_hint.is_none() {
+        if let ProviderId::Gemini = provider {
+            if let Some(hint) = gemini_hints.retry_hint.clone() {
+                retry_hint = Some(hint);
+            }
         }
     }
 
@@ -154,7 +157,7 @@ fn map_translation_http_error(
         return TranslationError::Unauthorized { provider, message };
     }
 
-    if status == StatusCode::FORBIDDEN {
+    if status == StatusCode::FORBIDDEN || gemini_hints.quota_failure {
         return TranslationError::Forbidden { provider, message };
     }
 
@@ -163,6 +166,8 @@ fn map_translation_http_error(
             provider,
             model_id: model_id.to_string(),
             message,
+            status: Some(status),
+            retry_hint,
         };
     }
 
@@ -187,77 +192,6 @@ fn map_translation_http_error(
         status: Some(status),
         message,
     }
-}
-
-fn parse_retry_after(value: &str) -> Option<u64> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if let Ok(seconds) = trimmed.parse::<f64>() {
-        if seconds.is_finite() && seconds >= 0.0 {
-            let millis = (seconds * 1000.0).round();
-            if millis >= 0.0 {
-                return Some(millis as u64);
-            }
-        }
-    }
-
-    None
-}
-
-fn parse_hint_from_body(body: &str) -> Option<RetryAdvice> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-        return None;
-    };
-
-    if let Some(ms) = value.get("estimated_wait_ms").and_then(|v| v.as_u64()) {
-        return Some(RetryAdvice {
-            delay_ms: ms,
-            used_server_hint: true,
-        });
-    }
-
-    if let Some(seconds) = value.get("retry_after").and_then(|v| v.as_f64()) {
-        if seconds.is_finite() && seconds >= 0.0 {
-            let millis = (seconds * 1000.0).round();
-            if millis >= 0.0 {
-                return Some(RetryAdvice {
-                    delay_ms: millis as u64,
-                    used_server_hint: true,
-                });
-            }
-        }
-    }
-
-    None
-}
-
-fn extract_retry_advice(headers: &HeaderMap, body: &str) -> Option<RetryAdvice> {
-    if let Some(value) = headers.get("x-server-hint-ms") {
-        if let Ok(text) = value.to_str() {
-            if let Ok(ms) = text.trim().parse::<u64>() {
-                return Some(RetryAdvice {
-                    delay_ms: ms,
-                    used_server_hint: true,
-                });
-            }
-        }
-    }
-
-    if let Some(value) = headers.get("retry-after") {
-        if let Ok(text) = value.to_str() {
-            if let Some(ms) = parse_retry_after(text) {
-                return Some(RetryAdvice {
-                    delay_ms: ms,
-                    used_server_hint: true,
-                });
-            }
-        }
-    }
-
-    parse_hint_from_body(body)
 }
 
 pub async fn translate_text(
@@ -343,8 +277,6 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
         return Err(TranslationError::Forbidden {
             provider: ProviderId::Gemini,
             message: "Gemini 모델이 지정되지 않았습니다.".into(),
-            status: None,
-            retry_hint: None,
         });
     }
     let normalized_model = if trimmed_model.starts_with("models/") {
@@ -366,44 +298,35 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
         .map_err(|err| TranslationError::NetworkTransient {
             provider: ProviderId::Gemini,
             message: err.to_string(),
-            status: None,
-            retry_hint: None,
         })?;
 
     let status = response.status();
     let headers = response.headers().clone();
-    let bytes = response
+    let body_bytes = response
         .bytes()
         .await
-        .map_err(|err| TranslationError::NetworkOrHttp {
+        .map_err(|err| TranslationError::NetworkTransient {
             provider: ProviderId::Gemini,
             message: err.to_string(),
         })?;
 
     if !status.is_success() {
-        let headers = response.headers().clone();
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
         return Err(map_translation_http_error(
             ProviderId::Gemini,
             trimmed_model,
             status,
             headers,
             body,
-            retry_advice,
         ));
     }
 
     let parsed: GeminiResponse =
-        response
-            .json()
-            .await
-            .map_err(|err| TranslationError::ServerTransient {
-                provider: ProviderId::Gemini,
-                status: Some(status),
-                message: err.to_string(),
-                status: None,
-                retry_hint: None,
-            })?;
+        serde_json::from_slice(&body_bytes).map_err(|err| TranslationError::ServerTransient {
+            provider: ProviderId::Gemini,
+            status: Some(status),
+            message: err.to_string(),
+        })?;
     let text = parsed
         .candidates
         .and_then(|candidates| candidates.into_iter().next())
@@ -414,8 +337,6 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
             provider: ProviderId::Gemini,
             status: Some(status),
             message: "Gemini 응답에서 결과를 찾지 못했습니다.".into(),
-            status: None,
-            retry_hint: None,
         })?;
 
     Ok(text)
@@ -438,8 +359,6 @@ async fn translate_with_gpt(
         return Err(TranslationError::Forbidden {
             provider: ProviderId::Gpt,
             message: "OpenAI 모델이 지정되지 않았습니다.".into(),
-            status: None,
-            retry_hint: None,
         });
     }
 
@@ -465,44 +384,35 @@ async fn translate_with_gpt(
         .map_err(|err| TranslationError::NetworkTransient {
             provider: ProviderId::Gpt,
             message: err.to_string(),
-            status: None,
-            retry_hint: None,
         })?;
 
     let status = response.status();
     let headers = response.headers().clone();
-    let bytes = response
+    let body_bytes = response
         .bytes()
         .await
-        .map_err(|err| TranslationError::NetworkOrHttp {
+        .map_err(|err| TranslationError::NetworkTransient {
             provider: ProviderId::Gpt,
             message: err.to_string(),
         })?;
 
     if !status.is_success() {
-        let headers = response.headers().clone();
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
         return Err(map_translation_http_error(
             ProviderId::Gpt,
             trimmed_model,
             status,
             headers,
             body,
-            retry_advice,
         ));
     }
 
     let parsed: OpenAiResponse =
-        response
-            .json()
-            .await
-            .map_err(|err| TranslationError::ServerTransient {
-                provider: ProviderId::Gpt,
-                status: Some(status),
-                message: err.to_string(),
-                status: None,
-                retry_hint: None,
-            })?;
+        serde_json::from_slice(&body_bytes).map_err(|err| TranslationError::ServerTransient {
+            provider: ProviderId::Gpt,
+            status: Some(status),
+            message: err.to_string(),
+        })?;
     let text = parsed
         .choices
         .into_iter()
@@ -511,8 +421,6 @@ async fn translate_with_gpt(
             provider: ProviderId::Gpt,
             status: Some(status),
             message: "GPT 응답에서 결과를 찾지 못했습니다.".into(),
-            status: None,
-            retry_hint: None,
         })?;
 
     Ok(text)
@@ -535,8 +443,6 @@ async fn translate_with_claude(
         return Err(TranslationError::Forbidden {
             provider: ProviderId::Claude,
             message: "Claude 모델이 지정되지 않았습니다.".into(),
-            status: None,
-            retry_hint: None,
         });
     }
 
@@ -561,44 +467,35 @@ async fn translate_with_claude(
         .map_err(|err| TranslationError::NetworkTransient {
             provider: ProviderId::Claude,
             message: err.to_string(),
-            status: None,
-            retry_hint: None,
         })?;
 
     let status = response.status();
     let headers = response.headers().clone();
-    let bytes = response
+    let body_bytes = response
         .bytes()
         .await
-        .map_err(|err| TranslationError::NetworkOrHttp {
+        .map_err(|err| TranslationError::NetworkTransient {
             provider: ProviderId::Claude,
             message: err.to_string(),
         })?;
 
     if !status.is_success() {
-        let headers = response.headers().clone();
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
         return Err(map_translation_http_error(
             ProviderId::Claude,
             trimmed_model,
             status,
             headers,
             body,
-            retry_advice,
         ));
     }
 
     let parsed: AnthropicResponse =
-        response
-            .json()
-            .await
-            .map_err(|err| TranslationError::ServerTransient {
-                provider: ProviderId::Claude,
-                status: Some(status),
-                message: err.to_string(),
-                status: None,
-                retry_hint: None,
-            })?;
+        serde_json::from_slice(&body_bytes).map_err(|err| TranslationError::ServerTransient {
+            provider: ProviderId::Claude,
+            status: Some(status),
+            message: err.to_string(),
+        })?;
     let text = parsed
         .content
         .unwrap_or_default()
@@ -608,8 +505,6 @@ async fn translate_with_claude(
             provider: ProviderId::Claude,
             status: Some(status),
             message: "Claude 응답에서 결과를 찾지 못했습니다.".into(),
-            status: None,
-            retry_hint: None,
         })?;
 
     Ok(text)
@@ -632,8 +527,6 @@ async fn translate_with_grok(
         return Err(TranslationError::Forbidden {
             provider: ProviderId::Grok,
             message: "Grok 모델이 지정되지 않았습니다.".into(),
-            status: None,
-            retry_hint: None,
         });
     }
 
@@ -659,44 +552,35 @@ async fn translate_with_grok(
         .map_err(|err| TranslationError::NetworkTransient {
             provider: ProviderId::Grok,
             message: err.to_string(),
-            status: None,
-            retry_hint: None,
         })?;
 
     let status = response.status();
     let headers = response.headers().clone();
-    let bytes = response
+    let body_bytes = response
         .bytes()
         .await
-        .map_err(|err| TranslationError::NetworkOrHttp {
+        .map_err(|err| TranslationError::NetworkTransient {
             provider: ProviderId::Grok,
             message: err.to_string(),
         })?;
 
     if !status.is_success() {
-        let headers = response.headers().clone();
-        let body = response.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
         return Err(map_translation_http_error(
             ProviderId::Grok,
             trimmed_model,
             status,
             headers,
             body,
-            retry_advice,
         ));
     }
 
     let parsed: OpenAiResponse =
-        response
-            .json()
-            .await
-            .map_err(|err| TranslationError::ServerTransient {
-                provider: ProviderId::Grok,
-                status: Some(status),
-                message: err.to_string(),
-                status: None,
-                retry_hint: None,
-            })?;
+        serde_json::from_slice(&body_bytes).map_err(|err| TranslationError::ServerTransient {
+            provider: ProviderId::Grok,
+            status: Some(status),
+            message: err.to_string(),
+        })?;
     let text = parsed
         .choices
         .into_iter()
@@ -705,8 +589,6 @@ async fn translate_with_grok(
             provider: ProviderId::Grok,
             status: Some(status),
             message: "Grok 응답에서 결과를 찾지 못했습니다.".into(),
-            status: None,
-            retry_hint: None,
         })?;
 
     Ok(text)
