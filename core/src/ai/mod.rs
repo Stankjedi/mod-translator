@@ -24,6 +24,7 @@ pub enum TranslationError {
     RateLimited {
         provider: ProviderId,
         message: String,
+        retry_hint: Option<RetryHint>,
     },
     #[error("{provider} transient network error: {message}")]
     NetworkTransient {
@@ -35,6 +36,7 @@ pub enum TranslationError {
         provider: ProviderId,
         status: Option<StatusCode>,
         message: String,
+        retry_hint: Option<RetryHint>,
     },
     #[error("{provider} unauthorized: {message}")]
     Unauthorized {
@@ -106,7 +108,9 @@ impl TryFrom<&str> for ProviderId {
 impl TranslationError {
     pub fn retry_hint(&self) -> Option<&RetryHint> {
         match self {
-            TranslationError::ModelNotFound { retry_hint, .. } => retry_hint.as_ref(),
+            TranslationError::RateLimited { retry_hint, .. }
+            | TranslationError::ServerTransient { retry_hint, .. }
+            | TranslationError::ModelNotFound { retry_hint, .. } => retry_hint.as_ref(),
             _ => None,
         }
     }
@@ -150,7 +154,11 @@ fn map_translation_http_error(
     let lowered = message.to_ascii_lowercase();
 
     if status == StatusCode::TOO_MANY_REQUESTS || lowered.contains("rate limit") {
-        return TranslationError::RateLimited { provider, message };
+        return TranslationError::RateLimited {
+            provider,
+            message,
+            retry_hint: retry_hint.clone(),
+        };
     }
 
     if status == StatusCode::UNAUTHORIZED {
@@ -180,6 +188,7 @@ fn map_translation_http_error(
             provider,
             status: Some(status),
             message,
+            retry_hint: retry_hint.clone(),
         };
     }
 
@@ -191,6 +200,7 @@ fn map_translation_http_error(
         provider,
         status: Some(status),
         message,
+        retry_hint,
     }
 }
 
@@ -326,6 +336,7 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
             provider: ProviderId::Gemini,
             status: Some(status),
             message: err.to_string(),
+            retry_hint: None,
         })?;
     let text = parsed
         .candidates
@@ -337,6 +348,7 @@ Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they
             provider: ProviderId::Gemini,
             status: Some(status),
             message: "Gemini 응답에서 결과를 찾지 못했습니다.".into(),
+            retry_hint: None,
         })?;
 
     Ok(text)
@@ -412,6 +424,7 @@ async fn translate_with_gpt(
             provider: ProviderId::Gpt,
             status: Some(status),
             message: err.to_string(),
+            retry_hint: None,
         })?;
     let text = parsed
         .choices
@@ -421,6 +434,7 @@ async fn translate_with_gpt(
             provider: ProviderId::Gpt,
             status: Some(status),
             message: "GPT 응답에서 결과를 찾지 못했습니다.".into(),
+            retry_hint: None,
         })?;
 
     Ok(text)
@@ -495,6 +509,7 @@ async fn translate_with_claude(
             provider: ProviderId::Claude,
             status: Some(status),
             message: err.to_string(),
+            retry_hint: None,
         })?;
     let text = parsed
         .content
@@ -505,6 +520,7 @@ async fn translate_with_claude(
             provider: ProviderId::Claude,
             status: Some(status),
             message: "Claude 응답에서 결과를 찾지 못했습니다.".into(),
+            retry_hint: None,
         })?;
 
     Ok(text)
@@ -580,6 +596,7 @@ async fn translate_with_grok(
             provider: ProviderId::Grok,
             status: Some(status),
             message: err.to_string(),
+            retry_hint: None,
         })?;
     let text = parsed
         .choices
@@ -589,6 +606,7 @@ async fn translate_with_grok(
             provider: ProviderId::Grok,
             status: Some(status),
             message: "Grok 응답에서 결과를 찾지 못했습니다.".into(),
+            retry_hint: None,
         })?;
 
     Ok(text)

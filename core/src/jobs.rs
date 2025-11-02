@@ -1,4 +1,7 @@
-use crate::ai::{translate_text, ProviderId, TranslationError};
+use crate::ai::{
+    hints::{RetryHint, RetryHintSource},
+    translate_text, ProviderId, TranslationError,
+};
 use log::warn;
 use once_cell::sync::Lazy;
 use reqwest::Client;
@@ -13,13 +16,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Notify;
 use tokio::time::sleep;
 
 const MAX_RETRY_ATTEMPTS: usize = 3;
 
 const RATE_LIMIT_BASE_BACKOFF_MS: u64 = 1_000;
 const RATE_LIMIT_MAX_BACKOFF_MS: u64 = 60_000;
-const RATE_LIMIT_WAIT_SLICE_MS: u64 = 200;
 const RESUME_DIR_NAME: &str = ".resume";
 
 static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
@@ -27,6 +30,79 @@ static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
 
 static JOB_STATES: Lazy<Mutex<HashMap<String, JobState>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+static JOB_BACKOFFS: Lazy<Mutex<HashMap<String, Arc<BackoffController>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone)]
+struct ActiveBackoff {
+    attempt: u32,
+    delay: Duration,
+    reason: String,
+    used_hint: bool,
+    manual_triggered: bool,
+}
+
+#[derive(Debug)]
+struct BackoffController {
+    state: Mutex<Option<ActiveBackoff>>,
+    notifier: Notify,
+}
+
+impl BackoffController {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(None),
+            notifier: Notify::new(),
+        }
+    }
+
+    fn begin(&self, attempt: u32, delay: Duration, reason: String, used_hint: bool) {
+        if let Ok(mut guard) = self.state.lock() {
+            *guard = Some(ActiveBackoff {
+                attempt,
+                delay,
+                reason,
+                used_hint,
+                manual_triggered: false,
+            });
+        }
+    }
+
+    fn cancel_manual(&self) -> bool {
+        match self.state.lock() {
+            Ok(mut guard) => {
+                if let Some(state) = guard.as_mut() {
+                    state.manual_triggered = true;
+                    self.notifier.notify_waiters();
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn cancel_logic(&self) {
+        self.notifier.notify_waiters();
+    }
+
+    fn take(&self) -> Option<ActiveBackoff> {
+        self.state.lock().ok()?.take()
+    }
+
+    async fn notified(&self) {
+        self.notifier.notified().await;
+    }
+
+    fn is_active(&self) -> bool {
+        self.state
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -217,6 +293,8 @@ pub struct TranslationProgressEventPayload {
     pub last_written: Option<LastWrittenInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<TranslationCheckpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryStatusPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -286,6 +364,75 @@ fn compute_backoff_ms(attempt: u32) -> u64 {
     backoff.min(RATE_LIMIT_MAX_BACKOFF_MS)
 }
 
+#[derive(Debug, Clone)]
+struct RetryPlan {
+    delay: Duration,
+    reason: String,
+    used_hint: bool,
+}
+
+fn compute_retry_plan(error: &TranslationError, attempt: u32) -> RetryPlan {
+    if let Some(hint) = error.retry_hint() {
+        let delay = hint.clamped_delay();
+        let reason = describe_retry_hint(hint);
+        RetryPlan {
+            delay,
+            reason,
+            used_hint: true,
+        }
+    } else {
+        let delay = Duration::from_millis(compute_backoff_ms(attempt));
+        RetryPlan {
+            delay,
+            reason: format!("Automatic backoff (attempt {attempt})"),
+            used_hint: false,
+        }
+    }
+}
+
+fn describe_retry_hint(hint: &RetryHint) -> String {
+    let seconds = hint.clamped_delay().as_secs();
+    let pretty_seconds = if seconds == 0 {
+        String::from("<1s")
+    } else {
+        format!("{}s", seconds)
+    };
+
+    match hint.source {
+        RetryHintSource::RetryAfterHeader => {
+            if let Some(raw) = hint.raw_value() {
+                format!("Server Retry-After ({raw})")
+            } else {
+                format!("Server Retry-After (~{pretty_seconds})")
+            }
+        }
+        RetryHintSource::GeminiRetryInfo => {
+            if let Some(raw) = hint.raw_value() {
+                format!("Gemini retry hint ({raw})")
+            } else {
+                format!("Gemini retry hint (~{pretty_seconds})")
+            }
+        }
+    }
+}
+
+fn duration_to_retry_seconds(duration: Duration) -> u32 {
+    if duration.is_zero() {
+        return 0;
+    }
+
+    let secs = duration.as_secs();
+    if secs >= u32::MAX as u64 {
+        return u32::MAX;
+    }
+
+    if duration.subsec_nanos() > 0 {
+        secs.saturating_add(1) as u32
+    } else {
+        secs as u32
+    }
+}
+
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn start_translation_job(
@@ -338,6 +485,7 @@ pub fn start_translation_job(
                     file_errors: None,
                     last_written: None,
                     checkpoint: None,
+                    retry: None,
                 },
             );
             return Err(format!("지원하지 않는 번역기: {}", payload.provider));
@@ -361,6 +509,7 @@ pub fn start_translation_job(
                 file_errors: None,
                 last_written: None,
                 checkpoint: None,
+                retry: None,
             },
         );
         return Err("선택한 번역기의 API 키를 설정해 주세요.".into());
@@ -382,42 +531,54 @@ pub fn start_translation_job(
                 file_errors: None,
                 last_written: None,
                 checkpoint: None,
+                retry: None,
             },
         );
         return Err("번역에 사용할 모델을 선택해 주세요.".into());
     }
 
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let backoff_controller = Arc::new(BackoffController::new());
+
     {
         let mut guard = ACTIVE_JOBS
             .lock()
             .map_err(|_| "job registry lock poisoned".to_string())?;
-        guard.insert(payload.job_id.clone(), Arc::new(AtomicBool::new(false)));
+        guard.insert(payload.job_id.clone(), cancel_flag.clone());
+    }
+
+    {
+        let mut guard = JOB_BACKOFFS.lock().map_err(|_| {
+            if let Ok(mut active) = ACTIVE_JOBS.lock() {
+                active.remove(&payload.job_id);
+            }
+            "backoff registry lock poisoned".to_string()
+        })?;
+        guard.insert(payload.job_id.clone(), backoff_controller.clone());
     }
 
     let job_id = payload.job_id.clone();
     let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let cancel_flag = {
-            let guard = ACTIVE_JOBS
-                .lock()
-                .expect("job registry lock poisoned during spawn");
-            guard
-                .get(&job_id)
-                .cloned()
-                .expect("cancel flag should exist for active job")
-        };
+    tauri::async_runtime::spawn({
+        let cancel_flag = cancel_flag.clone();
+        let backoff_controller = backoff_controller.clone();
+        async move {
+            run_translation_job(
+                app_handle.clone(),
+                payload,
+                provider,
+                api_key.trim().to_string(),
+                cancel_flag,
+                backoff_controller.clone(),
+            )
+            .await;
 
-        run_translation_job(
-            app_handle.clone(),
-            payload,
-            provider,
-            api_key.trim().to_string(),
-            cancel_flag,
-        )
-        .await;
-
-        if let Ok(mut guard) = ACTIVE_JOBS.lock() {
-            guard.remove(&job_id);
+            if let Ok(mut guard) = ACTIVE_JOBS.lock() {
+                guard.remove(&job_id);
+            }
+            if let Ok(mut guard) = JOB_BACKOFFS.lock() {
+                guard.remove(&job_id);
+            }
         }
     });
 
@@ -435,6 +596,15 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
         flag.store(true, Ordering::SeqCst);
         drop(guard);
 
+        if let Some(controller) = JOB_BACKOFFS
+            .lock()
+            .map_err(|_| "backoff registry lock poisoned".to_string())?
+            .get(&jobId)
+            .cloned()
+        {
+            controller.cancel_logic();
+        }
+
         let checkpoint = current_checkpoint(&jobId);
         emit_progress(
             &app,
@@ -451,12 +621,22 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
                 file_errors: None,
                 last_written: None,
                 checkpoint,
+                retry: None,
             },
         );
 
         Ok(())
     } else {
         drop(guard);
+
+        if let Some(controller) = JOB_BACKOFFS
+            .lock()
+            .map_err(|_| "backoff registry lock poisoned".to_string())?
+            .get(&jobId)
+            .cloned()
+        {
+            controller.cancel_logic();
+        }
 
         let checkpoint = current_checkpoint(&jobId);
         emit_progress(
@@ -474,6 +654,7 @@ pub fn cancel_translation_job(app: AppHandle, jobId: String) -> Result<(), Strin
                 file_errors: None,
                 last_written: None,
                 checkpoint,
+                retry: None,
             },
         );
 
@@ -491,12 +672,29 @@ pub fn open_output_folder(path: String) -> Result<(), String> {
     open::that_detached(path_buf).map_err(|error| format!("폴더를 열 수 없습니다: {error}"))
 }
 
+#[tauri::command]
+#[allow(non_snake_case)]
+pub fn retry_translation_now(jobId: String) -> Result<(), String> {
+    let controller = JOB_BACKOFFS
+        .lock()
+        .map_err(|_| "backoff registry lock poisoned".to_string())?
+        .get(&jobId)
+        .cloned();
+
+    if let Some(controller) = controller {
+        controller.cancel_manual();
+    }
+
+    Ok(())
+}
+
 async fn run_translation_job(
     app: AppHandle,
     payload: StartTranslationJobPayload,
     provider: ProviderId,
     api_key: String,
     cancel_flag: Arc<AtomicBool>,
+    backoff_controller: Arc<BackoffController>,
 ) {
     let source_lang = payload.source_lang.as_deref().unwrap_or("auto").to_string();
     let target_lang = payload.target_lang.as_deref().unwrap_or("ko").to_string();
@@ -633,6 +831,7 @@ async fn run_translation_job(
                 file_errors: clone_errors(&file_errors),
                 last_written: None,
                 checkpoint: Some(job_state.checkpoint.clone()),
+                retry: None,
             },
         );
     }
@@ -654,11 +853,16 @@ async fn run_translation_job(
             file_errors: clone_errors(&file_errors),
             last_written: None,
             checkpoint: Some(job_state.checkpoint.clone()),
+            retry: None,
         },
     );
 
     if total_segments > processed_segments {
-        let client = match Client::builder().build() {
+        let client = match Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(120))
+            .build()
+        {
             Ok(client) => client,
             Err(_err) => {
                 emit_progress(
@@ -676,6 +880,7 @@ async fn run_translation_job(
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
                         checkpoint: Some(job_state.checkpoint.clone()),
+                        retry: None,
                     },
                 );
                 return;
@@ -713,7 +918,7 @@ async fn run_translation_job(
             let mut attempt: u32 = 0;
             let mut last_error: Option<TranslationError> = None;
             let mut translated_value: Option<String> = None;
-            let mut canceled_during_wait = false;
+            let mut wait_cancelled_by_job = false;
 
             loop {
                 if cancel_flag.load(Ordering::SeqCst) {
@@ -748,19 +953,81 @@ async fn run_translation_job(
                             break;
                         }
 
-                        let backoff_ms = compute_backoff_ms(attempt);
-                        canceled_during_wait =
-                            wait_with_cancellation(&cancel_flag, Duration::from_millis(backoff_ms))
-                                .await;
+                        let plan = compute_retry_plan(last_error.as_ref().unwrap(), attempt);
+                        if plan.delay.is_zero() {
+                            emit_retry_started(&app, &payload.job_id, attempt);
+                            continue;
+                        }
 
-                        if canceled_during_wait {
-                            break;
+                        backoff_controller.begin(
+                            attempt,
+                            plan.delay,
+                            plan.reason.clone(),
+                            plan.used_hint,
+                        );
+
+                        emit_backoff_started(
+                            &app,
+                            &payload.job_id,
+                            plan.delay,
+                            attempt,
+                            plan.used_hint,
+                            &plan.reason,
+                        );
+
+                        let delay_seconds = duration_to_retry_seconds(plan.delay);
+                        let log_message = format!(
+                            "Retry attempt {}/{} scheduled in {}s ({})",
+                            attempt, MAX_RETRY_ATTEMPTS, delay_seconds, plan.reason
+                        );
+
+                        emit_progress(
+                            &app,
+                            TranslationProgressEventPayload {
+                                job_id: payload.job_id.clone(),
+                                status: "running".into(),
+                                progress_pct: Some(percentage(processed_segments, total_segments)),
+                                cancel_requested: None,
+                                log: Some(log_message),
+                                translated_count: Some(processed_segments),
+                                total_count: Some(total_segments),
+                                file_name: last_file_name.clone(),
+                                file_success: last_file_success,
+                                file_errors: clone_errors(&file_errors),
+                                last_written: None,
+                                checkpoint: Some(job_state.checkpoint.clone()),
+                                retry: Some(RetryStatusPayload {
+                                    attempt,
+                                    max_attempts: MAX_RETRY_ATTEMPTS as u32,
+                                    delay_seconds,
+                                    reason: plan.reason.clone(),
+                                }),
+                            },
+                        );
+
+                        match wait_with_cancellation(
+                            &app,
+                            &payload.job_id,
+                            &cancel_flag,
+                            backoff_controller.clone(),
+                            plan.delay,
+                        )
+                        .await
+                        {
+                            BackoffWaitOutcome::JobCancelled => {
+                                wait_cancelled_by_job = true;
+                                break;
+                            }
+                            BackoffWaitOutcome::Manual | BackoffWaitOutcome::Completed => {
+                                emit_retry_started(&app, &payload.job_id, attempt);
+                                continue;
+                            }
                         }
                     }
                 }
             }
 
-            if cancel_flag.load(Ordering::SeqCst) || canceled_during_wait {
+            if cancel_flag.load(Ordering::SeqCst) || wait_cancelled_by_job {
                 emit_cancelled_progress(
                     &app,
                     &payload,
@@ -800,6 +1067,7 @@ async fn run_translation_job(
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
                         checkpoint: Some(job_state.checkpoint.clone()),
+                        retry: None,
                     },
                 );
                 return;
@@ -842,6 +1110,7 @@ async fn run_translation_job(
                     file_errors: clone_errors(&file_errors),
                     last_written: None,
                     checkpoint: Some(job_state.checkpoint.clone()),
+                    retry: None,
                 },
             );
         }
@@ -907,6 +1176,7 @@ async fn run_translation_job(
                         file_errors: clone_errors(&file_errors),
                         last_written: None,
                         checkpoint: Some(job_state.checkpoint.clone()),
+                        retry: None,
                     },
                 );
                 continue;
@@ -943,6 +1213,7 @@ async fn run_translation_job(
                     file_errors: clone_errors(&file_errors),
                     last_written: None,
                     checkpoint: Some(job_state.checkpoint.clone()),
+                    retry: None,
                 },
             );
             continue;
@@ -980,6 +1251,7 @@ async fn run_translation_job(
                     output_relative_path: output_relative_display,
                 }),
                 checkpoint: Some(job_state.checkpoint.clone()),
+                retry: None,
             },
         );
     }
@@ -1037,6 +1309,7 @@ async fn run_translation_job(
             } else {
                 Some(job_state.checkpoint.clone())
             },
+            retry: None,
         },
     );
 
@@ -1256,6 +1529,7 @@ fn emit_cancelled_progress(
             file_errors: clone_errors(file_errors),
             last_written: None,
             checkpoint: None,
+            retry: None,
         },
     );
 }
@@ -1267,35 +1541,174 @@ fn percentage(processed: u32, total: u32) -> f32 {
     ((processed as f32) / (total as f32) * 100.0).clamp(0.0, 100.0)
 }
 
-async fn wait_with_cancellation(cancel_flag: &Arc<AtomicBool>, duration: Duration) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackoffWaitOutcome {
+    Completed,
+    Manual,
+    JobCancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackoffCancelSource {
+    User,
+    Logic,
+}
+
+impl BackoffCancelSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            BackoffCancelSource::User => "user",
+            BackoffCancelSource::Logic => "logic",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackoffStartedEventPayload {
+    job_id: String,
+    delay_ms: u64,
+    attempt: u32,
+    max_attempts: u32,
+    reason: String,
+    used_hint: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackoffCancelledEventPayload {
+    job_id: String,
+    by: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RetryStartedEventPayload {
+    job_id: String,
+    attempt: u32,
+}
+
+fn emit_backoff_started(
+    app: &AppHandle,
+    job_id: &str,
+    delay: Duration,
+    attempt: u32,
+    used_hint: bool,
+    reason: &str,
+) {
+    let delay_ms = delay.as_millis().min(u64::MAX as u128) as u64;
+    let payload = BackoffStartedEventPayload {
+        job_id: job_id.to_string(),
+        delay_ms,
+        attempt,
+        max_attempts: MAX_RETRY_ATTEMPTS as u32,
+        reason: reason.to_string(),
+        used_hint,
+    };
+
+    if let Err(error) = app.emit("translation-backoff-started", payload) {
+        warn!("failed to emit translation-backoff-started: {}", error);
+    }
+}
+
+fn emit_backoff_cancelled(app: &AppHandle, job_id: &str, source: BackoffCancelSource) {
+    let payload = BackoffCancelledEventPayload {
+        job_id: job_id.to_string(),
+        by: source.as_str().to_string(),
+    };
+
+    if let Err(error) = app.emit("translation-backoff-cancelled", payload) {
+        warn!("failed to emit translation-backoff-cancelled: {}", error);
+    }
+}
+
+fn emit_retry_started(app: &AppHandle, job_id: &str, attempt: u32) {
+    let payload = RetryStartedEventPayload {
+        job_id: job_id.to_string(),
+        attempt,
+    };
+
+    if let Err(error) = app.emit("translation-retry-started", payload) {
+        warn!("failed to emit translation-retry-started: {}", error);
+    }
+}
+
+async fn wait_with_cancellation(
+    app: &AppHandle,
+    job_id: &str,
+    cancel_flag: &Arc<AtomicBool>,
+    controller: Arc<BackoffController>,
+    duration: Duration,
+) -> BackoffWaitOutcome {
     if duration.is_zero() {
-        return cancel_flag.load(Ordering::SeqCst);
+        if controller.is_active() {
+            if let Some(state) = controller.take() {
+                let source = if state.manual_triggered {
+                    BackoffCancelSource::User
+                } else {
+                    BackoffCancelSource::Logic
+                };
+                emit_backoff_cancelled(app, job_id, source);
+            }
+        }
+        return BackoffWaitOutcome::Completed;
     }
 
-    let mut elapsed = Duration::ZERO;
-    let poll_interval = Duration::from_millis(RATE_LIMIT_WAIT_SLICE_MS);
-
-    while elapsed < duration {
-        if cancel_flag.load(Ordering::SeqCst) {
-            return true;
+    if cancel_flag.load(Ordering::SeqCst) {
+        if controller.is_active() {
+            if let Some(state) = controller.take() {
+                let source = if state.manual_triggered {
+                    BackoffCancelSource::User
+                } else {
+                    BackoffCancelSource::Logic
+                };
+                emit_backoff_cancelled(app, job_id, source);
+            }
         }
+        return BackoffWaitOutcome::JobCancelled;
+    }
 
-        let remaining = duration.saturating_sub(elapsed);
-        let sleep_for = if remaining <= poll_interval {
-            remaining
+    let mut sleep_future = sleep(duration);
+    tokio::pin!(sleep_future);
+
+    let cancel_future = wait_for_cancel_flag(cancel_flag.clone());
+    tokio::pin!(cancel_future);
+
+    let mut manual_future = controller.notified();
+    tokio::pin!(manual_future);
+
+    let outcome = tokio::select! {
+        _ = &mut sleep_future => BackoffWaitOutcome::Completed,
+        _ = &mut manual_future => BackoffWaitOutcome::Manual,
+        _ = &mut cancel_future => BackoffWaitOutcome::JobCancelled,
+    };
+
+    let source = controller.take().map(|state| {
+        if state.manual_triggered {
+            BackoffCancelSource::User
         } else {
-            poll_interval
-        };
+            BackoffCancelSource::Logic
+        }
+    });
 
-        if sleep_for.is_zero() {
+    if let Some(source) = source {
+        emit_backoff_cancelled(app, job_id, source);
+    }
+
+    outcome
+}
+
+async fn wait_for_cancel_flag(cancel_flag: Arc<AtomicBool>) {
+    if cancel_flag.load(Ordering::SeqCst) {
+        return;
+    }
+
+    loop {
+        sleep(Duration::from_millis(50)).await;
+        if cancel_flag.load(Ordering::SeqCst) {
             break;
         }
-
-        sleep(sleep_for).await;
-        elapsed += sleep_for;
     }
-
-    cancel_flag.load(Ordering::SeqCst)
 }
 
 fn error_code_for(error: &TranslationError) -> &'static str {

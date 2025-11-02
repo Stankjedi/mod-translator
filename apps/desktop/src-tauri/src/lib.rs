@@ -18,6 +18,7 @@ pub fn run() {
             mod_translator_core::list_mod_files,
             mod_translator_core::start_translation_job,
             mod_translator_core::cancel_translation_job,
+            mod_translator_core::retry_translation_now,
             mod_translator_core::open_output_folder,
             mod_translator_core::validate_api_key_and_list_models
         ])
