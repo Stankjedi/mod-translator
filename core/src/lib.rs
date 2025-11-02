@@ -8,8 +8,8 @@ mod time;
 mod validation;
 
 pub use jobs::{
-    cancel_translation_job, open_output_folder, start_translation_job, StartTranslationJobPayload,
-    TranslationFileInput, TranslationProgressEventPayload,
+    cancel_translation_job, open_output_folder, retry_translation_now, start_translation_job,
+    StartTranslationJobPayload, TranslationFileInput, TranslationProgressEventPayload,
 };
 pub use library::{
     list_mod_files, scan_steam_library, LibraryEntry, LibraryScanResponse, LibraryScanner,

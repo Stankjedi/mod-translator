@@ -154,6 +154,25 @@ export interface TranslationProgressEventPayload {
   metrics?: TranslationAttemptMetrics
 }
 
+export interface TranslationBackoffStartedPayload {
+  jobId: string
+  delayMs: number
+  attempt: number
+  maxAttempts: number
+  reason: string
+  usedHint: boolean
+}
+
+export interface TranslationBackoffCancelledPayload {
+  jobId: string
+  by: 'user' | 'logic'
+}
+
+export interface TranslationRetryStartedPayload {
+  jobId: string
+  attempt: number
+}
+
 export interface ModFileDescriptor {
   path: string
   mod_install_path: string

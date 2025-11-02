@@ -19,6 +19,9 @@ import type {
   TranslationFileErrorEntry,
   TranslationProgressEventPayload,
   TranslationAttemptMetrics,
+  TranslationBackoffStartedPayload,
+  TranslationBackoffCancelledPayload,
+  TranslationRetryStartedPayload,
 } from '../types/core'
 import { useSettingsStore } from './SettingsStore'
 
@@ -185,6 +188,7 @@ interface JobStoreValue {
   dismissCurrentJob: () => void
   resumeCurrentJobFromCheckpoint: () => Promise<void>
   restartCurrentJobFromStart: () => Promise<void>
+  retryCurrentJobNow: () => Promise<boolean>
 }
 
 const JobStoreContext = createContext<JobStoreValue | undefined>(undefined)
@@ -1094,6 +1098,45 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     }
   }, [appendLog, finalizeCurrentJob, state.currentJob])
 
+  const retryCurrentJobNow = useCallback(async () => {
+    const activeJob = state.currentJob
+    if (!activeJob) {
+      return false
+    }
+
+    if (!isTauri()) {
+      appendLog('Retry now is only available in the desktop app.', 'warn')
+      return false
+    }
+
+    try {
+      await invoke('retry_translation_now', { jobId: activeJob.id })
+      appendLog('사용자가 즉시 재시도를 요청했습니다.')
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.id !== activeJob.id) {
+          return prev
+        }
+
+        if (!prev.currentJob.retryStatus) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            retryStatus: null,
+          },
+        }
+      })
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      appendLog(`즉시 재시도 요청에 실패했습니다: ${message}`, 'warn')
+      return false
+    }
+  }, [appendLog, state.currentJob])
+
   const updateCurrentJobTargetLanguage = useCallback((value: string) => {
     setState((prev) => {
       if (!prev.currentJob || prev.currentJob.status !== 'pending') {
@@ -1254,6 +1297,79 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     [finalizeCurrentJob, maybeAutoTuneConcurrency],
   )
 
+  const handleBackoffStartedEvent = useCallback(
+    (payload: TranslationBackoffStartedPayload) => {
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.id !== payload.jobId) {
+          return prev
+        }
+
+        const delaySeconds = Math.max(0, Math.ceil(payload.delayMs / 1000))
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            retryStatus: {
+              attempt: payload.attempt,
+              maxAttempts: payload.maxAttempts,
+              delaySeconds,
+              scheduledAt: Date.now(),
+              reason: payload.reason,
+            },
+          },
+        }
+      })
+    },
+    [],
+  )
+
+  const handleBackoffCancelledEvent = useCallback(
+    (payload: TranslationBackoffCancelledPayload) => {
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.id !== payload.jobId) {
+          return prev
+        }
+
+        if (!prev.currentJob.retryStatus) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            retryStatus: null,
+          },
+        }
+      })
+    },
+    [],
+  )
+
+  const handleRetryStartedEvent = useCallback(
+    (payload: TranslationRetryStartedPayload) => {
+      setState((prev) => {
+        if (!prev.currentJob || prev.currentJob.id !== payload.jobId) {
+          return prev
+        }
+
+        if (!prev.currentJob.retryStatus) {
+          return prev
+        }
+
+        return {
+          ...prev,
+          currentJob: {
+            ...prev.currentJob,
+            retryStatus: null,
+          },
+        }
+      })
+    },
+    [],
+  )
+
   const dismissCurrentJob = useCallback(() => {
     setState((prev) => {
       if (!prev.currentJob || !isTerminalStatus(prev.currentJob.status)) {
@@ -1287,12 +1403,12 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    let unlistenFn: UnlistenFn | null = null
+    const unlistenFns: UnlistenFn[] = []
     let disposed = false
 
     const setup = async () => {
       try {
-        unlistenFn = await listen<TranslationProgressEventPayload>(
+        const unlistenProgress = await listen<TranslationProgressEventPayload>(
           'translation-progress',
           (event) => {
             if (disposed) {
@@ -1301,8 +1417,54 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
             handleTranslationProgressPayload(event.payload)
           },
         )
+        unlistenFns.push(unlistenProgress)
       } catch (error) {
         console.error('translation-progress 이벤트 등록에 실패했습니다.', error)
+      }
+
+      try {
+        const unlistenBackoffStarted = await listen<TranslationBackoffStartedPayload>(
+          'translation-backoff-started',
+          (event) => {
+            if (disposed) {
+              return
+            }
+            handleBackoffStartedEvent(event.payload)
+          },
+        )
+        unlistenFns.push(unlistenBackoffStarted)
+      } catch (error) {
+        console.error('translation-backoff-started 이벤트 등록에 실패했습니다.', error)
+      }
+
+      try {
+        const unlistenBackoffCancelled = await listen<TranslationBackoffCancelledPayload>(
+          'translation-backoff-cancelled',
+          (event) => {
+            if (disposed) {
+              return
+            }
+            handleBackoffCancelledEvent(event.payload)
+          },
+        )
+        unlistenFns.push(unlistenBackoffCancelled)
+      } catch (error) {
+        console.error('translation-backoff-cancelled 이벤트 등록에 실패했습니다.', error)
+      }
+
+      try {
+        const unlistenRetryStarted = await listen<TranslationRetryStartedPayload>(
+          'translation-retry-started',
+          (event) => {
+            if (disposed) {
+              return
+            }
+            handleRetryStartedEvent(event.payload)
+          },
+        )
+        unlistenFns.push(unlistenRetryStarted)
+      } catch (error) {
+        console.error('translation-retry-started 이벤트 등록에 실패했습니다.', error)
       }
     }
 
@@ -1310,11 +1472,20 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
     return () => {
       disposed = true
-      if (unlistenFn) {
-        unlistenFn()
+      for (const unlisten of unlistenFns) {
+        try {
+          unlisten()
+        } catch (error) {
+          console.error('이벤트 리스너 해제에 실패했습니다.', error)
+        }
       }
     }
-  }, [handleTranslationProgressPayload])
+  }, [
+    handleTranslationProgressPayload,
+    handleBackoffStartedEvent,
+    handleBackoffCancelledEvent,
+    handleRetryStartedEvent,
+  ])
 
   const value = useMemo<JobStoreValue>(
     () => ({
@@ -1333,6 +1504,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       dismissCurrentJob,
       resumeCurrentJobFromCheckpoint,
       restartCurrentJobFromStart,
+      retryCurrentJobNow,
     }),
     [
       state.currentJob,
@@ -1350,6 +1522,7 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       dismissCurrentJob,
       resumeCurrentJobFromCheckpoint,
       restartCurrentJobFromStart,
+      retryCurrentJobNow,
     ],
   )
 

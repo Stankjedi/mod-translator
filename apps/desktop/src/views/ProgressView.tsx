@@ -91,6 +91,7 @@ function ProgressView() {
     dismissCurrentJob,
     resumeCurrentJobFromCheckpoint,
     restartCurrentJobFromStart,
+    retryCurrentJobNow,
   } = useJobStore()
   const { showToast } = useToast()
   const { keyValidation } = useSettingsStore()
@@ -103,6 +104,7 @@ function ProgressView() {
   const [isResuming, setIsResuming] = useState(false)
   const [isRestarting, setIsRestarting] = useState(false)
   const [retrySecondsRemaining, setRetrySecondsRemaining] = useState<number | null>(null)
+  const [isRetryingNow, setIsRetryingNow] = useState(false)
   const activeJobId = currentJob?.id ?? null
   const shouldLoadFiles = Boolean(
     activeJobId && !currentJob?.files && !currentJob?.filesLoading && !currentJob?.fileListError,
@@ -115,6 +117,7 @@ function ProgressView() {
     setOpenError(null)
     setIsResuming(false)
     setIsRestarting(false)
+    setIsRetryingNow(false)
   }, [activeJobId])
 
   useEffect(() => {
@@ -129,6 +132,7 @@ function ProgressView() {
     const retryStatus = currentJob?.retryStatus
     if (!retryStatus) {
       setRetrySecondsRemaining(null)
+      setIsRetryingNow(false)
       return
     }
 
@@ -322,9 +326,12 @@ function ProgressView() {
     if (!currentJob?.retryStatus) {
       return null
     }
+    if (isRetryingNow) {
+      return `Retrying now… (${currentJob.retryStatus.attempt}/${currentJob.retryStatus.maxAttempts})`
+    }
     const remaining = retrySecondsRemaining ?? currentJob.retryStatus.delaySeconds
     return `Retrying in ${remaining}s… (${currentJob.retryStatus.attempt}/${currentJob.retryStatus.maxAttempts})`
-  }, [currentJob?.retryStatus, retrySecondsRemaining])
+  }, [currentJob?.retryStatus, retrySecondsRemaining, isRetryingNow])
   const showResumeControls = Boolean(currentJob?.status === 'failed' && currentJob?.resumeHint)
   const resumeLineNumber = currentJob?.resumeHint?.lineNumber ?? null
   const resumeButtonLabel = resumeLineNumber
@@ -363,6 +370,25 @@ function ProgressView() {
       setIsRestarting(false)
     }
   }, [appendLog, isRestarting, restartCurrentJobFromStart, showToast])
+
+  const handleRetryNow = useCallback(async () => {
+    if (!currentJob || !currentJob.retryStatus || isRetryingNow) {
+      return
+    }
+
+    setIsRetryingNow(true)
+    try {
+      const success = await retryCurrentJobNow()
+      if (!success) {
+        setIsRetryingNow(false)
+        showToast('Retry now request failed.', 'error')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      showToast(`Retry now failed: ${message}`, 'error')
+      setIsRetryingNow(false)
+    }
+  }, [currentJob, isRetryingNow, retryCurrentJobNow, showToast])
 
   if (!currentJob) {
     return (
@@ -452,6 +478,17 @@ function ProgressView() {
             <span title={currentJob.retryStatus.reason}>
               <Chip label={retryChipLabel} tone="warning" />
             </span>
+          )}
+          {currentJob.retryStatus && (
+            <button
+              type="button"
+              onClick={handleRetryNow}
+              disabled={isRetryingNow}
+              title={currentJob.retryStatus.reason}
+              className="inline-flex items-center justify-center rounded-full border border-amber-500/60 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:border-amber-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isRetryingNow ? 'Retrying…' : 'Retry now'}
+            </button>
           )}
           {showResumeControls && (
             <div className="flex items-center gap-2">
