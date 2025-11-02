@@ -1950,6 +1950,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "thiserror 1.0.69",
+ "tokio",
  "uuid",
  "winreg 0.52.0",
 ]

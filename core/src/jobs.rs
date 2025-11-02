@@ -1,7 +1,7 @@
 use crate::ai::{translate_text, ProviderId, TranslationError};
 use log::warn;
 use once_cell::sync::Lazy;
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::{DefaultHasher, Entry};
 use std::collections::HashMap;
@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter};
+use tokio::time::sleep;
 
 const MAX_RETRY_ATTEMPTS: usize = 3;
 
@@ -280,7 +281,7 @@ fn compute_backoff_ms(attempt: u32) -> u64 {
     }
 
     let exponent = attempt.saturating_sub(1).min(10);
-    let multiplier = 1u64.saturating_shl(exponent);
+    let multiplier = 1u64 << exponent;
     let backoff = RATE_LIMIT_BASE_BACKOFF_MS.saturating_mul(multiplier);
     backoff.min(RATE_LIMIT_MAX_BACKOFF_MS)
 }
@@ -505,8 +506,8 @@ async fn run_translation_job(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
-    let resume_from_checkpoint = payload.resume_from_checkpoint;
-    let reset_resume_state = payload.reset_resume_state;
+    let _resume_from_checkpoint = payload.resume_from_checkpoint;
+    let _reset_resume_state = payload.reset_resume_state;
 
     let mut file_contexts: Vec<FileContext> = Vec::new();
     let mut segments: Vec<Segment> = Vec::new();
@@ -1254,6 +1255,7 @@ fn emit_cancelled_progress(
             file_success: last_file_success,
             file_errors: clone_errors(file_errors),
             last_written: None,
+            checkpoint: None,
         },
     );
 }
@@ -1289,7 +1291,7 @@ async fn wait_with_cancellation(cancel_flag: &Arc<AtomicBool>, duration: Duratio
             break;
         }
 
-        tauri::async_runtime::sleep(sleep_for).await;
+        sleep(sleep_for).await;
         elapsed += sleep_for;
     }
 
