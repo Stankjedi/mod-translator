@@ -1668,13 +1668,13 @@ async fn wait_with_cancellation(
         return BackoffWaitOutcome::JobCancelled;
     }
 
-    let mut sleep_future = sleep(duration);
+    let sleep_future = sleep(duration);
     tokio::pin!(sleep_future);
 
     let cancel_future = wait_for_cancel_flag(cancel_flag.clone());
     tokio::pin!(cancel_future);
 
-    let mut manual_future = controller.notified();
+    let manual_future = controller.notified();
     tokio::pin!(manual_future);
 
     let outcome = tokio::select! {

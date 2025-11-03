@@ -101,33 +101,28 @@ impl SteamLocator {
         let mut debug = LibraryDiscoveryDebug::default();
         let mut raw_paths: Vec<PathBuf> = Vec::new();
 
-        let mut push_raw = |path: PathBuf| {
-            debug.raw_candidates.push(display_path(&path));
-            raw_paths.push(path);
-        };
-
         if let Some(path) = explicit {
-            push_raw(PathBuf::from(path));
+            push_raw(&mut raw_paths, &mut debug, PathBuf::from(path));
         }
 
         if let Some(primary) = self.discover_path() {
-            push_raw(primary.clone());
+            push_raw(&mut raw_paths, &mut debug, primary.clone());
             let parsed = self.parse_library_folders(&primary);
             debug
                 .rejected_candidates
                 .extend(parsed.rejections.into_iter());
             for extra in parsed.paths {
-                push_raw(extra);
+                push_raw(&mut raw_paths, &mut debug, extra);
             }
         }
 
         for candidate in self.candidate_roots() {
-            push_raw(candidate);
+            push_raw(&mut raw_paths, &mut debug, candidate);
         }
 
         if raw_paths.is_empty() {
             if let Some(home) = home_dir() {
-                push_raw(home.join(".steam"));
+                push_raw(&mut raw_paths, &mut debug, home.join(".steam"));
             }
         }
 
@@ -385,6 +380,11 @@ impl SteamLocator {
 
         result
     }
+}
+
+fn push_raw(raw_paths: &mut Vec<PathBuf>, debug: &mut LibraryDiscoveryDebug, path: PathBuf) {
+    debug.raw_candidates.push(display_path(&path));
+    raw_paths.push(path);
 }
 
 fn canonicalize_path(path: &Path) -> Result<PathBuf, io::Error> {
