@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use thiserror::Error;
 
+use crate::protector::{ProtectedFragment, ProtectorError};
+
 use self::hints::{
     parse_gemini_error_hints, parse_retry_after_header, GeminiErrorHints, RetryHint,
 };
@@ -209,22 +211,28 @@ pub async fn translate_text(
     provider: ProviderId,
     api_key: &str,
     model_id: &str,
-    input: &str,
+    fragment: &ProtectedFragment,
     source_lang: &str,
     target_lang: &str,
 ) -> Result<String, TranslationError> {
-    let normalized_input = input.trim();
-    if normalized_input.is_empty() {
+    let normalized_original = fragment.original().trim();
+    if normalized_original.is_empty() {
         return Ok(String::new());
     }
 
-    let translated = match provider {
+    let masked_input = fragment.masked_text();
+    let normalized_masked = masked_input.trim();
+    if normalized_masked.is_empty() {
+        return Ok(fragment.original().to_string());
+    }
+
+    let translated_masked = match provider {
         ProviderId::Gemini => {
             translate_with_gemini(
                 client,
                 api_key,
                 model_id,
-                normalized_input,
+                normalized_masked,
                 source_lang,
                 target_lang,
             )
@@ -235,7 +243,7 @@ pub async fn translate_text(
                 client,
                 api_key,
                 model_id,
-                normalized_input,
+                normalized_masked,
                 source_lang,
                 target_lang,
             )
@@ -246,7 +254,7 @@ pub async fn translate_text(
                 client,
                 api_key,
                 model_id,
-                normalized_input,
+                normalized_masked,
                 source_lang,
                 target_lang,
             )
@@ -257,7 +265,7 @@ pub async fn translate_text(
                 client,
                 api_key,
                 model_id,
-                normalized_input,
+                normalized_masked,
                 source_lang,
                 target_lang,
             )
@@ -265,8 +273,16 @@ pub async fn translate_text(
         }
     };
 
-    ensure_placeholder_integrity(normalized_input, &translated)?;
-    Ok(translated.trim().to_string())
+    let restored = fragment
+        .restore(&translated_masked)
+        .map_err(|error| match error {
+            ProtectorError::MissingTokens(tokens) | ProtectorError::UnexpectedTokens(tokens) => {
+                TranslationError::PlaceholderMismatch(tokens)
+            }
+        })?;
+
+    ensure_placeholder_integrity(fragment.original(), &restored)?;
+    Ok(restored.trim().to_string())
 }
 
 async fn translate_with_gemini(

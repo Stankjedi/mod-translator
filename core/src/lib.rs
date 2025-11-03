@@ -1,8 +1,11 @@
 pub mod ai;
+pub mod backup;
 mod jobs;
 mod library;
 pub mod pipeline;
 pub mod policy;
+pub mod protector;
+pub mod quality;
 mod steam;
 mod time;
 mod validation;
