@@ -1563,7 +1563,7 @@ impl BackoffCancelSource {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackoffStartedEventPayload {
     job_id: String,
@@ -1574,14 +1574,14 @@ struct BackoffStartedEventPayload {
     used_hint: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackoffCancelledEventPayload {
     job_id: String,
     by: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RetryStartedEventPayload {
     job_id: String,
