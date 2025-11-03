@@ -18,6 +18,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 open = "5.3"
 httpdate = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+dunce = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

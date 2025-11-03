@@ -1,10 +1,11 @@
 use crate::policy::{self, PolicyBanner, PolicyProfile};
-use crate::steam::{resolve_app_name, SteamLocator};
+use crate::steam::{resolve_app_name, LibraryDiscovery, LibraryDiscoveryDebug, SteamLocator};
 use crate::time::{format_system_time, FormattedTimestamp};
+use log::{info, warn};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,33 @@ pub struct ModFileListing {
     pub files: Vec<ModFileDescriptor>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LibraryWorkshopDebugEntry {
+    pub library: String,
+    pub total_candidates: usize,
+    pub unique_mods: usize,
+    #[serde(default)]
+    pub duplicates: Vec<String>,
+    #[serde(default)]
+    pub skipped_symlinks: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibraryScanDebug {
+    pub discovery: LibraryDiscoveryDebug,
+    #[serde(default)]
+    pub workshop: Vec<LibraryWorkshopDebugEntry>,
+}
+
+impl LibraryScanDebug {
+    pub fn new(discovery: LibraryDiscoveryDebug) -> Self {
+        Self {
+            discovery,
+            workshop: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LibraryEntry {
     pub path: String,
@@ -61,6 +89,8 @@ pub struct LibraryEntry {
 pub struct LibraryScanResponse {
     pub libraries: Vec<LibraryEntry>,
     pub policy_banner: PolicyBanner,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<LibraryScanDebug>,
 }
 
 #[derive(Debug, Default)]
@@ -71,7 +101,11 @@ impl LibraryScanner {
         Self
     }
 
-    pub fn scan(&self, candidates: &[PathBuf]) -> Result<Vec<LibraryEntry>, String> {
+    pub fn scan(
+        &self,
+        candidates: &[PathBuf],
+        debug: &mut LibraryScanDebug,
+    ) -> Result<Vec<LibraryEntry>, String> {
         if candidates.is_empty() {
             return Ok(vec![
                 self.placeholder_entry("라이브러리 경로를 찾을 수 없음")
@@ -79,15 +113,21 @@ impl LibraryScanner {
         }
 
         let mut entries = Vec::new();
+        let mut global_mods: HashSet<String> = HashSet::new();
+
         for root in candidates {
             let steamapps = root.join("steamapps");
             let exists = steamapps.exists();
             let workshop_root = steamapps.join("workshop");
             let mut workshop_display = None;
             let mut notes = Vec::new();
+            let mut workshop_debug = LibraryWorkshopDebugEntry {
+                library: root.to_string_lossy().to_string(),
+                ..Default::default()
+            };
 
             let mods = if exists {
-                match self.detect_workshop_mods(&steamapps) {
+                match self.detect_workshop_mods(&steamapps, &mut global_mods, &mut workshop_debug) {
                     Ok(result) => result,
                     Err(err) => {
                         notes.push(err);
@@ -97,12 +137,43 @@ impl LibraryScanner {
             } else {
                 Vec::new()
             };
+
             if !exists {
                 notes.push(
                     "steamapps 디렉터리를 찾을 수 없습니다. 설정에서 라이브러리를 수동으로 추가하세요.".into(),
                 );
             } else if mods.is_empty() {
-                notes.push("워크샵 콘텐츠를 찾지 못했습니다. Steam을 한 번 실행하여 appworkshop 정보를 생성하세요.".into());
+                if workshop_debug.total_candidates == 0 {
+                    notes.push(
+                        "워크샵 콘텐츠를 찾지 못했습니다. Steam을 한 번 실행하여 appworkshop 정보를 생성하세요.".into(),
+                    );
+                }
+            }
+
+            if !workshop_debug.duplicates.is_empty() {
+                let preview: Vec<_> = workshop_debug.duplicates.iter().take(3).cloned().collect();
+                let preview_text = if preview.is_empty() {
+                    String::new()
+                } else {
+                    let suffix = if workshop_debug.duplicates.len() > preview.len() {
+                        ", ... 포함".to_string()
+                    } else {
+                        String::new()
+                    };
+                    format!(" (예: {}{})", preview.join(", "), suffix)
+                };
+                notes.push(format!(
+                    "다른 라이브러리와 중복된 워크샵 항목 {}개를 건너뛰었습니다{}.",
+                    workshop_debug.duplicates.len(),
+                    preview_text
+                ));
+            }
+
+            if !workshop_debug.skipped_symlinks.is_empty() {
+                notes.push(format!(
+                    "심볼릭 링크로 연결된 워크샵 경로 {}개를 건너뛰었습니다.",
+                    workshop_debug.skipped_symlinks.len()
+                ));
             }
 
             if workshop_root.exists() {
@@ -116,6 +187,9 @@ impl LibraryScanner {
                 Ok(path) => path,
                 Err(err) => return Err(err),
             };
+
+            workshop_debug.library = entry_path.clone();
+            debug.workshop.push(workshop_debug);
 
             entries.push(LibraryEntry {
                 path: entry_path,
@@ -143,7 +217,12 @@ impl LibraryScanner {
         }
     }
 
-    fn detect_workshop_mods(&self, steamapps: &Path) -> Result<Vec<ModSummary>, String> {
+    fn detect_workshop_mods(
+        &self,
+        steamapps: &Path,
+        global_unique: &mut HashSet<String>,
+        workshop_debug: &mut LibraryWorkshopDebugEntry,
+    ) -> Result<Vec<ModSummary>, String> {
         let mut mods = Vec::new();
         let content_root = steamapps.join("workshop/content");
         if !content_root.exists() {
@@ -158,11 +237,23 @@ impl LibraryScanner {
         };
 
         for app_dir in app_dirs.flatten() {
-            if !app_dir.path().is_dir() {
+            let app_path = app_dir.path();
+            let Ok(app_meta) = fs::symlink_metadata(&app_path) else {
+                continue;
+            };
+
+            if app_meta.file_type().is_symlink() {
+                let path_display = app_path.to_string_lossy().to_string();
+                workshop_debug.skipped_symlinks.push(path_display.clone());
+                warn!("Skipped symlinked workshop directory: {path_display}");
                 continue;
             }
 
-            let app_id = match file_name_to_string(&app_dir.path()) {
+            if !app_meta.is_dir() {
+                continue;
+            }
+
+            let app_id = match file_name_to_string(&app_path) {
                 Ok(value) => value,
                 Err(err) => {
                     mods.push(self.synthetic_mod(
@@ -179,17 +270,29 @@ impl LibraryScanner {
             let fallback_game = format!("앱 {app_id}");
             let game_name = resolve_app_name(steamapps, &app_id).unwrap_or(fallback_game);
 
-            let mod_entries = match fs::read_dir(app_dir.path()) {
+            let mod_entries = match fs::read_dir(&app_path) {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
 
             for mod_dir in mod_entries.flatten() {
-                if !mod_dir.path().is_dir() {
+                let mod_path = mod_dir.path();
+                let Ok(mod_meta) = fs::symlink_metadata(&mod_path) else {
+                    continue;
+                };
+
+                if !mod_meta.is_dir() {
                     continue;
                 }
 
-                let mod_path = mod_dir.path();
+                workshop_debug.total_candidates += 1;
+
+                if mod_meta.file_type().is_symlink() {
+                    let path_display = mod_path.to_string_lossy().to_string();
+                    workshop_debug.skipped_symlinks.push(path_display.clone());
+                    warn!("Skipped symlinked workshop item: {path_display}");
+                    continue;
+                }
 
                 let mod_id = match file_name_to_string(&mod_path) {
                     Ok(value) => value,
@@ -204,6 +307,16 @@ impl LibraryScanner {
                         continue;
                     }
                 };
+
+                let dedupe_key = format!("{app_id}:{mod_id}");
+                if !global_unique.insert(dedupe_key.clone()) {
+                    workshop_debug.duplicates.push(dedupe_key.clone());
+                    info!("Skipped duplicate workshop item {dedupe_key}");
+                    continue;
+                }
+
+                workshop_debug.unique_mods += 1;
+
                 let metadata = fs::metadata(&mod_path).ok();
                 let last_updated = metadata
                     .and_then(|meta| meta.modified().ok())
@@ -231,7 +344,7 @@ impl LibraryScanner {
                 };
 
                 mods.push(ModSummary {
-                    id: format!("{app_id}:{mod_id}"),
+                    id: dedupe_key,
                     name: resolved_name,
                     game: game_name.clone(),
                     directory,
@@ -243,7 +356,7 @@ impl LibraryScanner {
             }
         }
 
-        if mods.is_empty() {
+        if mods.is_empty() && workshop_debug.total_candidates == 0 {
             mods.push(self.synthetic_mod(
                 "no-content",
                 "워크샵 아카이브를 찾지 못했습니다",
@@ -387,16 +500,20 @@ pub fn list_mod_files(mod_directory: String) -> Result<ModFileListing, String> {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(metadata) = entry.metadata() else {
+            let Ok(file_type) = entry.file_type() else {
                 continue;
             };
 
-            if metadata.is_dir() {
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if file_type.is_dir() {
                 queue.push_back(path);
                 continue;
             }
 
-            if !metadata.is_file() {
+            if !file_type.is_file() {
                 continue;
             }
 
@@ -430,13 +547,62 @@ pub fn scan_steam_library(explicit_path: Option<String>) -> Result<LibraryScanRe
                 .and_then(|path| to_utf8_string(&path).ok())
         });
 
-    let candidates = locator.library_candidates(primary_path.as_deref());
-    let libraries = scanner.scan(&candidates)?;
+    let LibraryDiscovery {
+        paths: candidates,
+        debug: discovery_debug,
+    } = locator.library_candidates(primary_path.as_deref());
+    let mut debug = LibraryScanDebug::new(discovery_debug);
+    let libraries = scanner.scan(&candidates, &mut debug)?;
 
     Ok(LibraryScanResponse {
         libraries,
         policy_banner: policy::default_policy_banner(),
+        debug: Some(debug),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn create_library_with_mod(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "mod_translator_library_test_{}_{}",
+            tag,
+            Uuid::new_v4()
+        ));
+        let mod_dir = root.join("steamapps/workshop/content/294100/1234567890");
+        fs::create_dir_all(&mod_dir).expect("create workshop mod directory");
+        fs::write(mod_dir.join("About.xml"), "<name>Test</name>").ok();
+        root
+    }
+
+    #[test]
+    fn workshop_duplicates_are_deduped_across_libraries() {
+        let lib_a = create_library_with_mod("a");
+        let lib_b = create_library_with_mod("b");
+
+        let scanner = LibraryScanner::new();
+        let candidates = vec![lib_a.clone(), lib_b.clone()];
+        let mut debug = LibraryScanDebug::new(LibraryDiscoveryDebug::default());
+        let entries = scanner
+            .scan(&candidates, &mut debug)
+            .expect("scan libraries");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].mods.len(), 1);
+        assert!(entries[1].mods.is_empty());
+        assert!(entries[1].notes.iter().any(|note| note.contains("중복")));
+
+        let total_unique: usize = debug.workshop.iter().map(|entry| entry.unique_mods).sum();
+        assert_eq!(total_unique, 1);
+
+        fs::remove_dir_all(&lib_a).ok();
+        fs::remove_dir_all(&lib_b).ok();
+    }
 }
 
 fn to_utf8_string(path: &Path) -> Result<String, String> {

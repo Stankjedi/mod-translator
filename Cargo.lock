@@ -1940,6 +1940,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
+ "dunce",
  "httpdate",
  "log",
  "once_cell",
