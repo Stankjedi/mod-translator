@@ -15,7 +15,7 @@ const pipelineStages = [
 ]
 
 function DashboardView() {
-  const { libraries, isScanning, scanLibrary, steamPath } = useLibraryContext()
+  const { libraries, isScanning, scanLibrary, steamPath, debugInfo } = useLibraryContext()
   const { currentJob, queue, completedJobs } = useJobStore()
   const navigate = useNavigate()
 
@@ -288,6 +288,121 @@ function DashboardView() {
           </ol>
         </div>
       </section>
+
+      {import.meta.env.DEV && debugInfo && (
+        <section className="space-y-4 rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 p-6 text-xs text-slate-200">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">디버그: 라이브러리 탐지 파이프라인</h3>
+            <p className="mt-1 text-slate-400">
+              정규화된 경로와 중복/심볼릭 링크 건너뛰기 정보를 빠르게 점검할 수 있습니다.
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <h4 className="font-semibold text-slate-200">감지된 경로 후보</h4>
+              <ul className="mt-2 space-y-1">
+                {debugInfo.discovery.raw_candidates.map((path, index) => (
+                  <li key={`${path}-${index}`} className="truncate text-slate-300">
+                    • {path}
+                  </li>
+                ))}
+                {!debugInfo.discovery.raw_candidates.length && (
+                  <li className="text-slate-500">경로 후보가 비어 있습니다.</li>
+                )}
+              </ul>
+            </div>
+            <div>
+              <h4 className="font-semibold text-slate-200">최종 라이브러리 세트</h4>
+              <ul className="mt-2 space-y-1">
+                {debugInfo.discovery.final_libraries.map((path) => (
+                  <li key={path} className="truncate text-emerald-300">• {path}</li>
+                ))}
+                {!debugInfo.discovery.final_libraries.length && (
+                  <li className="text-slate-500">최종 라이브러리가 비어 있습니다.</li>
+                )}
+              </ul>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="mt-2 w-full min-w-[32rem] table-auto border-collapse text-left">
+              <thead className="border-b border-slate-700 text-slate-300">
+                <tr>
+                  <th className="px-2 py-1">원본</th>
+                  <th className="px-2 py-1">정규화 경로</th>
+                  <th className="px-2 py-1">키</th>
+                  <th className="px-2 py-1">상태</th>
+                  <th className="px-2 py-1">메모</th>
+                </tr>
+              </thead>
+              <tbody>
+                {debugInfo.discovery.canonicalized.map((row, index) => (
+                  <tr key={`${row.original}-${index}`} className="border-b border-slate-800 align-top">
+                    <td className="px-2 py-1 text-slate-300">{row.original}</td>
+                    <td className="px-2 py-1 text-slate-200">{row.canonical ?? '—'}</td>
+                    <td className="px-2 py-1 text-slate-400">{row.key ?? '—'}</td>
+                    <td className="px-2 py-1 text-slate-300">{row.status}</td>
+                    <td className="px-2 py-1 text-slate-400">{row.note ?? ''}</td>
+                  </tr>
+                ))}
+                {!debugInfo.discovery.canonicalized.length && (
+                  <tr>
+                    <td colSpan={5} className="px-2 py-2 text-slate-500">
+                      정규화된 경로가 없습니다.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {debugInfo.discovery.rejected_candidates.length > 0 && (
+            <div>
+              <h4 className="font-semibold text-slate-200">제외된 후보</h4>
+              <ul className="mt-2 space-y-1 text-slate-400">
+                {debugInfo.discovery.rejected_candidates.map((entry, index) => (
+                  <li key={`${entry.path}-${index}`}>
+                    • {entry.path} — {entry.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div>
+            <h4 className="font-semibold text-slate-200">워크샵 통계</h4>
+            <div className="mt-2 grid gap-3 md:grid-cols-2">
+              {debugInfo.workshop.map((entry) => (
+                <div
+                  key={entry.library}
+                  className="rounded-lg border border-slate-800 bg-slate-950/60 p-3"
+                >
+                  <div className="font-semibold text-slate-100">{entry.library}</div>
+                  <div className="mt-1 text-slate-300">
+                    총 후보 {entry.total_candidates}개 · 고유 항목 {entry.unique_mods}개
+                  </div>
+                  {!!entry.duplicates.length && (
+                    <div className="mt-1 text-slate-400">
+                      중복 {entry.duplicates.length}개 (예: {entry.duplicates.slice(0, 3).join(', ')}{entry.duplicates.length > 3 ? ', ...' : ''})
+                    </div>
+                  )}
+                  {!!entry.skipped_symlinks.length && (
+                    <div className="mt-1 text-slate-400">
+                      건너뛴 심볼릭 링크 {entry.skipped_symlinks.length}개
+                    </div>
+                  )}
+                </div>
+              ))}
+              {!debugInfo.workshop.length && (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-slate-500">
+                  워크샵 스캔 결과가 없습니다.
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   )
 }

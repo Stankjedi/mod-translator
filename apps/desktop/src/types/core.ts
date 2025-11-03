@@ -39,9 +39,50 @@ export interface LibraryEntry {
   notes: string[]
 }
 
+export interface CanonicalizedPathSnapshot {
+  original: string
+  canonical: string | null
+  key: string | null
+  status: string
+  note?: string | null
+}
+
+export interface DuplicateLibrarySnapshot {
+  existing: string
+  duplicate: string
+}
+
+export interface RejectedLibraryCandidate {
+  path: string
+  reason: string
+}
+
+export interface LibraryDiscoveryDebug {
+  raw_candidates: string[]
+  canonicalized: CanonicalizedPathSnapshot[]
+  skipped_symlinks: string[]
+  collapsed_duplicates: DuplicateLibrarySnapshot[]
+  rejected_candidates: RejectedLibraryCandidate[]
+  final_libraries: string[]
+}
+
+export interface LibraryWorkshopDebugEntry {
+  library: string
+  total_candidates: number
+  unique_mods: number
+  duplicates: string[]
+  skipped_symlinks: string[]
+}
+
+export interface LibraryScanDebug {
+  discovery: LibraryDiscoveryDebug
+  workshop: LibraryWorkshopDebugEntry[]
+}
+
 export interface LibraryScanResponse {
   libraries: LibraryEntry[]
   policy_banner: PolicyBanner
+  debug?: LibraryScanDebug
 }
 
 export interface SteamPathResponse {

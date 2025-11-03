@@ -11,6 +11,7 @@ import {
 import { invoke } from '@tauri-apps/api/core'
 import type {
   LibraryEntry,
+  LibraryScanDebug,
   LibraryScanResponse,
   PolicyBanner,
   SteamPathResponse,
@@ -24,6 +25,7 @@ interface LibraryContextValue {
   error: string | null
   steamPath: string | null
   detectSteamPath: () => Promise<string | null>
+  debugInfo: LibraryScanDebug | null
 }
 
 const LibraryContext = createContext<LibraryContextValue | undefined>(undefined)
@@ -36,6 +38,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [isScanning, setIsScanning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [steamPath, setSteamPath] = useState<string | null>(null)
+  const [debugInfo, setDebugInfo] = useState<LibraryScanDebug | null>(null)
 
   const detectSteamPath = useCallback(async () => {
     if (!isTauri()) {
@@ -62,11 +65,14 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       if (!isTauri()) {
         setLibraries([])
         setPolicyBanner(null)
+        setDebugInfo(null)
         const message = '라이브러리 스캔은 Tauri 환경에서만 지원됩니다.'
         setError(message)
         throw new Error(message)
       }
 
+      setLibraries([])
+      setDebugInfo(null)
       setIsScanning(true)
       try {
         const response = await invoke<LibraryScanResponse>('scan_steam_library', {
@@ -74,11 +80,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         })
         setLibraries(response.libraries)
         setPolicyBanner(response.policy_banner)
+        setDebugInfo(response.debug ?? null)
         setError(null)
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         setError(message)
         setLibraries([])
+        setDebugInfo(null)
         throw err instanceof Error ? err : new Error(message)
       } finally {
         setIsScanning(false)
@@ -109,8 +117,18 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       error,
       steamPath,
       detectSteamPath,
+      debugInfo,
     }),
-    [policyBanner, libraries, isScanning, scanLibrary, error, steamPath, detectSteamPath],
+    [
+      policyBanner,
+      libraries,
+      isScanning,
+      scanLibrary,
+      error,
+      steamPath,
+      detectSteamPath,
+      debugInfo,
+    ],
   )
 
   return <LibraryContext.Provider value={value}>{children}</LibraryContext.Provider>

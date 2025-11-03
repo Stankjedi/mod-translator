@@ -1,9 +1,12 @@
 use dirs::home_dir;
+use dunce::canonicalize as dunce_canonicalize;
+use log::{info, warn};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "windows")]
@@ -20,6 +23,56 @@ static APP_NAME_CAPTURE: Lazy<Regex> =
 pub struct SteamPathResponse {
     pub path: Option<String>,
     pub note: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CanonicalizedPathSnapshot {
+    pub original: String,
+    pub canonical: Option<String>,
+    pub key: Option<String>,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DuplicateLibrarySnapshot {
+    pub existing: String,
+    pub duplicate: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RejectedLibraryCandidate {
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LibraryDiscoveryDebug {
+    #[serde(default)]
+    pub raw_candidates: Vec<String>,
+    #[serde(default)]
+    pub canonicalized: Vec<CanonicalizedPathSnapshot>,
+    #[serde(default)]
+    pub skipped_symlinks: Vec<String>,
+    #[serde(default)]
+    pub collapsed_duplicates: Vec<DuplicateLibrarySnapshot>,
+    #[serde(default)]
+    pub rejected_candidates: Vec<RejectedLibraryCandidate>,
+    #[serde(default)]
+    pub final_libraries: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct LibraryDiscovery {
+    pub paths: Vec<PathBuf>,
+    pub debug: LibraryDiscoveryDebug,
+}
+
+#[derive(Debug, Default)]
+struct LibraryFoldersParseResult {
+    paths: Vec<PathBuf>,
+    rejections: Vec<RejectedLibraryCandidate>,
 }
 
 #[derive(Debug, Default)]
@@ -44,38 +97,162 @@ impl SteamLocator {
         })
     }
 
-    pub fn library_candidates(&self, explicit: Option<&str>) -> Vec<PathBuf> {
-        let mut seen: HashSet<PathBuf> = HashSet::new();
-        let mut results = Vec::new();
+    pub fn library_candidates(&self, explicit: Option<&str>) -> LibraryDiscovery {
+        let mut debug = LibraryDiscoveryDebug::default();
+        let mut raw_paths: Vec<PathBuf> = Vec::new();
 
-        let mut push_unique = |path: PathBuf, results: &mut Vec<PathBuf>| {
-            if seen.insert(path.clone()) {
-                results.push(path);
-            }
+        let mut push_raw = |path: PathBuf| {
+            debug.raw_candidates.push(display_path(&path));
+            raw_paths.push(path);
         };
 
         if let Some(path) = explicit {
-            push_unique(PathBuf::from(path), &mut results);
+            push_raw(PathBuf::from(path));
         }
 
         if let Some(primary) = self.discover_path() {
-            push_unique(primary.clone(), &mut results);
-            for extra in self.parse_library_folders(&primary) {
-                push_unique(extra, &mut results);
+            push_raw(primary.clone());
+            let parsed = self.parse_library_folders(&primary);
+            debug
+                .rejected_candidates
+                .extend(parsed.rejections.into_iter());
+            for extra in parsed.paths {
+                push_raw(extra);
             }
         }
 
         for candidate in self.candidate_roots() {
-            push_unique(candidate, &mut results);
+            push_raw(candidate);
         }
 
-        if results.is_empty() {
+        if raw_paths.is_empty() {
             if let Some(home) = home_dir() {
-                push_unique(home.join(".steam"), &mut results);
+                push_raw(home.join(".steam"));
             }
         }
 
-        results
+        let mut seen: HashMap<String, PathBuf> = HashMap::new();
+        let mut final_paths = Vec::new();
+
+        for candidate in raw_paths {
+            let candidate_str = display_path(&candidate);
+
+            let metadata = match fs::symlink_metadata(&candidate) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    debug.rejected_candidates.push(RejectedLibraryCandidate {
+                        path: candidate_str.clone(),
+                        reason: format!("파일 정보를 확인하지 못했습니다: {err}"),
+                    });
+                    debug.canonicalized.push(CanonicalizedPathSnapshot {
+                        original: candidate_str,
+                        canonical: None,
+                        key: None,
+                        status: "metadata_error".into(),
+                        note: None,
+                    });
+                    continue;
+                }
+            };
+
+            if metadata.file_type().is_symlink() {
+                warn!("Skipped symlinked library root: {candidate_str}");
+                debug.skipped_symlinks.push(candidate_str.clone());
+                debug.rejected_candidates.push(RejectedLibraryCandidate {
+                    path: candidate_str.clone(),
+                    reason: "심볼릭 링크 또는 정션 경로를 건너뜁니다.".into(),
+                });
+                debug.canonicalized.push(CanonicalizedPathSnapshot {
+                    original: candidate_str,
+                    canonical: None,
+                    key: None,
+                    status: "symlink".into(),
+                    note: Some("중복 탐지를 위해 심볼릭 링크를 무시했습니다.".into()),
+                });
+                continue;
+            }
+
+            if !metadata.is_dir() {
+                debug.rejected_candidates.push(RejectedLibraryCandidate {
+                    path: candidate_str.clone(),
+                    reason: "디렉터리가 아니라서 제외했습니다.".into(),
+                });
+                debug.canonicalized.push(CanonicalizedPathSnapshot {
+                    original: candidate_str,
+                    canonical: None,
+                    key: None,
+                    status: "not_directory".into(),
+                    note: None,
+                });
+                continue;
+            }
+
+            let canonical_path = match canonicalize_path(&candidate) {
+                Ok(path) => path,
+                Err(err) => {
+                    let note = format!("경로를 정규화하지 못했습니다: {err}");
+                    warn!("{note}");
+                    debug.rejected_candidates.push(RejectedLibraryCandidate {
+                        path: candidate_str.clone(),
+                        reason: note.clone(),
+                    });
+                    debug.canonicalized.push(CanonicalizedPathSnapshot {
+                        original: candidate_str,
+                        canonical: None,
+                        key: None,
+                        status: "canonicalization_failed".into(),
+                        note: Some(note),
+                    });
+                    continue;
+                }
+            };
+
+            let key = path_dedupe_key(&canonical_path);
+            let canonical_str = display_path(&canonical_path);
+
+            if let Some(existing) = seen.get(&key) {
+                let existing_str = display_path(existing);
+                info!(
+                    "Collapsed duplicate library: '{}' == '{}'",
+                    existing_str, canonical_str
+                );
+                debug.collapsed_duplicates.push(DuplicateLibrarySnapshot {
+                    existing: existing_str.clone(),
+                    duplicate: candidate_str.clone(),
+                });
+                debug.canonicalized.push(CanonicalizedPathSnapshot {
+                    original: candidate_str,
+                    canonical: Some(canonical_str),
+                    key: Some(key),
+                    status: "duplicate".into(),
+                    note: Some(format!("이미 포함된 경로와 동일: {existing_str}")),
+                });
+                continue;
+            }
+
+            let mut note = None;
+            if !canonical_path.join("steamapps").is_dir() {
+                note = Some("steamapps 디렉터리를 찾을 수 없어 누락 상태로 표시됩니다.".into());
+            }
+
+            debug.canonicalized.push(CanonicalizedPathSnapshot {
+                original: candidate_str,
+                canonical: Some(canonical_str.clone()),
+                key: Some(key.clone()),
+                status: "accepted".into(),
+                note,
+            });
+
+            seen.insert(key, canonical_path.clone());
+            final_paths.push(canonical_path);
+        }
+
+        debug.final_libraries = final_paths.iter().map(|path| display_path(path)).collect();
+
+        LibraryDiscovery {
+            paths: final_paths,
+            debug,
+        }
     }
 
     pub fn app_manifests(&self, library_root: &Path) -> Vec<PathBuf> {
@@ -158,28 +335,92 @@ impl SteamLocator {
         candidates
     }
 
-    fn parse_library_folders(&self, steam_root: &Path) -> Vec<PathBuf> {
+    fn parse_library_folders(&self, steam_root: &Path) -> LibraryFoldersParseResult {
+        let mut result = LibraryFoldersParseResult::default();
         let library_vdf = steam_root.join("steamapps/libraryfolders.vdf");
         let contents = match fs::read_to_string(&library_vdf) {
             Ok(contents) => contents,
-            Err(_) => return vec![steam_root.to_path_buf()],
+            Err(err) => {
+                result.rejections.push(RejectedLibraryCandidate {
+                    path: display_path(&library_vdf),
+                    reason: format!("libraryfolders.vdf를 읽지 못했습니다: {err}"),
+                });
+                result.paths.push(steam_root.to_path_buf());
+                return result;
+            }
         };
 
-        let mut libraries = Vec::new();
+        let mut seen = HashSet::new();
         for capture in LIBRARY_PATH_CAPTURE.captures_iter(&contents) {
             let raw_path = capture[1].replace("\\\\", "\\");
             let path = PathBuf::from(raw_path.clone());
-            if path.exists() {
-                libraries.push(path);
+            let path_str = display_path(&path);
+
+            if !seen.insert(path_str.clone()) {
+                continue;
             }
+
+            if !path.exists() || !path.is_dir() {
+                result.rejections.push(RejectedLibraryCandidate {
+                    path: path_str,
+                    reason: "경로가 존재하지 않거나 디렉터리가 아닙니다.".into(),
+                });
+                continue;
+            }
+
+            if !path.join("steamapps").is_dir() {
+                result.rejections.push(RejectedLibraryCandidate {
+                    path: path_str,
+                    reason: "steamapps 디렉터리를 찾지 못했습니다.".into(),
+                });
+                continue;
+            }
+
+            result.paths.push(path);
         }
 
-        if libraries.is_empty() {
-            libraries.push(steam_root.to_path_buf());
+        if result.paths.is_empty() {
+            result.paths.push(steam_root.to_path_buf());
         }
 
-        libraries
+        result
     }
+}
+
+fn canonicalize_path(path: &Path) -> Result<PathBuf, io::Error> {
+    dunce_canonicalize(path).or_else(|_| std::fs::canonicalize(path))
+}
+
+#[cfg(target_os = "windows")]
+fn path_dedupe_key(path: &Path) -> String {
+    let mut key = display_path(path).replace('/', "\\");
+    if let Some(stripped) = key.strip_prefix(r"\\?\") {
+        key = stripped.to_string();
+    }
+    if key.len() >= 2 && key.as_bytes()[1] == b':' {
+        let mut chars: Vec<char> = key.chars().collect();
+        if let Some(first) = chars.first_mut() {
+            *first = first.to_ascii_lowercase();
+        }
+        key = chars.into_iter().collect();
+    }
+    while key.ends_with('\u{005c}') && key.len() > 3 {
+        key.pop();
+    }
+    key
+}
+
+#[cfg(not(target_os = "windows"))]
+fn path_dedupe_key(path: &Path) -> String {
+    let mut key = display_path(path);
+    if key.len() > 1 {
+        key = key.trim_end_matches('/').to_string();
+    }
+    key
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().to_string()
 }
 
 pub fn resolve_app_name(steamapps: &Path, app_id: &str) -> Option<String> {
@@ -220,8 +461,11 @@ pub fn detect_steam_path() -> Result<SteamPathResponse, String> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use uuid::Uuid;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     fn create_temp_steamapps(manifest_contents: &str, app_id: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -262,7 +506,45 @@ mod tests {
     #[test]
     fn candidate_generation_provides_fallback() {
         let locator = SteamLocator::new();
-        let candidates = locator.library_candidates(None);
-        assert!(!candidates.is_empty());
+        let discovery = locator.library_candidates(None);
+        assert!(!discovery.paths.is_empty());
+        assert!(!discovery.debug.raw_candidates.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dedupe_key_normalizes_windows_variants() {
+        let key_base = path_dedupe_key(Path::new(r"C:\\SteamLibrary"));
+        let key_lower = path_dedupe_key(Path::new(r"c:\\SteamLibrary\\"));
+        let key_unc = path_dedupe_key(Path::new(r"\\\\?\\C:\\SteamLibrary"));
+        assert_eq!(key_base, key_lower);
+        assert_eq!(key_base, key_unc);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn dedupe_key_trims_trailing_separator() {
+        let key_base = path_dedupe_key(Path::new("/tmp/mod-translator"));
+        let key_with_slash = path_dedupe_key(Path::new("/tmp/mod-translator/"));
+        assert_eq!(key_base, key_with_slash);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn library_candidates_skip_symlink_roots() {
+        let locator = SteamLocator::new();
+        let temp_root =
+            std::env::temp_dir().join(format!("mod_translator_symlink_test_{}", Uuid::new_v4()));
+        let target = temp_root.join("library");
+        fs::create_dir_all(target.join("steamapps")).expect("create target library");
+        let link = temp_root.join("library_link");
+        symlink(&target, &link).expect("create symlink");
+        let link_str = link.to_string_lossy().to_string();
+
+        let discovery = locator.library_candidates(Some(&link_str));
+        assert!(discovery.paths.is_empty());
+        assert!(discovery.debug.skipped_symlinks.contains(&link_str));
+
+        fs::remove_dir_all(&temp_root).ok();
     }
 }

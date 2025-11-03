@@ -12,8 +12,8 @@ pub use jobs::{
     StartTranslationJobPayload, TranslationFileInput, TranslationProgressEventPayload,
 };
 pub use library::{
-    list_mod_files, scan_steam_library, LibraryEntry, LibraryScanResponse, LibraryScanner,
-    ModFileDescriptor, ModFileListing,
+    list_mod_files, scan_steam_library, LibraryEntry, LibraryScanDebug, LibraryScanResponse,
+    LibraryScanner, LibraryWorkshopDebugEntry, ModFileDescriptor, ModFileListing,
 };
 pub use pipeline::PipelinePlan;
 pub use policy::{default_policy_banner, PolicyBanner, PolicyProfile};
