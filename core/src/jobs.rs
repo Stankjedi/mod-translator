@@ -2,6 +2,9 @@ use crate::ai::{
     hints::{RetryHint, RetryHintSource},
     translate_text, ProviderId, TranslationError,
 };
+use crate::backup::backup_and_swap;
+use crate::protector::Protector;
+use crate::quality::{validate_segment, SegmentLimits};
 use log::warn;
 use once_cell::sync::Lazy;
 use reqwest::Client;
@@ -9,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::{DefaultHasher, Entry};
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -710,6 +714,8 @@ async fn run_translation_job(
     let mut file_contexts: Vec<FileContext> = Vec::new();
     let mut segments: Vec<Segment> = Vec::new();
     let mut file_errors: Vec<TranslationFileErrorEntry> = Vec::new();
+    let qc_limits = SegmentLimits::default();
+    let mut rolled_back_segments: Vec<String> = Vec::new();
     let mut job_state = load_job_state(&payload.job_id).unwrap_or_else(JobState::new);
     let mut changed_files: Vec<String> = Vec::new();
     let mut already_processed_segments: u32 = 0;
@@ -915,10 +921,13 @@ async fn run_translation_job(
                 return;
             }
 
+            let fragment = Protector::protect(&segment.text);
             let mut attempt: u32 = 0;
             let mut last_error: Option<TranslationError> = None;
             let mut translated_value: Option<String> = None;
             let mut wait_cancelled_by_job = false;
+            let mut apply_translation = false;
+            let mut qc_messages: Option<Vec<String>> = None;
 
             loop {
                 if cancel_flag.load(Ordering::SeqCst) {
@@ -930,14 +939,37 @@ async fn run_translation_job(
                     provider,
                     &api_key,
                     &payload.model_id,
-                    &segment.text,
+                    &fragment,
                     &source_lang,
                     &target_lang,
                 )
                 .await
                 {
                     Ok(value) => {
-                        translated_value = Some(value);
+                        let validation =
+                            validate_segment(segment.text.as_str(), value.as_str(), &qc_limits);
+                        if validation.is_pass() {
+                            translated_value = Some(value);
+                            apply_translation = true;
+                            qc_messages = None;
+                        } else {
+                            let mut messages = Vec::new();
+                            if !validation.errors.is_empty() {
+                                messages.extend(validation.errors.clone());
+                            }
+                            if !validation.warnings.is_empty() {
+                                messages.extend(validation.warnings.clone());
+                            }
+                            qc_messages = if messages.is_empty() {
+                                None
+                            } else {
+                                Some(messages)
+                            };
+                            translated_value = Some(segment.text.clone());
+                            apply_translation = false;
+                            rolled_back_segments
+                                .push(format!("{}:{}", segment.relative_path, segment.line_number));
+                        }
                         last_error = None;
                         break;
                     }
@@ -1075,22 +1107,51 @@ async fn run_translation_job(
 
             if let Some(context) = file_contexts.get_mut(segment.file_index) {
                 if segment.line_index < context.translated_lines.len() {
-                    let replacement =
-                        format!("{}{}{}", segment.prefix, translated_value, segment.suffix);
-                    context.translated_lines[segment.line_index] = Some(replacement.clone());
-                    if let Some(progress) = job_state.files.get_mut(&segment.relative_path) {
-                        progress
-                            .replacements
-                            .insert(segment.line_index, replacement);
+                    if apply_translation {
+                        let translated_ref = translated_value
+                            .as_ref()
+                            .expect("translation value present");
+                        let replacement =
+                            format!("{}{}{}", segment.prefix, translated_ref, segment.suffix);
+                        context.translated_lines[segment.line_index] = Some(replacement.clone());
+                        if let Some(progress) = job_state.files.get_mut(&segment.relative_path) {
+                            progress
+                                .replacements
+                                .insert(segment.line_index, replacement);
+                        }
+                    } else {
+                        context.translated_lines[segment.line_index] = None;
+                        if let Some(progress) = job_state.files.get_mut(&segment.relative_path) {
+                            progress.replacements.remove(&segment.line_index);
+                        }
                     }
                 }
             }
 
             processed_segments = processed + 1;
             last_file_name = Some(segment.relative_path.clone());
-            last_file_success = Some(true);
+            last_file_success = Some(apply_translation);
             update_checkpoint_for_next_segment(&mut job_state, &segments, processed_segments);
             save_job_state(&payload.job_id, job_state.clone());
+
+            let progress_log = if apply_translation {
+                format!(
+                    "{} {}행 번역 완료",
+                    segment.relative_path, segment.line_number
+                )
+            } else if let Some(messages) = &qc_messages {
+                format!(
+                    "QC 검증으로 원본 유지: {} {}행 ({})",
+                    segment.relative_path,
+                    segment.line_number,
+                    messages.join("; ")
+                )
+            } else {
+                format!(
+                    "{} {}행 번역 결과 변경 없음",
+                    segment.relative_path, segment.line_number
+                )
+            };
 
             emit_progress(
                 &app,
@@ -1099,10 +1160,7 @@ async fn run_translation_job(
                     status: "running".into(),
                     progress_pct: Some(percentage(processed_segments, total_segments)),
                     cancel_requested: None,
-                    log: Some(format!(
-                        "{} {}행 번역 완료",
-                        segment.relative_path, segment.line_number
-                    )),
+                    log: Some(progress_log),
                     translated_count: Some(processed_segments),
                     total_count: Some(total_segments),
                     file_name: last_file_name.clone(),
@@ -1184,40 +1242,65 @@ async fn run_translation_job(
         }
 
         let contents = render_translated_file(context);
-        if let Err(err) = fs::write(&output_absolute_path, contents) {
-            let message = format!(
-                "Failed to write {}: {}",
-                output_absolute_path.to_string_lossy(),
-                err
-            );
-            last_file_name = Some(context.relative_path.clone());
-            last_file_success = Some(false);
-            file_errors.push(TranslationFileErrorEntry {
-                file_path: context.relative_path.clone(),
-                message: message.clone(),
-                code: Some("WRITE_FAILED".into()),
-            });
-            save_job_state(&payload.job_id, job_state.clone());
-            emit_progress(
-                &app,
-                TranslationProgressEventPayload {
-                    job_id: payload.job_id.clone(),
-                    status: "running".into(),
-                    progress_pct: Some(percentage(processed_segments, total_segments)),
-                    cancel_requested: None,
-                    log: Some(message),
-                    translated_count: Some(processed_segments),
-                    total_count: Some(total_segments),
-                    file_name: last_file_name.clone(),
-                    file_success: last_file_success,
-                    file_errors: clone_errors(&file_errors),
-                    last_written: None,
-                    checkpoint: Some(job_state.checkpoint.clone()),
-                    retry: None,
-                },
-            );
-            continue;
-        }
+        let write_result = if output_absolute_path.exists() {
+            match backup_and_swap(&output_absolute_path, contents.as_bytes()) {
+                Ok(outcome) => Ok(outcome.backup_path),
+                Err(err) => Err(err.to_string()),
+            }
+        } else {
+            match File::create(&output_absolute_path) {
+                Ok(mut file) => {
+                    if let Err(err) = file.write_all(contents.as_bytes()) {
+                        Err(err.to_string())
+                    } else if let Err(err) = file.sync_all() {
+                        Err(err.to_string())
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Err(err) => Err(err.to_string()),
+            }
+        };
+
+        let backup_display = match write_result {
+            Ok(backup_path) => backup_path
+                .map(|path| path.to_string_lossy().to_string())
+                .filter(|path| !path.is_empty()),
+            Err(message) => {
+                let log_message = format!(
+                    "Failed to write {}: {}",
+                    output_absolute_path.to_string_lossy(),
+                    message
+                );
+                last_file_name = Some(context.relative_path.clone());
+                last_file_success = Some(false);
+                file_errors.push(TranslationFileErrorEntry {
+                    file_path: context.relative_path.clone(),
+                    message: log_message.clone(),
+                    code: Some("WRITE_FAILED".into()),
+                });
+                save_job_state(&payload.job_id, job_state.clone());
+                emit_progress(
+                    &app,
+                    TranslationProgressEventPayload {
+                        job_id: payload.job_id.clone(),
+                        status: "running".into(),
+                        progress_pct: Some(percentage(processed_segments, total_segments)),
+                        cancel_requested: None,
+                        log: Some(log_message),
+                        translated_count: Some(processed_segments),
+                        total_count: Some(total_segments),
+                        file_name: last_file_name.clone(),
+                        file_success: last_file_success,
+                        file_errors: clone_errors(&file_errors),
+                        last_written: None,
+                        checkpoint: Some(job_state.checkpoint.clone()),
+                        retry: None,
+                    },
+                );
+                continue;
+            }
+        };
 
         let absolute_display = output_absolute_path
             .canonicalize()
@@ -1236,10 +1319,13 @@ async fn run_translation_job(
                 status: "running".into(),
                 progress_pct: Some(percentage(processed_segments, total_segments)),
                 cancel_requested: None,
-                log: Some(format!(
-                    "{} 번역 결과를 저장했습니다.",
-                    context.relative_path
-                )),
+                log: Some(match &backup_display {
+                    Some(backup) => format!(
+                        "{} 번역 결과를 저장했습니다. (백업: {})",
+                        context.relative_path, backup
+                    ),
+                    None => format!("{} 번역 결과를 저장했습니다.", context.relative_path),
+                }),
                 translated_count: Some(processed_segments),
                 total_count: Some(total_segments),
                 file_name: last_file_name.clone(),
@@ -1265,7 +1351,7 @@ async fn run_translation_job(
     } else {
         "completed"
     };
-    let final_log = if total_segments == 0 && file_errors.is_empty() {
+    let mut final_log = if total_segments == 0 && file_errors.is_empty() {
         "번역할 문자열이 없습니다.".to_string()
     } else if final_status == "completed" {
         "번역이 완료되었습니다.".to_string()
@@ -1274,6 +1360,23 @@ async fn run_translation_job(
     } else {
         "번역을 완료하지 못했습니다.".to_string()
     };
+
+    if !rolled_back_segments.is_empty() {
+        let preview: Vec<_> = rolled_back_segments.iter().take(3).cloned().collect();
+        let remainder = rolled_back_segments.len().saturating_sub(preview.len());
+        if !preview.is_empty() {
+            final_log.push(' ');
+            let detail = if remainder > 0 {
+                format!("{} 외 {}건", preview.join(", "), remainder)
+            } else {
+                preview.join(", ")
+            };
+            final_log.push_str(&format!(
+                "자동 롤백 {}건 ({detail}).",
+                rolled_back_segments.len()
+            ));
+        }
+    }
 
     let mut final_progress = if total_segments == 0 {
         100.0
