@@ -120,13 +120,17 @@ fn is_translatable(s: &str) -> bool {
         return false;
     }
 
-    // Skip if it's all uppercase (likely a constant)
-    if s.chars().all(|c| c.is_uppercase() || !c.is_alphabetic()) && s.len() > 3 {
+    // Skip if it's all uppercase with some alphabetic characters (likely a constant)
+    let has_alpha = s.chars().any(|c| c.is_alphabetic());
+    let has_lower = s.chars().any(|c| c.is_lowercase());
+    
+    if has_alpha && !has_lower {
+        // All alphabetic chars are uppercase - likely a constant
         return false;
     }
 
     // Must contain some alphabetic characters
-    s.chars().any(|c| c.is_alphabetic())
+    has_alpha
 }
 
 #[cfg(test)]

@@ -11,13 +11,16 @@ static BB_TAG_REGEX: Lazy<Regex> = Lazy::new(|| {
 });
 
 static PLACEHOLDER_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(\{\w+\}|\{\d+\}|\{\d+:[^}]+\}|%\d*\$?[sd]|%s|%d|%\d+\$d|\$[A-Z0-9_]+\$|\{Pawn_[^}]+\}|\{\{[^}]+\}\})")
+    // Basic placeholders, excluding patterns now handled by specialized regexes
+    Regex::new(r"(\{\w+\}|\{\d+\}|%\d*\$?[sd]|%s|%d|%\d+\$d|\$[A-Z0-9_]+\$|\{Pawn_[^}]+\})")
         .expect("valid placeholder regex")
 });
 
 // ICU MessageFormat patterns: {var, plural, ...}, {var, select, ...}
+// Note: This is a simplified pattern. Full ICU parsing requires a proper parser
+// due to nested braces. This catches common simple cases.
 static ICU_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{[^}]+,\s*(?:plural|select|selectordinal)[^}]*\}").expect("valid ICU regex")
+    Regex::new(r"\{[^}]+,\s*(?:plural|select|selectordinal)\s*,\s*[^}]+\}").expect("valid ICU regex")
 });
 
 // Mustache/Handlebars: {{var}}

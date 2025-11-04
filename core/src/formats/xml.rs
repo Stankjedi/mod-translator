@@ -2,6 +2,12 @@
 /// Preserves tags and attributes, only translates text nodes
 
 use super::{FileFormat, FormatError, FormatHandler, TranslatableEntry, TranslationResult};
+use once_cell::sync::Lazy;
+use regex::Regex;
+
+static TAG_CONTENT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r">([^<]+)<").expect("valid tag content regex")
+});
 
 pub struct XmlHandler;
 
@@ -15,9 +21,8 @@ impl FormatHandler for XmlHandler {
     fn extract(&self, content: &str) -> Result<Vec<TranslatableEntry>, FormatError> {
         // Placeholder: Basic regex-based extraction for MVP
         let mut entries = Vec::new();
-        let tag_content_re = regex::Regex::new(r">([^<]+)<").unwrap();
         
-        for (idx, captures) in tag_content_re.captures_iter(content).enumerate() {
+        for (idx, captures) in TAG_CONTENT_RE.captures_iter(content).enumerate() {
             if let Some(text) = captures.get(1) {
                 let text_str = text.as_str().trim();
                 if !text_str.is_empty() && text_str.chars().any(|c| c.is_alphabetic()) {

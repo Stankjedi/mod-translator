@@ -128,8 +128,9 @@ impl FileMetadata {
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
             }
             Encoding::Latin1 => {
-                // Simple Latin1 to UTF-8 conversion
-                Ok(bytes.iter().map(|&b| b as char).collect())
+                // Proper Latin1 to UTF-8 conversion
+                // Latin1 bytes 0-127 are ASCII, 128-255 map to Unicode U+0080-U+00FF
+                Ok(bytes.iter().map(|&b| char::from_u32(b as u32).unwrap()).collect())
             }
         }
     }

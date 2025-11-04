@@ -64,8 +64,8 @@ Translate files in a mod directory.
 
 - `--newline <STYLE>` - Override newline style
   - `auto` (default): Auto-detect
-  - `lf`: Unix-style (\\n)
-  - `crlf`: Windows-style (\\r\\n)
+  - `lf`: Unix-style (\n)
+  - `crlf`: Windows-style (\r\n)
 
 - `--max-retry <N>` - Maximum retry attempts per key (default: 1)
 
