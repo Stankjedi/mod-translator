@@ -1,14 +1,19 @@
 pub mod ai;
 pub mod backup;
+pub mod encoding;
+pub mod formats;
 mod jobs;
 mod library;
 pub mod pipeline;
 pub mod policy;
+pub mod profiles;
 pub mod protector;
 pub mod quality;
+pub mod scanner;
 mod steam;
 mod time;
 mod validation;
+pub mod validator;
 
 pub use jobs::{
     cancel_translation_job, open_output_folder, retry_translation_now, start_translation_job,

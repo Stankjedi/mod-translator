@@ -11,8 +11,26 @@ static BB_TAG_REGEX: Lazy<Regex> = Lazy::new(|| {
 });
 
 static PLACEHOLDER_REGEX: Lazy<Regex> = Lazy::new(|| {
+    // Basic placeholders, excluding patterns now handled by specialized regexes
     Regex::new(r"(\{\w+\}|\{\d+\}|%\d*\$?[sd]|%s|%d|\$[A-Z0-9_]+\$|\{Pawn_[^}]+\})")
         .expect("valid placeholder regex")
+});
+
+// ICU MessageFormat patterns: {var, plural, ...}, {var, select, ...}
+// Note: This is a simplified pattern. Full ICU parsing requires a proper parser
+// due to nested braces. This catches common simple cases.
+static ICU_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{[^}]+,\s*(?:plural|select|selectordinal)\s*,\s*[^}]+\}").expect("valid ICU regex")
+});
+
+// Mustache/Handlebars: {{var}}
+static MUSTACHE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{\{[^}]+\}\}").expect("valid mustache regex")
+});
+
+// Unity/RimWorld rich text: <color=#abc>, <sprite=name>
+static RICH_TEXT_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"<(?:color|size|sprite|material)(?:=[^>]+)?/?>").expect("valid rich text regex")
 });
 
 static ENTITY_REGEX: Lazy<Regex> =
@@ -37,6 +55,9 @@ pub enum TokenClass {
     Attr,
     Key,
     Placeholder,
+    Icu,
+    Mustache,
+    RichText,
     Entity,
     Escape,
     Pipe,
@@ -50,6 +71,9 @@ impl TokenClass {
             TokenClass::Attr => "ATTR",
             TokenClass::Key => "KEY",
             TokenClass::Placeholder => "PLACEHOLDER",
+            TokenClass::Icu => "ICU",
+            TokenClass::Mustache => "MUSTACHE",
+            TokenClass::RichText => "RICHTEXT",
             TokenClass::Entity => "ENTITY",
             TokenClass::Escape => "ESCAPE",
             TokenClass::Pipe => "PIPE",
@@ -110,6 +134,28 @@ impl Protector {
         let mut occupied = vec![false; input.len()];
         let mut tokens = Vec::new();
 
+        // Collect tokens in priority order (more specific first)
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::Icu,
+            &ICU_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::Mustache,
+            &MUSTACHE_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::RichText,
+            &RICH_TEXT_REGEX,
+        );
         collect_tokens(
             &mut tokens,
             &mut occupied,
