@@ -603,7 +603,105 @@ mod tests {
         fs::remove_dir_all(&lib_a).ok();
         fs::remove_dir_all(&lib_b).ok();
     }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("mod_translator_{}_{}", label, Uuid::new_v4()));
+        fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    #[test]
+    fn resolves_title_from_workshop_acf() {
+        let root = temp_dir("workshop");
+        let steamapps = root.join("steamapps");
+        let workshop = steamapps.join("workshop");
+        fs::create_dir_all(&workshop).expect("create workshop dir");
+        let contents = r#"
+"AppWorkshop"
+{
+    "appid"        "294100"
+    "WorkshopItemDetails"
+    {
+        "123456"
+        {
+            "manifest"     "987654321"
+            "timeupdated"  "1700000000"
+            "title"        "Test Workshop Title"
+        }
+    }
 }
+"#;
+        let file_path = workshop.join("appworkshop_294100.acf");
+        fs::write(&file_path, contents).expect("write appworkshop file");
+
+        let resolved = resolve_workshop_title(&steamapps, "294100", "123456");
+        assert_eq!(resolved.as_deref(), Some("Test Workshop Title"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn resolves_title_from_about_metadata() {
+        let root = temp_dir("about");
+        let mod_path = root.join("RimWorld");
+        let about_dir = mod_path.join("About");
+        fs::create_dir_all(&about_dir).expect("create about dir");
+        let contents = r#"
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>
+    RimWorld Korean Language Pack
+  </name>
+</ModMetaData>
+"#;
+        fs::write(about_dir.join("About.xml"), contents).expect("write About.xml");
+
+        let resolved = resolve_about_metadata_title(&mod_path);
+        assert_eq!(resolved.as_deref(), Some("RimWorld Korean Language Pack"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn prefers_workshop_title_over_about_metadata() {
+        let root = temp_dir("prefer_workshop");
+        let steamapps = root.join("steamapps");
+        let workshop = steamapps.join("workshop");
+        let mod_path = root.join("mod");
+        fs::create_dir_all(&workshop).expect("create workshop dir");
+        fs::create_dir_all(mod_path.join("About")).expect("create About dir");
+        fs::write(
+            workshop.join("appworkshop_123.acf"),
+            r#"
+"AppWorkshop"
+{
+    "appid"        "123"
+    "WorkshopItemDetails"
+    {
+        "999"
+        {
+            "title" "Workshop Primary Title"
+        }
+    }
+}
+"#,
+        )
+        .expect("write workshop acf");
+        fs::write(
+            mod_path.join("About/About.xml"),
+            r#"<ModMetaData><name>Local About Name</name></ModMetaData>"#,
+        )
+        .expect("write about xml");
+
+        let scanner = LibraryScanner::new();
+        let resolved = scanner.resolve_mod_name(&steamapps, "123", "999", &mod_path);
+        assert_eq!(resolved.as_deref(), Some("Workshop Primary Title"));
+
+        fs::remove_dir_all(root).ok();
+    }
+}
+
 
 fn to_utf8_string(path: &Path) -> Result<String, String> {
     path.to_str()
@@ -844,107 +942,3 @@ fn clean_title(value: &str) -> Option<String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-    use uuid::Uuid;
-
-    fn temp_dir(label: &str) -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("mod_translator_{}_{}", label, Uuid::new_v4()));
-        fs::create_dir_all(&path).expect("create temp dir");
-        path
-    }
-
-    #[test]
-    fn resolves_title_from_workshop_acf() {
-        let root = temp_dir("workshop");
-        let steamapps = root.join("steamapps");
-        let workshop = steamapps.join("workshop");
-        fs::create_dir_all(&workshop).expect("create workshop dir");
-        let contents = r#"
-"AppWorkshop"
-{
-    "appid"        "294100"
-    "WorkshopItemDetails"
-    {
-        "123456"
-        {
-            "manifest"     "987654321"
-            "timeupdated"  "1700000000"
-            "title"        "Test Workshop Title"
-        }
-    }
-}
-"#;
-        let file_path = workshop.join("appworkshop_294100.acf");
-        fs::write(&file_path, contents).expect("write appworkshop file");
-
-        let resolved = resolve_workshop_title(&steamapps, "294100", "123456");
-        assert_eq!(resolved.as_deref(), Some("Test Workshop Title"));
-
-        fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn resolves_title_from_about_metadata() {
-        let root = temp_dir("about");
-        let mod_path = root.join("RimWorld");
-        let about_dir = mod_path.join("About");
-        fs::create_dir_all(&about_dir).expect("create about dir");
-        let contents = r#"
-<?xml version="1.0" encoding="utf-8"?>
-<ModMetaData>
-  <name>
-    RimWorld Korean Language Pack
-  </name>
-</ModMetaData>
-"#;
-        fs::write(about_dir.join("About.xml"), contents).expect("write About.xml");
-
-        let resolved = resolve_about_metadata_title(&mod_path);
-        assert_eq!(resolved.as_deref(), Some("RimWorld Korean Language Pack"));
-
-        fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn prefers_workshop_title_over_about_metadata() {
-        let root = temp_dir("prefer_workshop");
-        let steamapps = root.join("steamapps");
-        let workshop = steamapps.join("workshop");
-        let mod_path = root.join("mod");
-        fs::create_dir_all(&workshop).expect("create workshop dir");
-        fs::create_dir_all(mod_path.join("About")).expect("create About dir");
-        fs::write(
-            workshop.join("appworkshop_123.acf"),
-            r#"
-"AppWorkshop"
-{
-    "appid"        "123"
-    "WorkshopItemDetails"
-    {
-        "999"
-        {
-            "title" "Workshop Primary Title"
-        }
-    }
-}
-"#,
-        )
-        .expect("write workshop acf");
-        fs::write(
-            mod_path.join("About/About.xml"),
-            r#"<ModMetaData><name>Local About Name</name></ModMetaData>"#,
-        )
-        .expect("write about xml");
-
-        let scanner = LibraryScanner::new();
-        let resolved = scanner.resolve_mod_name(&steamapps, "123", "999", &mod_path);
-        assert_eq!(resolved.as_deref(), Some("Workshop Primary Title"));
-
-        fs::remove_dir_all(root).ok();
-    }
-}
