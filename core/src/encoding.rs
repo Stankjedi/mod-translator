@@ -129,8 +129,8 @@ impl FileMetadata {
             }
             Encoding::Latin1 => {
                 // Proper Latin1 to UTF-8 conversion
-                // Latin1 bytes 0-127 are ASCII, 128-255 map to Unicode U+0080-U+00FF
-                Ok(bytes.iter().map(|&b| char::from_u32(b as u32).unwrap()).collect())
+                // All bytes 0-255 are valid as Latin1 and map to Unicode code points
+                Ok(bytes.iter().map(|&b| char::from(b)).collect())
             }
         }
     }

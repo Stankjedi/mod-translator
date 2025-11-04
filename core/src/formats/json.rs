@@ -120,17 +120,23 @@ fn is_translatable(s: &str) -> bool {
         return false;
     }
 
-    // Skip if it's all uppercase with some alphabetic characters (likely a constant)
-    let has_alpha = s.chars().any(|c| c.is_alphabetic());
-    let has_lower = s.chars().any(|c| c.is_lowercase());
+    // Check if string has alphabetic chars and if any are lowercase
+    let mut has_alpha = false;
+    let mut has_lower = false;
     
-    if has_alpha && !has_lower {
-        // All alphabetic chars are uppercase - likely a constant
-        return false;
+    for c in s.chars() {
+        if c.is_alphabetic() {
+            has_alpha = true;
+            if c.is_lowercase() {
+                has_lower = true;
+                break; // Found lowercase, no need to continue
+            }
+        }
     }
-
-    // Must contain some alphabetic characters
-    has_alpha
+    
+    // Must have alphabetic characters, and at least some lowercase
+    // (all uppercase likely means constant)
+    has_alpha && (has_lower || s.len() <= 3)
 }
 
 #[cfg(test)]

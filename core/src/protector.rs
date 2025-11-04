@@ -12,7 +12,7 @@ static BB_TAG_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 static PLACEHOLDER_REGEX: Lazy<Regex> = Lazy::new(|| {
     // Basic placeholders, excluding patterns now handled by specialized regexes
-    Regex::new(r"(\{\w+\}|\{\d+\}|%\d*\$?[sd]|%s|%d|%\d+\$d|\$[A-Z0-9_]+\$|\{Pawn_[^}]+\})")
+    Regex::new(r"(\{\w+\}|\{\d+\}|%\d*\$?[sd]|%s|%d|\$[A-Z0-9_]+\$|\{Pawn_[^}]+\})")
         .expect("valid placeholder regex")
 });
 

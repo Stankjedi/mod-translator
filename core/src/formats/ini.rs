@@ -55,7 +55,7 @@ impl FormatHandler for IniHandler {
         original: &str,
         translations: &TranslationResult,
     ) -> Result<String, FormatError> {
-        let mut translation_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut translation_map = std::collections::HashMap::new();
         for entry in &translations.translated {
             translation_map.insert(entry.source.clone(), entry.target.clone());
         }
