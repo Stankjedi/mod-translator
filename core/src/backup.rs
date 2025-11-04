@@ -1,6 +1,6 @@
 use chrono::Local;
 use serde::Serialize;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -103,6 +103,7 @@ fn build_temp_path(target: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Read;
     use tempfile::tempdir;
 

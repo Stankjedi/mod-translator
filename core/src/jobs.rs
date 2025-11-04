@@ -1108,9 +1108,7 @@ async fn run_translation_job(
             if let Some(context) = file_contexts.get_mut(segment.file_index) {
                 if segment.line_index < context.translated_lines.len() {
                     if apply_translation {
-                        let translated_ref = translated_value
-                            .as_ref()
-                            .expect("translation value present");
+                        let translated_ref = translated_value.as_str();
                         let replacement =
                             format!("{}{}{}", segment.prefix, translated_ref, segment.suffix);
                         context.translated_lines[segment.line_index] = Some(replacement.clone());
