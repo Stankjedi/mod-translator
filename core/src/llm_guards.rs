@@ -172,9 +172,18 @@ impl TokenPreservationValidator {
         use regex::Regex;
         use once_cell::sync::Lazy;
         
+        // Token detection pattern - matches multiple token types:
+        // 1. ⟦MT:[A-Z_]+:\d+⟧ - Protected tokens
+        // 2. \{[0-9]+\} - .NET format tokens like {0}
+        // 3. \{[A-Za-z_][A-Za-z0-9_]*\} - Named tokens like {name}
+        // 4. %[0-9]*\$?[sdifuxXoScpn] - Printf format tokens like %s, %1$s
+        // 5. __[A-Z]+(?:__[A-Za-z0-9_\-\.]+__)?__ - Factorio entity tokens
+        // 6. __[0-9]+__ - Factorio numbered tokens
+        // 7. §[0-9A-FK-ORa-fk-or] - Minecraft color codes
         static TOKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"⟦MT:[A-Z_]+:\d+⟧|\{[0-9]+\}|\{[A-Za-z_][A-Za-z0-9_]*\}|%[0-9]*\$?[sdifuxXoScpn]|__[A-Z]+(?:__[A-Za-z0-9_\-\.]+__)?__|__[0-9]+__|§[0-9A-FK-ORa-fk-or]")
-                .expect("valid token regex")
+            Regex::new(
+                r"⟦MT:[A-Z_]+:\d+⟧|\{[0-9]+\}|\{[A-Za-z_][A-Za-z0-9_]*\}|%[0-9]*\$?[sdifuxXoScpn]|__[A-Z]+(?:__[A-Za-z0-9_\-\.]+__)?__|__[0-9]+__|§[0-9A-FK-ORa-fk-or]"
+            ).expect("valid token regex")
         });
         
         TOKEN_REGEX

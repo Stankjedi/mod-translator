@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // Regex patterns for token detection - updated to match all new token types
+// NOTE: This list must be kept synchronized with TokenClass enum in protector.rs
+// When adding new token types, update both the enum and this regex pattern
 static PROTECTED_TOKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"⟦MT:(PRINTF|DOTNET|NAMED|SHELL|FACTORIO|FLINK|ICU|TAG|BBCODE|RWCOLOR|MCCOLOR|RICHTEXT|FCOLOR|DBLBRACK|MUSTACHE|MATHEXPR|RANGE|PERCENT|SCIENTIFIC|UNIT|ESCBRACE|ESCPCT|ENTITY|ESCAPE|ATTR|KEY|PIPE|IDPATH):(\d+)⟧")
         .expect("valid protected token regex")

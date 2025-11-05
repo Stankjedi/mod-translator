@@ -87,7 +87,7 @@ pub fn validate_xml(content: &str) -> Result<(), FormatValidationError> {
                         let expected = stack.pop().unwrap();
                         if expected != tag_name {
                             return Err(FormatValidationError::XmlError(
-                                format!("Tag mismatch: expected </{}>  but got </{}>", expected, tag_name)
+                                format!("Tag mismatch: expected </{}> but got </{}>", expected, tag_name)
                             ));
                         }
                     } else if !is_self_closing {
