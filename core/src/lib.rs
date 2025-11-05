@@ -5,6 +5,7 @@ pub mod encoding;
 pub mod formats;
 mod jobs;
 mod library;
+pub mod math_units;
 pub mod pipeline;
 pub mod placeholder_validator;
 pub mod policy;

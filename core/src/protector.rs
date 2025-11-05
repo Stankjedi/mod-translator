@@ -104,6 +104,45 @@ static ENTITY_REGEX: Lazy<Regex> =
 static ESCAPE_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\\[ntr]").expect("valid escape regex"));
 
+// === Math/Numerical Patterns (Section 2.1) ===
+
+// Arithmetic expressions: numbers with operators + - × * ÷ / ^ = ≠ ≈ ≤ ≥ < >
+static MATH_EXPR_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?x)
+        \d+(?:\.\d+)?  # number
+        \s*[+\-×*÷/^=≠≈≤≥<>]\s*  # operator with optional whitespace
+        \d+(?:\.\d+)?  # another number
+        (?:\s*[+\-×*÷/^=≠≈≤≥<>]\s*\d+(?:\.\d+)?)*  # additional terms
+        |
+        \([^)]+[+\-×*÷/^=≠≈≤≥<>][^)]+\)  # expressions in parentheses
+    ").expect("valid math expression regex")
+});
+
+// Range/interval patterns: a~b, a-b, a–b (with en dash)
+static RANGE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\d+(?:\.\d+)?\s*[~\-–]\s*\d+(?:\.\d+)?(?:\s*[a-zA-Z°%]+)?")
+        .expect("valid range regex")
+});
+
+// Percentages: n%, {n}%, n‒m% (but not escaped %%)
+// Note: This overlaps with DOTNET_BRACE_REGEX followed by %, handled specially
+static PERCENT_SIMPLE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\d+(?:\.\d+)?%")
+        .expect("valid simple percent regex")
+});
+
+// Scientific notation: 1e-6, 2×10^9, 10^n
+static SCIENTIFIC_NOTATION_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\d+(?:\.\d+)?[eE][+\-]?\d+|\d+(?:\.\d+)?\s*[×x]\s*10\^[\d\-]+|10\^\d+|10\^[a-z]")
+        .expect("valid scientific notation regex")
+});
+
+// Units with numbers: 16 ms, 60 FPS, 4 GB, 100 km/h, 90°
+static UNIT_WITH_NUMBER_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\d+(?:\.\d+)?\s*(?:ms|fps|FPS|GB|MB|KB|TB|km/h|m/s|°C|°F|°|px|pt|em|rem|Hz|kHz|MHz)")
+        .expect("valid unit with number regex")
+});
+
 // === Legacy Patterns (for backward compatibility) ===
 
 static PIPE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\|").expect("valid pipe regex"));
@@ -139,6 +178,13 @@ pub enum TokenClass {
     DoubleBracket,    // [[res]], <<macro>>
     Mustache,         // {{var}}
     
+    // Math/numerical (Section 2.1)
+    MathExpr,         // 3.14 × r^2, (a+b)/2
+    Range,            // 10-20, 5~10
+    Percent,          // 50%, {0}%
+    Scientific,       // 1e-6, 2×10^9
+    Unit,             // 16 ms, 60 FPS
+    
     // Escape/literal
     EscapedBrace,     // {{, }}
     EscapedPercent,   // %%
@@ -170,6 +216,11 @@ impl TokenClass {
             TokenClass::FactorioColor => "FCOLOR",
             TokenClass::DoubleBracket => "DBLBRACK",
             TokenClass::Mustache => "MUSTACHE",
+            TokenClass::MathExpr => "MATHEXPR",
+            TokenClass::Range => "RANGE",
+            TokenClass::Percent => "PERCENT",
+            TokenClass::Scientific => "SCIENTIFIC",
+            TokenClass::Unit => "UNIT",
             TokenClass::EscapedBrace => "ESCBRACE",
             TokenClass::EscapedPercent => "ESCPCT",
             TokenClass::Entity => "ENTITY",
@@ -364,6 +415,43 @@ impl Protector {
             input,
             TokenClass::ShellVar,
             &SHELL_VAR_REGEX,
+        );
+        
+        // Math/numerical patterns (Section 2.1) - before entities to avoid conflicts
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::Scientific,
+            &SCIENTIFIC_NOTATION_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::Unit,
+            &UNIT_WITH_NUMBER_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::MathExpr,
+            &MATH_EXPR_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::Range,
+            &RANGE_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::Percent,
+            &PERCENT_SIMPLE_REGEX,
         );
         
         // HTML entities and escapes
@@ -676,5 +764,120 @@ mod tests {
         
         let restored = fragment.restore(fragment.masked_text()).unwrap();
         assert_eq!(restored, input);
+    }
+    
+    // === Section 2.1 Tests: Math/Numerical Patterns ===
+    
+    #[test]
+    fn test_math_expressions() {
+        let input = "Formula: 3.14 × r^2 and (a+b)/2";
+        let fragment = Protector::protect(input);
+        
+        // Should detect mathematical expressions
+        assert!(fragment.masked_text().contains("⟦MT:MATHEXPR:"));
+        assert!(fragment.token_map().tokens.iter().any(|t| t.kind == TokenClass::MathExpr));
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_ranges_and_intervals() {
+        let input = "Range: 10-20, or 5~10, or 100–200 ms";
+        let fragment = Protector::protect(input);
+        
+        // Should detect range patterns
+        assert!(fragment.masked_text().contains("⟦MT:RANGE:") || 
+                fragment.masked_text().contains("⟦MT:UNIT:"));
+        assert!(fragment.token_map().tokens.iter().any(|t| 
+            t.kind == TokenClass::Range || t.kind == TokenClass::Unit
+        ));
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_percentages() {
+        let input = "Progress: 50%, Speed: {0}%, Range: 10-20%";
+        let fragment = Protector::protect(input);
+        
+        // Should detect percentage patterns and brace tokens
+        assert!(fragment.masked_text().contains("⟦MT:PERCENT:") || 
+                fragment.masked_text().contains("⟦MT:DOTNET:"));
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_scientific_notation() {
+        let input = "Values: 1e-6, 2×10^9, 10^3";
+        let fragment = Protector::protect(input);
+        
+        // Should detect scientific notation
+        assert!(fragment.masked_text().contains("⟦MT:SCIENTIFIC:"));
+        assert!(fragment.token_map().tokens.iter().any(|t| t.kind == TokenClass::Scientific));
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_units_with_numbers() {
+        let input = "Performance: 16 ms, 60 FPS, 4 GB, 100 km/h, 90°";
+        let fragment = Protector::protect(input);
+        
+        // Should detect units
+        assert!(fragment.masked_text().contains("⟦MT:UNIT:"));
+        assert!(fragment.token_map().tokens.iter().any(|t| t.kind == TokenClass::Unit));
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_complex_mixed_patterns() {
+        let input = "Speed {0}% at 16-32 ms with 2×10^9 operations and x + y = 10";
+        let fragment = Protector::protect(input);
+        
+        // Should detect multiple types: DOTNET ({0}), RANGE/UNIT (16-32 ms), 
+        // SCIENTIFIC (2×10^9), MATHEXPR (x + y = 10), and potentially PERCENT
+        let has_dotnet = fragment.token_map().tokens.iter().any(|t| t.kind == TokenClass::DotnetBrace);
+        let has_math_or_sci = fragment.token_map().tokens.iter().any(|t| 
+            t.kind == TokenClass::MathExpr || t.kind == TokenClass::Scientific || 
+            t.kind == TokenClass::Range || t.kind == TokenClass::Unit
+        );
+        
+        assert!(has_dotnet, "Expected DOTNET token for {{0}}");
+        assert!(has_math_or_sci, "Expected math/numerical tokens");
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_formula_preservation_roundtrip() {
+        // Test case from Section 13 requirements
+        let inputs = vec![
+            "3.14 × r^2",
+            "10–20%",
+            "(a+b)/2",
+            "16 ms",
+            "60 FPS",
+            "4 GB",
+            "{0}%",
+            "%1$s/s",
+        ];
+        
+        for input in inputs {
+            let fragment = Protector::protect(input);
+            let restored = fragment.restore(fragment.masked_text()).unwrap();
+            assert_eq!(restored, input, "Failed to preserve: {}", input);
+            
+            // Ensure something was protected
+            assert!(!fragment.token_map().tokens.is_empty(), 
+                "No tokens detected in: {}", input);
+        }
     }
 }
