@@ -8,9 +8,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// Regex patterns for token detection
+// Regex patterns for token detection - updated to match all new token types
 static PROTECTED_TOKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"⟦MT:(TAG|CODE|ATTR|KEY|PLACEHOLDER|ICU|MUSTACHE|RICHTEXT|ENTITY|ESCAPE|PIPE|IDPATH):(\d+)⟧")
+    Regex::new(r"⟦MT:(PRINTF|DOTNET|NAMED|SHELL|FACTORIO|FLINK|ICU|TAG|BBCODE|RWCOLOR|MCCOLOR|RICHTEXT|FCOLOR|DBLBRACK|MUSTACHE|ESCBRACE|ESCPCT|ENTITY|ESCAPE|ATTR|KEY|PIPE|IDPATH):(\d+)⟧")
         .expect("valid protected token regex")
 });
 
@@ -38,6 +38,12 @@ pub enum ValidationErrorCode {
     XmlMalformedAfterRestore,
     /// Partial retry failed after auto-recovery
     RetryFailed,
+    /// ICU MessageFormat block unbalanced
+    IcuUnbalanced,
+    /// Format-specific parser error (JSON, YAML, etc.)
+    ParserError,
+    /// Factorio token order incorrect
+    FactorioOrderError,
 }
 
 /// Auto-recovery step types
@@ -204,7 +210,7 @@ impl PlaceholderSet {
     }
 }
 
-/// Segment information for validation
+/// Segment information for validation with format-specific metadata (Section 6)
 #[derive(Debug, Clone)]
 pub struct Segment {
     pub file: String,
@@ -213,6 +219,23 @@ pub struct Segment {
     pub source_raw: String,
     pub source_preprocessed: String,
     pub expected: PlaceholderSet,
+    pub format: Option<FileFormat>,
+    pub token_types: Vec<String>,
+}
+
+/// File format types for format-aware validation
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FileFormat {
+    Xml,
+    Json,
+    Cfg,
+    Ini,
+    Po,
+    Yaml,
+    Csv,
+    Txt,
+    Unknown,
 }
 
 impl Segment {
@@ -225,7 +248,21 @@ impl Segment {
             source_raw,
             source_preprocessed,
             expected,
+            format: None,
+            token_types: Vec::new(),
         }
+    }
+    
+    /// Create segment with format metadata
+    pub fn with_format(mut self, format: FileFormat) -> Self {
+        self.format = Some(format);
+        self
+    }
+    
+    /// Create segment with token type information
+    pub fn with_token_types(mut self, token_types: Vec<String>) -> Self {
+        self.token_types = token_types;
+        self
     }
 }
 

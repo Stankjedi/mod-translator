@@ -4,40 +4,107 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
+// === Format Token Patterns (Section 2.1) ===
+
+// C/printf style: %s, %1$s, %0.2f, %d, etc.
+static PRINTF_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"%[%\d\$\.\-\+\#\s]*[sdifuxXoScpn]").expect("valid printf regex")
+});
+
+// .NET/Unity style: {0}, {1:0.##}, {0:N2}
+static DOTNET_BRACE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{[0-9]+(?::[^{}]+)?\}").expect("valid .NET brace regex")
+});
+
+// Named placeholders: {name}, {PAWN_label}, {count}
+static NAMED_BRACE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{[A-Za-z_][A-Za-z0-9_]*\}").expect("valid named brace regex")
+});
+
+// Shell/template style: $NAME, ${count}, $VAR
+static SHELL_VAR_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?").expect("valid shell var regex")
+});
+
+// Factorio macros: __1__, __ENTITY__iron-ore__, __control__inventory__
+static FACTORIO_MACRO_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"__(?:[A-Z]+(?:__[A-Za-z0-9_\-\.]+__)?|[0-9]+__)").expect("valid Factorio macro regex")
+});
+
+// Factorio images/links: [img=item/iron-plate], [entity=iron-ore]
+static FACTORIO_LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\[(?:img|item|entity|technology|virtual-signal)=[^\]]+\]").expect("valid Factorio link regex")
+});
+
+// ICU MessageFormat: {count, plural, one {# item} other {# items}}
+// Note: This is a simplified pattern. Full ICU parsing requires proper parser.
+static ICU_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{[A-Za-z_][A-Za-z0-9_]*,\s*(?:plural|select|selectordinal)\s*,[^}]*\}").expect("valid ICU regex")
+});
+
+// === Markup/Color/Link Patterns (Section 2.2) ===
+
+// XML/HTML tags: <tag>, </tag>, <tag attr="value">
 static TAG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").expect("valid tag regex"));
 
+// BBCode: [b], [/b], [color=#ff0000], [url=...]
 static BB_TAG_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\[(?:/?[a-zA-Z0-9]+|img|/?url)(?:=[^\]]+)?\]").expect("valid bbcode tag regex")
+    Regex::new(r"\[/?(?:b|i|u|url|img|color=[^\]]+|size=\d+)\]").expect("valid bbcode tag regex")
 });
 
-static PLACEHOLDER_REGEX: Lazy<Regex> = Lazy::new(|| {
-    // Basic placeholders, excluding patterns now handled by specialized regexes
-    Regex::new(r"(\{\w+\}|\{\d+\}|%\d*\$?[sd]|%s|%d|\$[A-Z0-9_]+\$|\{Pawn_[^}]+\})")
-        .expect("valid placeholder regex")
+// RimWorld color tags: <color=#RRGGBBAA>, </color>, <b>, </b>
+static RIMWORLD_COLOR_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"</?(?:color(?:=#[0-9A-Fa-f]{6,8})?|b|i)>").expect("valid RimWorld color regex")
 });
 
-// ICU MessageFormat patterns: {var, plural, ...}, {var, select, ...}
-// Note: This is a simplified pattern. Full ICU parsing requires a proper parser
-// due to nested braces. This catches common simple cases.
-static ICU_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{[^}]+,\s*(?:plural|select|selectordinal)\s*,\s*[^}]+\}").expect("valid ICU regex")
+// Minecraft color codes: §a, §l, §r (section sign + code)
+static MINECRAFT_COLOR_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"§[0-9A-FK-ORa-fk-or]").expect("valid Minecraft color regex")
 });
 
-// Mustache/Handlebars: {{var}}
+// Unity/RimWorld rich text: <color=#abc>, <sprite=name>, <size=14>
+static RICH_TEXT_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"</?(?:color|size|sprite|material)(?:=[^>]+)?>").expect("valid rich text regex")
+});
+
+// Factorio color tags: [color=red]...[/color]
+static FACTORIO_COLOR_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\[/?color(?:=[^\]]+)?\]").expect("valid Factorio color regex")
+});
+
+// === Resource/Macro Substitution (Section 2.3) ===
+
+// Bracket variations: [[resource]], <<macro>>
+static DOUBLE_BRACKET_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\[\[[^\]]+\]\]|<<[^>]+>>").expect("valid double bracket regex")
+});
+
+// Mustache/Handlebars: {{var}}, {{#each}}, {{/each}}
 static MUSTACHE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\{\{[^}]+\}\}").expect("valid mustache regex")
 });
 
-// Unity/RimWorld rich text: <color=#abc>, <sprite=name>
-static RICH_TEXT_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"<(?:color|size|sprite|material)(?:=[^>]+)?/?>").expect("valid rich text regex")
+// === Escape and Literal Patterns (Section 2.4) ===
+
+// Escaped braces: {{ and }} (literal in some contexts)
+static ESCAPED_BRACE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{\{|\}\}").expect("valid escaped brace regex")
 });
 
+// Escaped percent: %% (literal %)
+static ESCAPED_PERCENT_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"%%").expect("valid escaped percent regex")
+});
+
+// HTML entities: &nbsp;, &#160;, &#x00A0;
 static ENTITY_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"&(?:[a-zA-Z]+|#x?[0-9a-fA-F]+);").expect("valid entity regex"));
 
+// Escape sequences: \n, \t, \r
 static ESCAPE_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\\[ntr]").expect("valid escape regex"));
+
+// === Legacy Patterns (for backward compatibility) ===
 
 static PIPE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\|").expect("valid pipe regex"));
 
@@ -51,15 +118,36 @@ static MARKER_REGEX: Lazy<Regex> =
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TokenClass {
-    Tag,
+    // Format tokens
+    Printf,           // %s, %d, %1$s
+    DotnetBrace,      // {0}, {1:0.##}
+    NamedBrace,       // {name}, {PAWN_label}
+    ShellVar,         // $VAR, ${count}
+    FactorioMacro,    // __1__, __ENTITY__foo__
+    FactorioLink,     // [img=item/plate]
+    Icu,              // {n, plural, ...}
+    
+    // Markup/color
+    Tag,              // <tag>
+    BbCode,           // [b], [color=...]
+    RimworldColor,    // <color=#fff>, </color>
+    MinecraftColor,   // §a, §l
+    RichText,         // <sprite=...>
+    FactorioColor,    // [color=red]
+    
+    // Resource/macro
+    DoubleBracket,    // [[res]], <<macro>>
+    Mustache,         // {{var}}
+    
+    // Escape/literal
+    EscapedBrace,     // {{, }}
+    EscapedPercent,   // %%
+    Entity,           // &nbsp;
+    Escape,           // \n, \t
+    
+    // Legacy (for backward compat)
     Attr,
     Key,
-    Placeholder,
-    Icu,
-    Mustache,
-    RichText,
-    Entity,
-    Escape,
     Pipe,
     IdPath,
 }
@@ -67,15 +155,27 @@ pub enum TokenClass {
 impl TokenClass {
     fn code(&self) -> &'static str {
         match self {
-            TokenClass::Tag => "TAG",
-            TokenClass::Attr => "ATTR",
-            TokenClass::Key => "KEY",
-            TokenClass::Placeholder => "PLACEHOLDER",
+            TokenClass::Printf => "PRINTF",
+            TokenClass::DotnetBrace => "DOTNET",
+            TokenClass::NamedBrace => "NAMED",
+            TokenClass::ShellVar => "SHELL",
+            TokenClass::FactorioMacro => "FACTORIO",
+            TokenClass::FactorioLink => "FLINK",
             TokenClass::Icu => "ICU",
-            TokenClass::Mustache => "MUSTACHE",
+            TokenClass::Tag => "TAG",
+            TokenClass::BbCode => "BBCODE",
+            TokenClass::RimworldColor => "RWCOLOR",
+            TokenClass::MinecraftColor => "MCCOLOR",
             TokenClass::RichText => "RICHTEXT",
+            TokenClass::FactorioColor => "FCOLOR",
+            TokenClass::DoubleBracket => "DBLBRACK",
+            TokenClass::Mustache => "MUSTACHE",
+            TokenClass::EscapedBrace => "ESCBRACE",
+            TokenClass::EscapedPercent => "ESCPCT",
             TokenClass::Entity => "ENTITY",
             TokenClass::Escape => "ESCAPE",
+            TokenClass::Attr => "ATTR",
+            TokenClass::Key => "KEY",
             TokenClass::Pipe => "PIPE",
             TokenClass::IdPath => "IDPATH",
         }
@@ -134,7 +234,24 @@ impl Protector {
         let mut occupied = vec![false; input.len()];
         let mut tokens = Vec::new();
 
-        // Collect tokens in priority order (more specific first)
+        // Collect tokens in priority order (more specific patterns first)
+        // Escapes first (must be protected before their patterns)
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::EscapedBrace,
+            &ESCAPED_BRACE_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::EscapedPercent,
+            &ESCAPED_PERCENT_REGEX,
+        );
+        
+        // Complex structures (ICU MessageFormat, Mustache)
         collect_tokens(
             &mut tokens,
             &mut occupied,
@@ -148,6 +265,45 @@ impl Protector {
             input,
             TokenClass::Mustache,
             &MUSTACHE_REGEX,
+        );
+        
+        // Game-specific tokens
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::FactorioMacro,
+            &FACTORIO_MACRO_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::FactorioLink,
+            &FACTORIO_LINK_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::FactorioColor,
+            &FACTORIO_COLOR_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::MinecraftColor,
+            &MINECRAFT_COLOR_REGEX,
+        );
+        
+        // Markup tags (specific to general)
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::RimworldColor,
+            &RIMWORLD_COLOR_REGEX,
         );
         collect_tokens(
             &mut tokens,
@@ -167,16 +323,50 @@ impl Protector {
             &mut tokens,
             &mut occupied,
             input,
-            TokenClass::Tag,
+            TokenClass::BbCode,
             &BB_TAG_REGEX,
+        );
+        
+        // Bracket variations
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::DoubleBracket,
+            &DOUBLE_BRACKET_REGEX,
+        );
+        
+        // Format tokens (specific to general)
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::Printf,
+            &PRINTF_REGEX,
         );
         collect_tokens(
             &mut tokens,
             &mut occupied,
             input,
-            TokenClass::Placeholder,
-            &PLACEHOLDER_REGEX,
+            TokenClass::DotnetBrace,
+            &DOTNET_BRACE_REGEX,
         );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::NamedBrace,
+            &NAMED_BRACE_REGEX,
+        );
+        collect_tokens(
+            &mut tokens,
+            &mut occupied,
+            input,
+            TokenClass::ShellVar,
+            &SHELL_VAR_REGEX,
+        );
+        
+        // HTML entities and escapes
         collect_tokens(
             &mut tokens,
             &mut occupied,
@@ -191,6 +381,8 @@ impl Protector {
             TokenClass::Escape,
             &ESCAPE_REGEX,
         );
+        
+        // Legacy patterns (low priority)
         collect_tokens(
             &mut tokens,
             &mut occupied,

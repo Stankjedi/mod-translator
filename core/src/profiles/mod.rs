@@ -4,7 +4,7 @@ pub mod factorio;
 pub mod stardew;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameProfile {
@@ -15,6 +15,53 @@ pub struct GameProfile {
     pub exclude_paths: Vec<String>,
     pub extra_placeholders: Vec<String>,
     pub terminology: HashMap<String, String>,
+    
+    /// Validator configuration (Section 9)
+    #[serde(default)]
+    pub validator_config: ValidatorProfileConfig,
+}
+
+/// Validator-specific profile configuration (Section 9)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatorProfileConfig {
+    /// Allowed token types for this game
+    #[serde(default)]
+    pub allowed_token_types: HashSet<String>,
+    
+    /// CSV column indices to translate (if applicable)
+    #[serde(default)]
+    pub csv_target_columns: Vec<usize>,
+    
+    /// Patterns that must be preserved exactly (regex)
+    #[serde(default)]
+    pub force_fixed_patterns: Vec<String>,
+    
+    /// Prohibited token substitutions
+    #[serde(default)]
+    pub forbidden_substitutions: Vec<TokenSubstitution>,
+    
+    /// Format-specific rules
+    #[serde(default)]
+    pub format_rules: Vec<FormatRule>,
+}
+
+/// Prohibited token substitution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenSubstitution {
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+}
+
+/// Format-specific validation rule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatRule {
+    pub format: String,
+    pub rule_type: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +97,34 @@ impl GameProfile {
     
     /// Get generic profile (fallback)
     pub fn generic() -> Self {
+        // Generic profile allows all token types
+        let mut allowed_token_types = HashSet::new();
+        allowed_token_types.insert("PRINTF".to_string());
+        allowed_token_types.insert("DOTNET".to_string());
+        allowed_token_types.insert("NAMED".to_string());
+        allowed_token_types.insert("SHELL".to_string());
+        allowed_token_types.insert("FACTORIO".to_string());
+        allowed_token_types.insert("FLINK".to_string());
+        allowed_token_types.insert("ICU".to_string());
+        allowed_token_types.insert("TAG".to_string());
+        allowed_token_types.insert("BBCODE".to_string());
+        allowed_token_types.insert("RWCOLOR".to_string());
+        allowed_token_types.insert("MCCOLOR".to_string());
+        allowed_token_types.insert("RICHTEXT".to_string());
+        allowed_token_types.insert("FCOLOR".to_string());
+        allowed_token_types.insert("DBLBRACK".to_string());
+        allowed_token_types.insert("MUSTACHE".to_string());
+        allowed_token_types.insert("ENTITY".to_string());
+        allowed_token_types.insert("ESCAPE".to_string());
+        
+        let validator_config = ValidatorProfileConfig {
+            allowed_token_types,
+            csv_target_columns: vec![],
+            force_fixed_patterns: vec![],
+            forbidden_substitutions: vec![],
+            format_rules: vec![],
+        };
+        
         Self {
             id: "generic".to_string(),
             name: "Generic Mod".to_string(),
@@ -66,6 +141,7 @@ impl GameProfile {
             exclude_paths: Vec::new(),
             extra_placeholders: Vec::new(),
             terminology: HashMap::new(),
+            validator_config,
         }
     }
 }
