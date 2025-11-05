@@ -6,6 +6,7 @@ use crate::backup::backup_and_swap;
 use crate::placeholder_validator::{PlaceholderValidator, Segment as ValidatorSegment, ValidatorConfig};
 use crate::protector::Protector;
 use crate::quality::{validate_segment, SegmentLimits};
+use crate::validation_logger::validation_logger;
 use log::warn;
 use once_cell::sync::Lazy;
 use reqwest::Client;
@@ -966,6 +967,8 @@ async fn run_translation_job(
                         match placeholder_result {
                             Ok(recovered_value) => {
                                 // Placeholder validation passed or was auto-recovered
+                                validation_logger().log_success();
+                                
                                 if validation.is_pass() {
                                     translated_value = Some(recovered_value);
                                     apply_translation = true;
@@ -992,6 +995,9 @@ async fn run_translation_job(
                             }
                             Err(failure_report) => {
                                 // Placeholder validation failed and auto-recovery didn't help
+                                // Log to validation logger
+                                validation_logger().log_failure(&failure_report);
+                                
                                 warn!(
                                     "Placeholder validation failed for {}:{} ({}): {:?}",
                                     segment.relative_path,

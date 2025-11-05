@@ -15,6 +15,7 @@ pub mod scanner;
 mod steam;
 mod time;
 mod validation;
+pub mod validation_logger;
 pub mod validator;
 
 pub use jobs::{
@@ -34,3 +35,9 @@ pub use placeholder_validator::{
 pub use policy::{default_policy_banner, PolicyBanner, PolicyProfile};
 pub use steam::{detect_steam_path, SteamLocator, SteamPathResponse};
 pub use validation::validate_api_key_and_list_models;
+pub use validation_logger::{
+    validation_logger, init_validation_logging, get_validation_log_path,
+    ValidationLogger, ValidationMetrics, ValidationLogEntry,
+    get_validation_metrics, reset_validation_metrics, export_validation_metrics,
+    get_validation_log_file_path,
+};

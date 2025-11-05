@@ -282,4 +282,14 @@ export interface ValidatorConfig {
   preservePercentBinding: boolean
 }
 
+export interface ValidationMetrics {
+  totalValidations: number
+  totalFailures: number
+  autofixAttempts: number
+  autofixSuccesses: number
+  retryAttempts: number
+  retrySuccesses: number
+  byErrorCode: Record<string, number>
+}
+
 // Legacy pipeline-related types removed in favor of streaming progress events.
