@@ -575,6 +575,47 @@ impl PlaceholderValidator {
             None
         }
     }
+    
+    /// Validate format after token restoration (Section 6)
+    pub fn validate_format_after_restore(
+        &self,
+        restored: &str,
+        format: FileFormat,
+    ) -> Result<(), ValidationErrorCode> {
+        use crate::format_validator;
+        
+        match format {
+            FileFormat::Json => {
+                format_validator::validate_json(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            FileFormat::Xml => {
+                format_validator::validate_xml(restored)
+                    .map_err(|_| ValidationErrorCode::XmlMalformedAfterRestore)?;
+            }
+            FileFormat::Yaml => {
+                format_validator::validate_yaml(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            FileFormat::Po => {
+                format_validator::validate_po(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            FileFormat::Ini | FileFormat::Cfg => {
+                format_validator::validate_ini(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            FileFormat::Csv => {
+                format_validator::validate_csv(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            // Text-based formats don't need strict validation
+            FileFormat::Txt | FileFormat::Markdown | FileFormat::Properties | FileFormat::Lua => {}
+            FileFormat::Unknown => {}
+        }
+        
+        Ok(())
+    }
 
     /// Create failure report
     fn create_failure_report(
