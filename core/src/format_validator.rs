@@ -34,6 +34,15 @@ pub enum FormatValidationError {
     
     #[error("CSV format error: {0}")]
     CsvError(String),
+    
+    #[error("Markdown format error: {0}")]
+    MarkdownError(String),
+    
+    #[error("Properties format error: {0}")]
+    PropertiesError(String),
+    
+    #[error("Lua format error: {0}")]
+    LuaError(String),
 }
 
 /// Validates JSON format
@@ -170,10 +179,11 @@ pub fn validate_po(content: &str) -> Result<(), FormatValidationError> {
 }
 
 /// Validates ICU MessageFormat blocks
+/// Note: This performs basic brace balance checking. For complex nested ICU patterns,
+/// more sophisticated validation may be needed in the future.
 pub fn validate_icu(content: &str) -> Result<(), FormatValidationError> {
     // Check brace balance and ICU keywords
     let mut brace_count = 0;
-    let mut in_icu = false;
     
     let chars: Vec<char> = content.chars().collect();
     let mut i = 0;
@@ -185,10 +195,11 @@ pub fn validate_icu(content: &str) -> Result<(), FormatValidationError> {
                 
                 // Check if this is start of ICU pattern
                 if i + 5 < chars.len() {
-                    let lookahead: String = chars[i..i+20.min(chars.len())].iter().collect();
+                    let end = (i + 20).min(chars.len());
+                    let lookahead: String = chars[i..end].iter().collect();
                     if lookahead.contains("plural") || lookahead.contains("select") || 
                        lookahead.contains("selectordinal") {
-                        in_icu = true;
+                        // It's an ICU pattern - basic validation by brace counting
                     }
                 }
             }
@@ -198,9 +209,6 @@ pub fn validate_icu(content: &str) -> Result<(), FormatValidationError> {
                     return Err(FormatValidationError::IcuError(
                         "Unbalanced closing brace".to_string()
                     ));
-                }
-                if brace_count == 0 {
-                    in_icu = false;
                 }
             }
             _ => {}
@@ -272,6 +280,137 @@ pub fn validate_csv(content: &str) -> Result<(), FormatValidationError> {
                     idx + 1, expected_cols, cols)
             ));
         }
+    }
+    
+    Ok(())
+}
+
+/// Validates Markdown format - checks for balanced code fences
+pub fn validate_markdown(content: &str) -> Result<(), FormatValidationError> {
+    // Check for balanced code fences
+    let lines: Vec<&str> = content.lines().collect();
+    let mut fence_count = 0;
+    
+    for line in lines {
+        let trimmed = line.trim();
+        // Check for code fences (``` or ~~~)
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence_count += 1;
+        }
+    }
+    
+    if fence_count % 2 != 0 {
+        return Err(FormatValidationError::MarkdownError(
+            "Unbalanced code fences".to_string()
+        ));
+    }
+    
+    Ok(())
+}
+
+/// Validates Properties format - checks for valid key=value structure and unicode escapes
+pub fn validate_properties(content: &str) -> Result<(), FormatValidationError> {
+    let lines: Vec<&str> = content.lines().collect();
+    
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        
+        // Skip empty lines and comments
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+            continue;
+        }
+        
+        // Check for key=value or key:value structure
+        if !trimmed.contains('=') && !trimmed.contains(':') {
+            // Could be a continuation line (starts with whitespace)
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                return Err(FormatValidationError::PropertiesError(
+                    format!("Invalid line at {}: expected key=value or key:value", idx + 1)
+                ));
+            }
+        }
+        
+        // Validate unicode escapes
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == 'u' {
+                // Found \u escape, check if it's followed by 4 hex digits
+                if i + 5 < chars.len() {
+                    for j in 2..6 {
+                        if !chars[i + j].is_ascii_hexdigit() {
+                            return Err(FormatValidationError::PropertiesError(
+                                format!("Invalid unicode escape at line {}: \\u must be followed by 4 hex digits", idx + 1)
+                            ));
+                        }
+                    }
+                    i += 6;
+                } else {
+                    return Err(FormatValidationError::PropertiesError(
+                        format!("Incomplete unicode escape at line {}", idx + 1)
+                    ));
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Validates Lua format - checks for balanced string literals
+pub fn validate_lua(content: &str) -> Result<(), FormatValidationError> {
+    let chars: Vec<char> = content.chars().collect();
+    let mut i = 0;
+    let mut single_quote_count = 0;
+    let mut double_quote_count = 0;
+    let mut in_string = false;
+    let mut string_char = ' ';
+    
+    while i < chars.len() {
+        let ch = chars[i];
+        
+        // Skip comments
+        if !in_string && i + 1 < chars.len() && ch == '-' && chars[i + 1] == '-' {
+            // Single line comment, skip to end of line
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        
+        // Handle string literals
+        if !in_string && (ch == '"' || ch == '\'') {
+            in_string = true;
+            string_char = ch;
+            if ch == '"' {
+                double_quote_count += 1;
+            } else {
+                single_quote_count += 1;
+            }
+        } else if in_string && ch == string_char {
+            // Check if escaped
+            if i > 0 && chars[i - 1] == '\\' {
+                // Escaped quote, stay in string
+            } else {
+                in_string = false;
+                if string_char == '"' {
+                    double_quote_count -= 1;
+                } else {
+                    single_quote_count -= 1;
+                }
+            }
+        }
+        
+        i += 1;
+    }
+    
+    if single_quote_count != 0 || double_quote_count != 0 {
+        return Err(FormatValidationError::LuaError(
+            "Unbalanced string literals".to_string()
+        ));
     }
     
     Ok(())
@@ -386,5 +525,41 @@ msgid "World"
     fn test_validate_csv_invalid() {
         let content = "a,b,c\n1,2\n4,5,6"; // mismatched columns
         assert!(validate_csv(content).is_err());
+    }
+    
+    #[test]
+    fn test_validate_markdown_valid() {
+        let content = "# Header\n\n```rust\ncode\n```\n\nText";
+        assert!(validate_markdown(content).is_ok());
+    }
+    
+    #[test]
+    fn test_validate_markdown_unbalanced() {
+        let content = "# Header\n\n```rust\ncode\n\nText";
+        assert!(validate_markdown(content).is_err());
+    }
+    
+    #[test]
+    fn test_validate_properties_valid() {
+        let content = "key=value\nkey2:value2\n# comment\nkey3=\\u0048ello";
+        assert!(validate_properties(content).is_ok());
+    }
+    
+    #[test]
+    fn test_validate_properties_invalid_escape() {
+        let content = "key=\\u00ZZ"; // invalid hex
+        assert!(validate_properties(content).is_err());
+    }
+    
+    #[test]
+    fn test_validate_lua_valid() {
+        let content = "local msg = \"Hello\"\nlocal msg2 = 'World'";
+        assert!(validate_lua(content).is_ok());
+    }
+    
+    #[test]
+    fn test_validate_lua_unbalanced() {
+        let content = "local msg = \"Hello"; // missing closing quote
+        assert!(validate_lua(content).is_err());
     }
 }

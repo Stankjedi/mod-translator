@@ -9,6 +9,7 @@ pub mod csv;
 pub mod properties;
 pub mod lua;
 pub mod txt;
+pub mod markdown;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -145,7 +146,8 @@ pub fn get_handler(format: FileFormat) -> Option<Box<dyn FormatHandler>> {
         FileFormat::Csv => Some(Box::new(csv::CsvHandler::new())),
         FileFormat::Properties => Some(Box::new(properties::PropertiesHandler::new())),
         FileFormat::Lua => Some(Box::new(lua::LuaHandler::new())),
-        FileFormat::Txt | FileFormat::Markdown => Some(Box::new(txt::TxtHandler::new())),
+        FileFormat::Markdown => Some(Box::new(markdown::MarkdownHandler::new())),
+        FileFormat::Txt => Some(Box::new(txt::TxtHandler::new())),
         FileFormat::Unknown => None,
     }
 }

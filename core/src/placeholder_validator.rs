@@ -46,6 +46,12 @@ pub enum ValidationErrorCode {
     ParserError,
     /// Factorio token order incorrect
     FactorioOrderError,
+    /// Markdown code fence unbalanced
+    MarkdownUnbalancedFence,
+    /// Properties unicode escape invalid
+    PropertiesEscapeInvalid,
+    /// Lua string literal unbalanced
+    LuaStringUnbalanced,
 }
 
 /// Auto-recovery step types
@@ -237,6 +243,9 @@ pub enum FileFormat {
     Yaml,
     Csv,
     Txt,
+    Markdown,
+    Properties,
+    Lua,
     Unknown,
 }
 
@@ -611,8 +620,20 @@ impl PlaceholderValidator {
                 format_validator::validate_csv(restored)
                     .map_err(|_| ValidationErrorCode::ParserError)?;
             }
+            FileFormat::Markdown => {
+                format_validator::validate_markdown(restored)
+                    .map_err(|_| ValidationErrorCode::MarkdownUnbalancedFence)?;
+            }
+            FileFormat::Properties => {
+                format_validator::validate_properties(restored)
+                    .map_err(|_| ValidationErrorCode::PropertiesEscapeInvalid)?;
+            }
+            FileFormat::Lua => {
+                format_validator::validate_lua(restored)
+                    .map_err(|_| ValidationErrorCode::LuaStringUnbalanced)?;
+            }
             // Text-based formats don't need strict validation
-            FileFormat::Txt | FileFormat::Markdown | FileFormat::Properties | FileFormat::Lua => {}
+            FileFormat::Txt => {}
             FileFormat::Unknown => {}
         }
         
