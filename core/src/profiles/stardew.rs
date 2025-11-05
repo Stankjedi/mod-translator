@@ -1,7 +1,7 @@
 /// Stardew Valley game profile
-use super::{DetectionRules, GameProfile};
+use super::{DetectionRules, GameProfile, ValidatorProfileConfig};
 use std::path::Path;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct StardewValleyProfile;
 
@@ -23,6 +23,20 @@ impl StardewValleyProfile {
     }
     
     pub fn profile() -> GameProfile {
+        // Validator configuration for Stardew Valley
+        let mut allowed_token_types = HashSet::new();
+        allowed_token_types.insert("DOTNET".to_string());
+        allowed_token_types.insert("NAMED".to_string());
+        allowed_token_types.insert("ENTITY".to_string());
+        
+        let validator_config = ValidatorProfileConfig {
+            allowed_token_types,
+            csv_target_columns: vec![],
+            force_fixed_patterns: vec![],
+            forbidden_substitutions: vec![],
+            format_rules: vec![],
+        };
+        
         GameProfile {
             id: "stardew".to_string(),
             name: "Stardew Valley".to_string(),
@@ -40,6 +54,7 @@ impl StardewValleyProfile {
                 r"\{[a-zA-Z]+\}".to_string(),
             ],
             terminology: HashMap::new(),
+            validator_config,
         }
     }
 }

@@ -1,7 +1,7 @@
 /// RimWorld game profile
-use super::{DetectionRules, GameProfile};
+use super::{DetectionRules, GameProfile, ValidatorProfileConfig, FormatRule};
 use std::path::Path;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct RimWorldProfile;
 
@@ -27,6 +27,32 @@ impl RimWorldProfile {
         terminology.insert("pawn".to_string(), "폰".to_string());
         terminology.insert("colonist".to_string(), "정착민".to_string());
         
+        // Validator configuration for RimWorld
+        let mut allowed_token_types = HashSet::new();
+        allowed_token_types.insert("DOTNET".to_string());
+        allowed_token_types.insert("NAMED".to_string());
+        allowed_token_types.insert("TAG".to_string());
+        allowed_token_types.insert("RWCOLOR".to_string());
+        allowed_token_types.insert("RICHTEXT".to_string());
+        allowed_token_types.insert("ENTITY".to_string());
+        
+        let validator_config = ValidatorProfileConfig {
+            allowed_token_types,
+            csv_target_columns: vec![],
+            force_fixed_patterns: vec![
+                r"\{PAWN_[A-Za-z_]+\}".to_string(),
+                r"\{[0-9]+\}%".to_string(),
+            ],
+            forbidden_substitutions: vec![],
+            format_rules: vec![
+                FormatRule {
+                    format: "xml".to_string(),
+                    rule_type: "nested_color_tags".to_string(),
+                    description: "Allow nested <color> tags with auto-balancing".to_string(),
+                },
+            ],
+        };
+        
         GameProfile {
             id: "rimworld".to_string(),
             name: "RimWorld".to_string(),
@@ -48,6 +74,7 @@ impl RimWorldProfile {
                 r"\{[A-Z_]+\}".to_string(),
             ],
             terminology,
+            validator_config,
         }
     }
 }
