@@ -182,7 +182,6 @@ pub fn validate_po(content: &str) -> Result<(), FormatValidationError> {
 pub fn validate_icu(content: &str) -> Result<(), FormatValidationError> {
     // Check brace balance and ICU keywords
     let mut brace_count = 0;
-    let mut in_icu = false;
     
     let chars: Vec<char> = content.chars().collect();
     let mut i = 0;
@@ -194,10 +193,11 @@ pub fn validate_icu(content: &str) -> Result<(), FormatValidationError> {
                 
                 // Check if this is start of ICU pattern
                 if i + 5 < chars.len() {
-                    let lookahead: String = chars[i..i+20.min(chars.len())].iter().collect();
+                    let end = (i + 20).min(chars.len());
+                    let lookahead: String = chars[i..end].iter().collect();
                     if lookahead.contains("plural") || lookahead.contains("select") || 
                        lookahead.contains("selectordinal") {
-                        in_icu = true;
+                        // It's an ICU pattern
                     }
                 }
             }
@@ -207,9 +207,6 @@ pub fn validate_icu(content: &str) -> Result<(), FormatValidationError> {
                     return Err(FormatValidationError::IcuError(
                         "Unbalanced closing brace".to_string()
                     ));
-                }
-                if brace_count == 0 {
-                    in_icu = false;
                 }
             }
             _ => {}
