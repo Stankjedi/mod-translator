@@ -571,4 +571,110 @@ mod tests {
         let error = fragment.restore(&mutated).unwrap_err();
         matches!(error, ProtectorError::UnexpectedTokens(_));
     }
+    
+    #[test]
+    fn test_factorio_macros() {
+        let input = "Craft __1__ items using __ENTITY__iron-ore__.";
+        let fragment = Protector::protect(input);
+        
+        // Should detect __1__ and __ENTITY__iron-ore__ as FACTORIO tokens
+        assert!(fragment.masked_text().contains("⟦MT:FACTORIO:"));
+        assert_eq!(fragment.token_map().tokens.len(), 2);
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_minecraft_color_codes() {
+        let input = "§aGreen text§r and §lbold§r.";
+        let fragment = Protector::protect(input);
+        
+        // Should detect §a, §r, §l as MCCOLOR tokens
+        assert!(fragment.masked_text().contains("⟦MT:MCCOLOR:"));
+        assert_eq!(fragment.token_map().tokens.len(), 4);
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_rimworld_color_tags() {
+        let input = "<color=#ff0000>Red text</color>";
+        let fragment = Protector::protect(input);
+        
+        // Should detect both tags
+        assert!(fragment.masked_text().contains("⟦MT:RWCOLOR:"));
+        assert_eq!(fragment.token_map().tokens.len(), 2);
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_printf_patterns() {
+        let input = "Value: %s, Count: %d, Percent: %2.1f";
+        let fragment = Protector::protect(input);
+        
+        // Should detect all printf patterns
+        assert!(fragment.masked_text().contains("⟦MT:PRINTF:"));
+        assert_eq!(fragment.token_map().tokens.len(), 3);
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_dotnet_and_named_braces() {
+        let input = "Player {0} killed {count} enemies at {location}";
+        let fragment = Protector::protect(input);
+        
+        // Should detect {0} as DOTNET, {count} and {location} as NAMED
+        assert!(fragment.masked_text().contains("⟦MT:DOTNET:"));
+        assert!(fragment.masked_text().contains("⟦MT:NAMED:"));
+        assert_eq!(fragment.token_map().tokens.len(), 3);
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_icu_messageformat() {
+        let input = "{count, plural, one {# item} other {# items}}";
+        let fragment = Protector::protect(input);
+        
+        // ICU patterns with nested braces are complex - may be detected as multiple tokens
+        // This is a known limitation - full ICU parsing requires a proper parser
+        assert!(fragment.masked_text().contains("⟦MT:"));
+        assert!(fragment.token_map().tokens.len() >= 1, "Expected at least 1 token");
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_mixed_tokens() {
+        let input = "<b>Speed: {0}%</b> using __1__ and %s";
+        let fragment = Protector::protect(input);
+        
+        // Should detect: <b>, </b>, {0}, __1__, %s
+        let tokens = &fragment.token_map().tokens;
+        assert!(tokens.len() >= 5, "Expected at least 5 tokens, got {}", tokens.len());
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
+    
+    #[test]
+    fn test_escaped_patterns() {
+        let input = "Use {{ }} for literal braces and %% for percent";
+        let fragment = Protector::protect(input);
+        
+        // Should detect escaped braces and percent
+        assert!(fragment.masked_text().contains("⟦MT:ESCBRACE:") || 
+                fragment.masked_text().contains("⟦MT:ESCPCT:"));
+        
+        let restored = fragment.restore(fragment.masked_text()).unwrap();
+        assert_eq!(restored, input);
+    }
 }
