@@ -547,16 +547,18 @@ mod tests {
         assert_ne!(fragment.masked_text(), input);
         let restored = fragment.restore(fragment.masked_text()).unwrap();
         assert_eq!(restored, input);
-        assert_eq!(fragment.token_map().tokens.len(), 4);
+        // Now detects: <b>, </b>, {0}, |, {Pawn_label}
+        assert_eq!(fragment.token_map().tokens.len(), 5);
     }
 
     #[test]
     fn detect_missing_token() {
         let input = "Use {0} and keep it.";
         let fragment = Protector::protect(input);
+        // {0} is now detected as DOTNET token class
         let mutated = fragment
             .masked_text()
-            .replace("⟦MT:PLACEHOLDER:1⟧", "dropped");
+            .replace("⟦MT:DOTNET:0⟧", "dropped");
         let error = fragment.restore(&mutated).unwrap_err();
         matches!(error, ProtectorError::MissingTokens(_));
     }

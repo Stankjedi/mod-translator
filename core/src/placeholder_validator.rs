@@ -323,6 +323,14 @@ impl PlaceholderValidator {
                     segment.key
                 );
             }
+            
+            // Even if validation passes, check if we need to preserve {n}% patterns
+            if self.config.preserve_percent_binding {
+                if let Some(corrected) = self.preserve_percent_patterns(&segment.source_preprocessed, translated) {
+                    return Ok(corrected);
+                }
+            }
+            
             return Ok(translated.to_string());
         }
 
@@ -445,8 +453,13 @@ impl PlaceholderValidator {
                 let relative_pos = pos as f64 / source.len().max(1) as f64;
                 
                 // Calculate insertion position in translated text
-                let insert_pos = (translated.len() as f64 * relative_pos) as usize;
-                let insert_pos = insert_pos.min(result.len());
+                let mut insert_pos = (translated.len() as f64 * relative_pos) as usize;
+                insert_pos = insert_pos.min(result.len());
+                
+                // Ensure we're at a UTF-8 character boundary
+                while insert_pos > 0 && !result.is_char_boundary(insert_pos) {
+                    insert_pos -= 1;
+                }
 
                 // Insert token
                 result.insert_str(insert_pos, token);
@@ -503,8 +516,13 @@ impl PlaceholderValidator {
                 let relative_pos = pos as f64 / source.len().max(1) as f64;
                 
                 // Calculate insertion position in translated text
-                let insert_pos = (translated.len() as f64 * relative_pos) as usize;
-                let insert_pos = insert_pos.min(result.len());
+                let mut insert_pos = (translated.len() as f64 * relative_pos) as usize;
+                insert_pos = insert_pos.min(result.len());
+                
+                // Ensure we're at a UTF-8 character boundary
+                while insert_pos > 0 && !result.is_char_boundary(insert_pos) {
+                    insert_pos -= 1;
+                }
 
                 // Insert token
                 result.insert_str(insert_pos, token);
@@ -540,7 +558,8 @@ impl PlaceholderValidator {
                         // Find {n} without % and add %
                         if let Some(pos) = result.find(token_str) {
                             let end_pos = pos + token_str.len();
-                            if end_pos < result.len() && !result[end_pos..].starts_with('%') {
+                            // Check if % is already there
+                            if end_pos >= result.len() || !result[end_pos..].starts_with('%') {
                                 result.insert(end_pos, '%');
                                 modified = true;
                             }
@@ -657,10 +676,12 @@ mod tests {
         
         match result {
             Ok(recovered) => {
-                assert!(recovered.contains("{0}%"));
+                eprintln!("Recovered: '{}'", recovered);
+                assert!(recovered.contains("{0}%"), "Expected {{0}}% but got: {}", recovered);
             }
-            Err(_) => {
-                // Should ideally recover
+            Err(report) => {
+                eprintln!("Validation failed: {:?}", report.code);
+                panic!("Should have recovered but got error");
             }
         }
     }
