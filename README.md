@@ -1,5 +1,7 @@
 # Mod Translator
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow.svg?style=flat&logo=buy-me-a-coffee)](https://buymeacoffee.com/stankjedi)
+
 스팀 창작마당(Steam Workshop) 모드를 자동으로 한국어로 번역해주는 Windows 데스크톱 프로그램입니다.
 
 ## �� 소개
