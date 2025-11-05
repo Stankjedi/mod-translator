@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod backup;
+pub mod config;
 pub mod encoding;
 pub mod formats;
 mod jobs;
@@ -24,6 +25,7 @@ pub use library::{
     list_mod_files, scan_steam_library, LibraryEntry, LibraryScanDebug, LibraryScanResponse,
     LibraryScanner, LibraryWorkshopDebugEntry, ModFileDescriptor, ModFileListing,
 };
+pub use config::{TranslatorConfig, ValidatorOptions, UiOptions};
 pub use pipeline::PipelinePlan;
 pub use placeholder_validator::{
     PlaceholderValidator, Segment, ValidationErrorCode, ValidationFailureReport,

@@ -3,6 +3,7 @@ use crate::ai::{
     translate_text, ProviderId, TranslationError,
 };
 use crate::backup::backup_and_swap;
+use crate::placeholder_validator::{PlaceholderValidator, Segment as ValidatorSegment, ValidatorConfig};
 use crate::protector::Protector;
 use crate::quality::{validate_segment, SegmentLimits};
 use log::warn;
@@ -946,29 +947,72 @@ async fn run_translation_job(
                 .await
                 {
                     Ok(value) => {
+                        // First, run existing quality validation
                         let validation =
                             validate_segment(segment.text.as_str(), value.as_str(), &qc_limits);
-                        if validation.is_pass() {
-                            translated_value = Some(value);
-                            apply_translation = true;
-                            qc_messages = None;
-                        } else {
-                            let mut messages = Vec::new();
-                            if !validation.errors.is_empty() {
-                                messages.extend(validation.errors.clone());
+                        
+                        // Then, run enhanced placeholder validation with auto-recovery
+                        let placeholder_validator = PlaceholderValidator::with_default_config();
+                        let validator_segment = ValidatorSegment::new(
+                            segment.relative_path.clone(),
+                            segment.line_number as u32,
+                            format!("line_{}", segment.line_index),
+                            segment.text.clone(),
+                            fragment.masked_text().to_string(),
+                        );
+                        
+                        let placeholder_result = placeholder_validator.validate(&validator_segment, &value);
+                        
+                        match placeholder_result {
+                            Ok(recovered_value) => {
+                                // Placeholder validation passed or was auto-recovered
+                                if validation.is_pass() {
+                                    translated_value = Some(recovered_value);
+                                    apply_translation = true;
+                                    qc_messages = None;
+                                } else {
+                                    // Quality validation failed even with recovered placeholders
+                                    let mut messages = Vec::new();
+                                    if !validation.errors.is_empty() {
+                                        messages.extend(validation.errors.clone());
+                                    }
+                                    if !validation.warnings.is_empty() {
+                                        messages.extend(validation.warnings.clone());
+                                    }
+                                    qc_messages = if messages.is_empty() {
+                                        None
+                                    } else {
+                                        Some(messages)
+                                    };
+                                    translated_value = Some(segment.text.clone());
+                                    apply_translation = false;
+                                    rolled_back_segments
+                                        .push(format!("{}:{}", segment.relative_path, segment.line_number));
+                                }
                             }
-                            if !validation.warnings.is_empty() {
-                                messages.extend(validation.warnings.clone());
+                            Err(failure_report) => {
+                                // Placeholder validation failed and auto-recovery didn't help
+                                warn!(
+                                    "Placeholder validation failed for {}:{} ({}): {:?}",
+                                    segment.relative_path,
+                                    segment.line_number,
+                                    segment.line_index,
+                                    failure_report.code
+                                );
+                                
+                                // Store failure report for UI (could be expanded later)
+                                let mut messages = Vec::new();
+                                messages.push(format!(
+                                    "Placeholder validation failed: {:?}",
+                                    failure_report.code
+                                ));
+                                qc_messages = Some(messages);
+                                
+                                translated_value = Some(segment.text.clone());
+                                apply_translation = false;
+                                rolled_back_segments
+                                    .push(format!("{}:{}", segment.relative_path, segment.line_number));
                             }
-                            qc_messages = if messages.is_empty() {
-                                None
-                            } else {
-                                Some(messages)
-                            };
-                            translated_value = Some(segment.text.clone());
-                            apply_translation = false;
-                            rolled_back_segments
-                                .push(format!("{}:{}", segment.relative_path, segment.line_number));
                         }
                         last_error = None;
                         break;
