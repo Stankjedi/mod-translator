@@ -16,6 +16,7 @@ pub mod profiles;
 pub mod protector;
 pub mod quality;
 pub mod scanner;
+pub mod scanners;
 mod steam;
 mod time;
 mod validation;
