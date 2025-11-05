@@ -5,6 +5,7 @@ pub mod formats;
 mod jobs;
 mod library;
 pub mod pipeline;
+pub mod placeholder_validator;
 pub mod policy;
 pub mod profiles;
 pub mod protector;
@@ -24,6 +25,10 @@ pub use library::{
     LibraryScanner, LibraryWorkshopDebugEntry, ModFileDescriptor, ModFileListing,
 };
 pub use pipeline::PipelinePlan;
+pub use placeholder_validator::{
+    PlaceholderValidator, Segment, ValidationErrorCode, ValidationFailureReport,
+    ValidatorConfig,
+};
 pub use policy::{default_policy_banner, PolicyBanner, PolicyProfile};
 pub use steam::{detect_steam_path, SteamLocator, SteamPathResponse};
 pub use validation::validate_api_key_and_list_models;

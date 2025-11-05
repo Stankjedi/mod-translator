@@ -226,4 +226,60 @@ export interface ModFileListing {
   files: ModFileDescriptor[]
 }
 
+// Placeholder validator types
+export type ValidationErrorCode =
+  | 'PLACEHOLDER_MISMATCH'
+  | 'PAIR_UNBALANCED'
+  | 'FORMAT_TOKEN_MISSING'
+  | 'XML_MALFORMED_AFTER_RESTORE'
+  | 'RETRY_FAILED'
+
+export type RecoveryStep =
+  | 'REINJECT_MISSING_PROTECTED'
+  | 'PAIR_BALANCE_CHECK'
+  | 'REMOVE_EXCESS_TOKENS'
+  | 'CORRECT_FORMAT_TOKENS'
+  | 'PRESERVE_PERCENT_BINDING'
+
+export interface AutofixResult {
+  applied: boolean
+  steps: RecoveryStep[]
+}
+
+export interface RetryInfo {
+  attempted: boolean
+  success?: boolean
+}
+
+export interface UiHint {
+  showSource: boolean
+  showCandidate: boolean
+  copyButtons: boolean
+}
+
+export interface ValidationFailureReport {
+  code: ValidationErrorCode
+  file: string
+  line: number
+  key: string
+  expectedProtected: string[]
+  foundProtected: string[]
+  expectedFormat: string[]
+  foundFormat: string[]
+  sourceLine: string
+  preprocessedSource: string
+  candidateLine: string
+  autofix: AutofixResult
+  retry: RetryInfo
+  uiHint: UiHint
+}
+
+export interface ValidatorConfig {
+  enableAutofix: boolean
+  retryOnFail: boolean
+  retryLimit: number
+  strictPairing: boolean
+  preservePercentBinding: boolean
+}
+
 // Legacy pipeline-related types removed in favor of streaming progress events.
