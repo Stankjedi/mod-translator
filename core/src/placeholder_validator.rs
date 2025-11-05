@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // Regex patterns for token detection - updated to match all new token types
+// NOTE: This list must be kept synchronized with TokenClass enum in protector.rs
+// When adding new token types, update both the enum and this regex pattern
 static PROTECTED_TOKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"⟦MT:(PRINTF|DOTNET|NAMED|SHELL|FACTORIO|FLINK|ICU|TAG|BBCODE|RWCOLOR|MCCOLOR|RICHTEXT|FCOLOR|DBLBRACK|MUSTACHE|ESCBRACE|ESCPCT|ENTITY|ESCAPE|ATTR|KEY|PIPE|IDPATH):(\d+)⟧")
+    Regex::new(r"⟦MT:(PRINTF|DOTNET|NAMED|SHELL|FACTORIO|FLINK|ICU|TAG|BBCODE|RWCOLOR|MCCOLOR|RICHTEXT|FCOLOR|DBLBRACK|MUSTACHE|MATHEXPR|RANGE|PERCENT|SCIENTIFIC|UNIT|ESCBRACE|ESCPCT|ENTITY|ESCAPE|ATTR|KEY|PIPE|IDPATH):(\d+)⟧")
         .expect("valid protected token regex")
 });
 
@@ -574,6 +576,47 @@ impl PlaceholderValidator {
         } else {
             None
         }
+    }
+    
+    /// Validate format after token restoration (Section 6)
+    pub fn validate_format_after_restore(
+        &self,
+        restored: &str,
+        format: FileFormat,
+    ) -> Result<(), ValidationErrorCode> {
+        use crate::format_validator;
+        
+        match format {
+            FileFormat::Json => {
+                format_validator::validate_json(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            FileFormat::Xml => {
+                format_validator::validate_xml(restored)
+                    .map_err(|_| ValidationErrorCode::XmlMalformedAfterRestore)?;
+            }
+            FileFormat::Yaml => {
+                format_validator::validate_yaml(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            FileFormat::Po => {
+                format_validator::validate_po(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            FileFormat::Ini | FileFormat::Cfg => {
+                format_validator::validate_ini(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            FileFormat::Csv => {
+                format_validator::validate_csv(restored)
+                    .map_err(|_| ValidationErrorCode::ParserError)?;
+            }
+            // Text-based formats don't need strict validation
+            FileFormat::Txt | FileFormat::Markdown | FileFormat::Properties | FileFormat::Lua => {}
+            FileFormat::Unknown => {}
+        }
+        
+        Ok(())
     }
 
     /// Create failure report

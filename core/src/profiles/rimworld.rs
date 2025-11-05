@@ -1,5 +1,5 @@
 /// RimWorld game profile
-use super::{DetectionRules, GameProfile, ValidatorProfileConfig, FormatRule};
+use super::{DetectionRules, GameProfile, ValidatorProfileConfig, FormatRule, TokenSubstitution};
 use std::path::Path;
 use std::collections::{HashMap, HashSet};
 
@@ -27,28 +27,48 @@ impl RimWorldProfile {
         terminology.insert("pawn".to_string(), "폰".to_string());
         terminology.insert("colonist".to_string(), "정착민".to_string());
         
-        // Validator configuration for RimWorld
+        // Validator configuration for RimWorld (Section 3)
         let mut allowed_token_types = HashSet::new();
-        allowed_token_types.insert("DOTNET".to_string());
-        allowed_token_types.insert("NAMED".to_string());
-        allowed_token_types.insert("TAG".to_string());
-        allowed_token_types.insert("RWCOLOR".to_string());
-        allowed_token_types.insert("RICHTEXT".to_string());
-        allowed_token_types.insert("ENTITY".to_string());
+        allowed_token_types.insert("DOTNET".to_string());      // {0}, {1}
+        allowed_token_types.insert("NAMED".to_string());       // {PAWN_label}, {name}
+        allowed_token_types.insert("TAG".to_string());         // <tag>
+        allowed_token_types.insert("RWCOLOR".to_string());     // <color=#fff>
+        allowed_token_types.insert("RICHTEXT".to_string());    // <sprite>
+        allowed_token_types.insert("ENTITY".to_string());      // &nbsp;
+        allowed_token_types.insert("PERCENT".to_string());     // percentages
+        allowed_token_types.insert("UNIT".to_string());        // units with numbers
+        allowed_token_types.insert("MATHEXPR".to_string());    // math expressions
+        allowed_token_types.insert("RANGE".to_string());       // ranges
+        allowed_token_types.insert("SCIENTIFIC".to_string());  // scientific notation
         
         let validator_config = ValidatorProfileConfig {
             allowed_token_types,
             csv_target_columns: vec![],
             force_fixed_patterns: vec![
+                // PAWN tokens have fixed spelling
                 r"\{PAWN_[A-Za-z_]+\}".to_string(),
+                // {n}% patterns are atomic
                 r"\{[0-9]+\}%".to_string(),
+                // Mathematical expressions
+                r"\d+(?:\.\d+)?\s*[+\-×*÷/^=≠≈≤≥<>]\s*\d+".to_string(),
             ],
-            forbidden_substitutions: vec![],
+            forbidden_substitutions: vec![
+                TokenSubstitution {
+                    from: "%s".to_string(),
+                    to: "{0}".to_string(),
+                    reason: "RimWorld uses .NET format, not printf format".to_string(),
+                },
+            ],
             format_rules: vec![
                 FormatRule {
                     format: "xml".to_string(),
                     rule_type: "nested_color_tags".to_string(),
                     description: "Allow nested <color> tags with auto-balancing".to_string(),
+                },
+                FormatRule {
+                    format: "xml".to_string(),
+                    rule_type: "percent_binding".to_string(),
+                    description: "{0}% patterns must remain together".to_string(),
                 },
             ],
         };

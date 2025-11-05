@@ -1,10 +1,14 @@
 pub mod ai;
 pub mod backup;
+pub mod codex_spec_tests;
 pub mod config;
 pub mod encoding;
+pub mod format_validator;
 pub mod formats;
 mod jobs;
 mod library;
+pub mod llm_guards;
+pub mod math_units;
 pub mod pipeline;
 pub mod placeholder_validator;
 pub mod policy;
