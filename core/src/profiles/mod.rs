@@ -2,6 +2,7 @@
 pub mod rimworld;
 pub mod factorio;
 pub mod stardew;
+pub mod minecraft;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -88,6 +89,10 @@ impl GameProfile {
             return Some(factorio::FactorioProfile::profile());
         }
         
+        if minecraft::MinecraftProfile::detect(mod_path) {
+            return Some(minecraft::MinecraftProfile::profile());
+        }
+        
         if stardew::StardewValleyProfile::detect(mod_path) {
             return Some(stardew::StardewValleyProfile::profile());
         }
@@ -114,6 +119,11 @@ impl GameProfile {
         allowed_token_types.insert("FCOLOR".to_string());
         allowed_token_types.insert("DBLBRACK".to_string());
         allowed_token_types.insert("MUSTACHE".to_string());
+        allowed_token_types.insert("MATHEXPR".to_string());
+        allowed_token_types.insert("RANGE".to_string());
+        allowed_token_types.insert("PERCENT".to_string());
+        allowed_token_types.insert("SCIENTIFIC".to_string());
+        allowed_token_types.insert("UNIT".to_string());
         allowed_token_types.insert("ENTITY".to_string());
         allowed_token_types.insert("ESCAPE".to_string());
         
@@ -151,6 +161,7 @@ pub fn list_profiles() -> Vec<GameProfile> {
     vec![
         rimworld::RimWorldProfile::profile(),
         factorio::FactorioProfile::profile(),
+        minecraft::MinecraftProfile::profile(),
         stardew::StardewValleyProfile::profile(),
         GameProfile::generic(),
     ]

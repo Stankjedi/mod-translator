@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod backup;
+pub mod codex_spec_tests;
 pub mod config;
 pub mod encoding;
 pub mod format_validator;
