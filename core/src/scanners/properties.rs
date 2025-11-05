@@ -285,7 +285,7 @@ mod tests {
 # Comment
 message=Hello
 count=You have %d items
-unicode=\\u0048ello
+unicode=\u0048ello
 "#;
         let entries = scanner.parse_file(content);
         

@@ -313,10 +313,6 @@ mod tests {
         let text = "Screenshot: ![Example screenshot](image.png)";
         let result = scanner.scan(text);
         
-        eprintln!("Original: {}", text);
-        eprintln!("Masked: {}", result.source_masked);
-        eprintln!("Tokens: {:?}", result.expected_tokens);
-        
         assert!(result.source_masked.contains("⟦MT:MARKDOWN_IMAGE:"));
         assert!(!result.source_masked.contains("Example screenshot"));
         assert!(!result.source_masked.contains("image.png"));

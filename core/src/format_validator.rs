@@ -179,6 +179,8 @@ pub fn validate_po(content: &str) -> Result<(), FormatValidationError> {
 }
 
 /// Validates ICU MessageFormat blocks
+/// Note: This performs basic brace balance checking. For complex nested ICU patterns,
+/// more sophisticated validation may be needed in the future.
 pub fn validate_icu(content: &str) -> Result<(), FormatValidationError> {
     // Check brace balance and ICU keywords
     let mut brace_count = 0;
@@ -197,7 +199,7 @@ pub fn validate_icu(content: &str) -> Result<(), FormatValidationError> {
                     let lookahead: String = chars[i..end].iter().collect();
                     if lookahead.contains("plural") || lookahead.contains("select") || 
                        lookahead.contains("selectordinal") {
-                        // It's an ICU pattern
+                        // It's an ICU pattern - basic validation by brace counting
                     }
                 }
             }
@@ -551,13 +553,13 @@ msgid "World"
     
     #[test]
     fn test_validate_lua_valid() {
-        let content = r#"local msg = "Hello"\nlocal msg2 = 'World'"#;
+        let content = "local msg = \"Hello\"\nlocal msg2 = 'World'";
         assert!(validate_lua(content).is_ok());
     }
     
     #[test]
     fn test_validate_lua_unbalanced() {
-        let content = r#"local msg = "Hello"#; // missing closing quote
+        let content = "local msg = \"Hello"; // missing closing quote
         assert!(validate_lua(content).is_err());
     }
 }
