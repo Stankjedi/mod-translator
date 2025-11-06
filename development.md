@@ -15,9 +15,9 @@
 
 ## 사전 준비
 
-- Node.js 18+ (Vite/Tailwind 도구 체인)
-- Rust 1.77+ 및 `tauri-cli`
-- npm (또는 pnpm/yarn)
+- Node.js 20 LTS (Corepack을 사용해 pnpm을 활성화하세요)
+- pnpm 10.x (루트 `package.json`의 `packageManager`에 고정)
+- Rust 1.77+ 및 `@tauri-apps/cli`
 
 ### Windows 전용 설정
 
@@ -26,26 +26,23 @@ Windows 타깃에서 Rust 크레이트를 빌드하려면 Microsoft Visual C++ �
 ## 최초 설정
 
 ```bash
-cd apps/desktop
-npm install
+pnpm bootstrap
 ```
 
 ## 개발 모드 실행
 
 ```bash
-cd apps/desktop
-npm run tauri:dev
+pnpm tauri:dev
 ```
 
-이 명령은 Vite 개발 서버와 Tauri 셸을 실행하고 React UI를 `core`의 Rust 명령과 연결합니다. 프런트엔드만 빠르게 조정하려면 `npm run dev`
+이 명령은 Vite 개발 서버와 Tauri 셸을 실행하고 React UI를 `core`의 Rust 명령과 연결합니다. 프런트엔드만 빠르게 조정하려면 `pnpm dev`
 를 사용해 브라우저에서 UI를 확인할 수 있습니다.
 
 ## 릴리스 빌드
 
 ```bash
-cd apps/desktop
-npm run build       # React 프런트엔드 번들링
-npm run tauri:build # 데스크톱 앱 패키징
+pnpm build         # React 프런트엔드 번들링
+pnpm tauri:build   # 데스크톱 앱 패키징
 ```
 
 Windows용 MSI 패키지는 `apps/desktop/src-tauri/icons/icon.ico`에 있는 아이콘을 사용합니다. 다른 형식(PNG/SVG/ICNS)만 배치하면 MSIX/ MSI

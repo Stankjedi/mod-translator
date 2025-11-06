@@ -1,8 +1,7 @@
 /// Enhanced placeholder validator with auto-recovery for XML translation
-/// 
+///
 /// This module implements comprehensive validation of protected tokens (⟦MT:TAG:n⟧, etc.)
 /// and format tokens ({n}) during translation, with automatic recovery mechanisms.
-
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -16,46 +15,30 @@ static PROTECTED_TOKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
         .expect("valid protected token regex")
 });
 
-static FORMAT_TOKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{(\d+)\}")
-        .expect("valid format token regex")
-});
+static FORMAT_TOKEN_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\{(\d+)\}").expect("valid format token regex"));
 
-static FORMAT_WITH_PERCENT_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{(\d+)\}%")
-        .expect("valid format with percent regex")
-});
+static FORMAT_WITH_PERCENT_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\{(\d+)\}%").expect("valid format with percent regex"));
 
 // Regex patterns for math/LaTeX content to ignore in RELAXED_XML mode
-static LATEX_INLINE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\$[^$]+\$")
-        .expect("valid LaTeX inline regex")
-});
+static LATEX_INLINE_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\$[^$]+\$").expect("valid LaTeX inline regex"));
 
-static LATEX_DISPLAY_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\\\[[^\]]+\\\]|\\\([^\)]+\\\)")
-        .expect("valid LaTeX display regex")
-});
+static LATEX_DISPLAY_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\\\[[^\]]+\\\]|\\\([^\)]+\\\)").expect("valid LaTeX display regex"));
 
-static LATEX_FRAC_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\\frac\{[^}]+\}\{[^}]+\}")
-        .expect("valid LaTeX frac regex")
-});
+static LATEX_FRAC_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\\frac\{[^}]+\}\{[^}]+\}").expect("valid LaTeX frac regex"));
 
-static LATEX_SUPERSCRIPT_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\^[0-9A-Za-z]|\^\{[^}]+\}")
-        .expect("valid LaTeX superscript regex")
-});
+static LATEX_SUPERSCRIPT_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\^[0-9A-Za-z]|\^\{[^}]+\}").expect("valid LaTeX superscript regex"));
 
-static LATEX_SUBSCRIPT_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"_[0-9A-Za-z]|_\{[^}]+\}")
-        .expect("valid LaTeX subscript regex")
-});
+static LATEX_SUBSCRIPT_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"_[0-9A-Za-z]|_\{[^}]+\}").expect("valid LaTeX subscript regex"));
 
-static WHITESPACE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\s+")
-        .expect("valid whitespace regex")
-});
+static WHITESPACE_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\s+").expect("valid whitespace regex"));
 
 /// Error codes for validation failures
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +172,15 @@ pub struct ValidationFailureReport {
     pub ui_hint: UiHint,
 }
 
+/// Successful validation result, including optional recovery metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidationSuccess {
+    pub value: String,
+    pub autofix: AutofixResult,
+    pub recovered_with_warning: bool,
+}
+
 /// Placeholder set with multiset tracking
 #[derive(Debug, Clone)]
 pub struct PlaceholderSet {
@@ -256,31 +248,31 @@ impl RelaxedValidator {
     /// Remove LaTeX/math patterns from text for comparison
     pub fn strip_math_patterns(text: &str) -> String {
         let mut result = text.to_string();
-        
+
         // Remove LaTeX inline: $...$
         result = LATEX_INLINE_REGEX.replace_all(&result, "").to_string();
-        
+
         // Remove LaTeX display: \[...\] and \(...\)
         result = LATEX_DISPLAY_REGEX.replace_all(&result, "").to_string();
-        
+
         // Remove LaTeX fractions: \frac{...}{...}
         result = LATEX_FRAC_REGEX.replace_all(&result, "").to_string();
-        
+
         // Remove LaTeX superscripts: ^n or ^{...}
         result = LATEX_SUPERSCRIPT_REGEX.replace_all(&result, "").to_string();
-        
+
         // Remove LaTeX subscripts: _n or _{...}
         result = LATEX_SUBSCRIPT_REGEX.replace_all(&result, "").to_string();
-        
+
         result
     }
-    
+
     /// Normalize whitespace for comparison
     pub fn normalize_whitespace(text: &str) -> String {
         // Replace multiple whitespace with single space
         WHITESPACE_REGEX.replace_all(text, " ").trim().to_string()
     }
-    
+
     /// Normalize text for relaxed comparison
     pub fn normalize_for_comparison(text: &str) -> String {
         let stripped = Self::strip_math_patterns(text);
@@ -320,7 +312,13 @@ pub enum FileFormat {
 }
 
 impl Segment {
-    pub fn new(file: String, line: u32, key: String, source_raw: String, source_preprocessed: String) -> Self {
+    pub fn new(
+        file: String,
+        line: u32,
+        key: String,
+        source_raw: String,
+        source_preprocessed: String,
+    ) -> Self {
         let expected = PlaceholderSet::from_text(&source_preprocessed);
         Self {
             file,
@@ -333,13 +331,13 @@ impl Segment {
             token_types: Vec::new(),
         }
     }
-    
+
     /// Create segment with format metadata
     pub fn with_format(mut self, format: FileFormat) -> Self {
         self.format = Some(format);
         self
     }
-    
+
     /// Create segment with token type information
     pub fn with_token_types(mut self, token_types: Vec<String>) -> Self {
         self.token_types = token_types;
@@ -408,17 +406,18 @@ impl PlaceholderValidator {
         &self,
         segment: &Segment,
         translated: &str,
-    ) -> Result<String, ValidationFailureReport> {
+    ) -> Result<ValidationSuccess, ValidationFailureReport> {
         // In RELAXED_XML mode, normalize both texts by removing math/LaTeX patterns
-        let (source_for_validation, translated_for_validation) = if self.config.validation_mode == ValidationMode::RelaxedXml {
-            (
-                RelaxedValidator::normalize_for_comparison(&segment.source_preprocessed),
-                RelaxedValidator::normalize_for_comparison(translated),
-            )
-        } else {
-            (segment.source_preprocessed.clone(), translated.to_string())
-        };
-        
+        let (source_for_validation, translated_for_validation) =
+            if self.config.validation_mode == ValidationMode::RelaxedXml {
+                (
+                    RelaxedValidator::normalize_for_comparison(&segment.source_preprocessed),
+                    RelaxedValidator::normalize_for_comparison(translated),
+                )
+            } else {
+                (segment.source_preprocessed.clone(), translated.to_string())
+            };
+
         let found = PlaceholderSet::from_text(&translated_for_validation);
 
         // Check if validation passes
@@ -433,27 +432,38 @@ impl PlaceholderValidator {
                     segment.key
                 );
             }
-            
+
             // Even if validation passes, check if we need to preserve {n}% patterns
             if self.config.preserve_percent_binding {
-                if let Some(corrected) = self.preserve_percent_patterns(&segment.source_preprocessed, translated) {
-                    return Ok(corrected);
+                if let Some(corrected) =
+                    self.preserve_percent_patterns(&segment.source_preprocessed, translated)
+                {
+                    return Ok(ValidationSuccess {
+                        value: corrected,
+                        autofix: AutofixResult::none(),
+                        recovered_with_warning: false,
+                    });
                 }
             }
-            
-            return Ok(translated.to_string());
+
+            return Ok(ValidationSuccess {
+                value: translated.to_string(),
+                autofix: AutofixResult::none(),
+                recovered_with_warning: false,
+            });
         }
 
         // Validation failed - attempt auto-recovery if enabled
         if self.config.enable_autofix {
             match self.auto_recover(segment, translated, &found) {
-                Ok(recovered) => {
+                Ok((recovered, steps)) => {
                     // Verify recovered text
-                    let recovered_for_validation = if self.config.validation_mode == ValidationMode::RelaxedXml {
-                        RelaxedValidator::normalize_for_comparison(&recovered)
-                    } else {
-                        recovered.clone()
-                    };
+                    let recovered_for_validation =
+                        if self.config.validation_mode == ValidationMode::RelaxedXml {
+                            RelaxedValidator::normalize_for_comparison(&recovered)
+                        } else {
+                            recovered.clone()
+                        };
                     let recovered_set = PlaceholderSet::from_text(&recovered_for_validation);
                     if segment.expected.matches_multiset(&recovered_set) {
                         // Log auto-recovery success as warning
@@ -462,7 +472,11 @@ impl PlaceholderValidator {
                             segment.key,
                             segment.line
                         );
-                        return Ok(recovered);
+                        return Ok(ValidationSuccess {
+                            value: recovered,
+                            autofix: AutofixResult::with_steps(steps),
+                            recovered_with_warning: true,
+                        });
                     }
                 }
                 Err(_) => {
@@ -487,7 +501,7 @@ impl PlaceholderValidator {
         segment: &Segment,
         translated: &str,
         found: &PlaceholderSet,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Vec<RecoveryStep>), String> {
         let mut result = translated.to_string();
         let mut steps = Vec::new();
 
@@ -497,14 +511,22 @@ impl PlaceholderValidator {
             .protected
             .iter()
             .filter(|token| {
-                let expected_count = segment.expected.protected_multiset.get(*token).unwrap_or(&0);
+                let expected_count = segment
+                    .expected
+                    .protected_multiset
+                    .get(*token)
+                    .unwrap_or(&0);
                 let found_count = found.protected_multiset.get(*token).unwrap_or(&0);
                 found_count < expected_count
             })
             .collect();
 
         if !missing_protected.is_empty() {
-            result = self.reinject_missing_tokens(&segment.source_preprocessed, &result, &missing_protected);
+            result = self.reinject_missing_tokens(
+                &segment.source_preprocessed,
+                &result,
+                &missing_protected,
+            );
             steps.push(RecoveryStep::ReinjectMissingProtected);
         }
 
@@ -521,7 +543,11 @@ impl PlaceholderValidator {
             .protected
             .iter()
             .filter(|token| {
-                let expected_count = segment.expected.protected_multiset.get(*token).unwrap_or(&0);
+                let expected_count = segment
+                    .expected
+                    .protected_multiset
+                    .get(*token)
+                    .unwrap_or(&0);
                 let found_count = found.protected_multiset.get(*token).unwrap_or(&0);
                 found_count > expected_count
             })
@@ -545,13 +571,16 @@ impl PlaceholderValidator {
             .collect();
 
         if !missing_format.is_empty() {
-            result = self.reinject_format_tokens(&segment.source_preprocessed, &result, &missing_format);
+            result =
+                self.reinject_format_tokens(&segment.source_preprocessed, &result, &missing_format);
             steps.push(RecoveryStep::CorrectFormatTokens);
         }
 
         // Step 5: Preserve {n}% patterns if enabled
         if self.config.preserve_percent_binding {
-            if let Some(corrected) = self.preserve_percent_patterns(&segment.source_preprocessed, &result) {
+            if let Some(corrected) =
+                self.preserve_percent_patterns(&segment.source_preprocessed, &result)
+            {
                 result = corrected;
                 steps.push(RecoveryStep::PreservePercentBinding);
             }
@@ -560,23 +589,28 @@ impl PlaceholderValidator {
         if steps.is_empty() {
             Err("No recovery steps could be applied".to_string())
         } else {
-            Ok(result)
+            Ok((result, steps))
         }
     }
 
     /// Reinject missing tokens at relative positions
-    fn reinject_missing_tokens(&self, source: &str, translated: &str, missing: &[&String]) -> String {
+    fn reinject_missing_tokens(
+        &self,
+        source: &str,
+        translated: &str,
+        missing: &[&String],
+    ) -> String {
         let mut result = translated.to_string();
 
         for token in missing {
             // Find relative position in source
             if let Some(pos) = source.find(token.as_str()) {
                 let relative_pos = pos as f64 / source.len().max(1) as f64;
-                
+
                 // Calculate insertion position in translated text
                 let mut insert_pos = (translated.len() as f64 * relative_pos) as usize;
                 insert_pos = insert_pos.min(result.len());
-                
+
                 // Ensure we're at a UTF-8 character boundary
                 while insert_pos > 0 && !result.is_char_boundary(insert_pos) {
                     insert_pos -= 1;
@@ -605,7 +639,7 @@ impl PlaceholderValidator {
                 .and_then(|cap| cap.get(2))
                 .and_then(|m| m.as_str().parse::<u32>().ok())
                 .unwrap_or(0);
-            
+
             let closing_tag = format!("⟦MT:TAG:{}⟧", last_tag_num + 1);
             return Some(format!("{}{}", text, closing_tag));
         }
@@ -628,18 +662,23 @@ impl PlaceholderValidator {
     }
 
     /// Reinject format tokens
-    fn reinject_format_tokens(&self, source: &str, translated: &str, missing: &[&String]) -> String {
+    fn reinject_format_tokens(
+        &self,
+        source: &str,
+        translated: &str,
+        missing: &[&String],
+    ) -> String {
         let mut result = translated.to_string();
 
         for token in missing {
             // Find relative position in source
             if let Some(pos) = source.find(token.as_str()) {
                 let relative_pos = pos as f64 / source.len().max(1) as f64;
-                
+
                 // Calculate insertion position in translated text
                 let mut insert_pos = (translated.len() as f64 * relative_pos) as usize;
                 insert_pos = insert_pos.min(result.len());
-                
+
                 // Ensure we're at a UTF-8 character boundary
                 while insert_pos > 0 && !result.is_char_boundary(insert_pos) {
                     insert_pos -= 1;
@@ -657,7 +696,7 @@ impl PlaceholderValidator {
     fn preserve_percent_patterns(&self, source: &str, translated: &str) -> Option<String> {
         // Find all {n}% patterns in source
         let source_patterns: Vec<_> = FORMAT_WITH_PERCENT_REGEX.find_iter(source).collect();
-        
+
         if source_patterns.is_empty() {
             return None;
         }
@@ -668,14 +707,14 @@ impl PlaceholderValidator {
         // Ensure all {n}% patterns are preserved
         for pattern in source_patterns {
             let pattern_str = pattern.as_str();
-            
+
             // Check if pattern exists in result
             if !result.contains(pattern_str) {
                 // Extract just the {n} part
                 if let Some(cap) = FORMAT_TOKEN_REGEX.captures(pattern_str) {
                     if let Some(token) = cap.get(0) {
                         let token_str = token.as_str();
-                        
+
                         // Find {n} without % and add %
                         if let Some(pos) = result.find(token_str) {
                             let end_pos = pos + token_str.len();
@@ -696,7 +735,7 @@ impl PlaceholderValidator {
             None
         }
     }
-    
+
     /// Validate format after token restoration (Section 6)
     pub fn validate_format_after_restore(
         &self,
@@ -704,7 +743,7 @@ impl PlaceholderValidator {
         format: FileFormat,
     ) -> Result<(), ValidationErrorCode> {
         use crate::format_validator;
-        
+
         match format {
             FileFormat::Json => {
                 format_validator::validate_json(restored)
@@ -746,7 +785,7 @@ impl PlaceholderValidator {
             FileFormat::Txt => {}
             FileFormat::Unknown => {}
         }
-        
+
         Ok(())
     }
 
@@ -786,7 +825,7 @@ mod tests {
     fn test_placeholder_set_extraction() {
         let text = "⟦MT:TAG:0⟧Hello {0} world⟦MT:TAG:1⟧";
         let set = PlaceholderSet::from_text(text);
-        
+
         assert_eq!(set.protected.len(), 2);
         assert_eq!(set.format.len(), 1);
         assert_eq!(set.protected_multiset.get("⟦MT:TAG:0⟧"), Some(&1));
@@ -797,10 +836,10 @@ mod tests {
     fn test_multiset_matching() {
         let text1 = "⟦MT:TAG:0⟧Hello {0}⟦MT:TAG:1⟧";
         let text2 = "{0} ⟦MT:TAG:1⟧World⟦MT:TAG:0⟧";
-        
+
         let set1 = PlaceholderSet::from_text(text1);
         let set2 = PlaceholderSet::from_text(text2);
-        
+
         assert!(set1.matches_multiset(&set2));
         assert!(!set1.matches_order(&set2));
     }
@@ -817,14 +856,14 @@ mod tests {
 
         let validator = PlaceholderValidator::with_default_config();
         let translated = "안녕하세요 세계"; // Missing all tokens
-        
+
         let result = validator.validate(&segment, translated);
-        
+
         // Should fail or recover
         match result {
             Ok(recovered) => {
                 // Check if tokens were recovered
-                let recovered_set = PlaceholderSet::from_text(&recovered);
+                let recovered_set = PlaceholderSet::from_text(&recovered.value);
                 assert!(!recovered_set.protected.is_empty() || !recovered_set.format.is_empty());
             }
             Err(report) => {
@@ -845,13 +884,17 @@ mod tests {
 
         let validator = PlaceholderValidator::with_default_config();
         let translated = "속도 {0}"; // Missing %
-        
+
         let result = validator.validate(&segment, translated);
-        
+
         match result {
             Ok(recovered) => {
-                eprintln!("Recovered: '{}'", recovered);
-                assert!(recovered.contains("{0}%"), "Expected {{0}}% but got: {}", recovered);
+                eprintln!("Recovered: '{}'", recovered.value);
+                assert!(
+                    recovered.value.contains("{0}%"),
+                    "Expected {{0}}% but got: {}",
+                    recovered.value
+                );
             }
             Err(report) => {
                 eprintln!("Validation failed: {:?}", report.code);
@@ -866,20 +909,21 @@ mod tests {
             "Settings.xml".to_string(),
             32,
             "WBR.HookupRateTip".to_string(),
-            "<WBR.HookupRateTip>Relative frequency for hookups … entirely.</WBR.HookupRateTip>".to_string(),
+            "<WBR.HookupRateTip>Relative frequency for hookups … entirely.</WBR.HookupRateTip>"
+                .to_string(),
             "⟦MT:TAG:0⟧Relative frequency for hookups … entirely.⟦MT:TAG:1⟧".to_string(),
         );
 
         let validator = PlaceholderValidator::with_default_config();
         let translated = "후킹의 상대적 빈도입니다 … 완전히 비활성화됩니다."; // Missing tokens
-        
+
         let result = validator.validate(&segment, translated);
-        
+
         match result {
             Ok(recovered) => {
                 // Tokens should be recovered
-                assert!(recovered.contains("⟦MT:TAG:0⟧"));
-                assert!(recovered.contains("⟦MT:TAG:1⟧"));
+                assert!(recovered.value.contains("⟦MT:TAG:0⟧"));
+                assert!(recovered.value.contains("⟦MT:TAG:1⟧"));
             }
             Err(report) => {
                 // Should have auto-recovery attempted
@@ -901,12 +945,12 @@ mod tests {
         let mut config = ValidatorConfig::default();
         config.validation_mode = ValidationMode::RelaxedXml;
         let validator = PlaceholderValidator::new(config);
-        
+
         // Translation omits LaTeX but keeps the token
         let translated = "공식: {0}과 함께";
-        
+
         let result = validator.validate(&segment, translated);
-        
+
         // Should pass because LaTeX is ignored in relaxed mode
         assert!(result.is_ok(), "Relaxed mode should ignore LaTeX patterns");
     }
@@ -924,11 +968,14 @@ mod tests {
         let mut config = ValidatorConfig::default();
         config.validation_mode = ValidationMode::RelaxedXml;
         let validator = PlaceholderValidator::new(config);
-        
+
         let translated = "방정식: {0} 여기서";
-        
+
         let result = validator.validate(&segment, translated);
-        assert!(result.is_ok(), "Relaxed mode should ignore LaTeX display patterns");
+        assert!(
+            result.is_ok(),
+            "Relaxed mode should ignore LaTeX display patterns"
+        );
     }
 
     #[test]
@@ -944,9 +991,9 @@ mod tests {
         let mut config = ValidatorConfig::default();
         config.validation_mode = ValidationMode::RelaxedXml;
         let validator = PlaceholderValidator::new(config);
-        
+
         let translated = "공식: = {0}";
-        
+
         let result = validator.validate(&segment, translated);
         assert!(result.is_ok(), "Relaxed mode should ignore LaTeX fractions");
     }
@@ -965,15 +1012,18 @@ mod tests {
         config.validation_mode = ValidationMode::Strict;
         config.enable_autofix = false; // Disable autofix to test strict validation
         let validator = PlaceholderValidator::new(config);
-        
+
         let translated = "공식: {0}과 함께"; // Missing LaTeX
-        
+
         let result = validator.validate(&segment, translated);
-        
+
         // Should fail in strict mode because text content differs
         // (Note: This test assumes the source is normalized differently in strict mode)
         // In practice, strict mode would require the entire text including LaTeX to match
-        assert!(result.is_ok() || result.is_err(), "Validation result depends on implementation");
+        assert!(
+            result.is_ok() || result.is_err(),
+            "Validation result depends on implementation"
+        );
     }
 
     #[test]

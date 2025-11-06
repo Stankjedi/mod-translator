@@ -5,8 +5,8 @@
   "identifier": "com.modtranslator.desktop",
   "build": {
     "frontendDist": "../dist",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "pnpm --dir .. dev",
+    "beforeBuildCommand": "pnpm --dir .. build"
   },
   "app": {
     "windows": [
@@ -25,8 +25,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": [
-      "icons/icon.ico"
-    ]
+    "icon": ["icons/icon.ico"]
   }
 }

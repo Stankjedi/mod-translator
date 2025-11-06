@@ -3,15 +3,21 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "pnpm@10.0.0",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "pnpm run typecheck && vite build",
     "lint": "eslint .",
+    "lint:fix": "pnpm run lint -- --fix",
     "preview": "vite preview",
+    "typecheck": "tsc -b",
+    "format": "prettier -w .",
+    "format:check": "prettier -c .",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.10.7",
     "@tauri-apps/api": "^2.2.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -21,7 +27,7 @@
     "@eslint/js": "^9.38.0",
     "@tauri-apps/cli": "^2.2.7",
     "@tailwindcss/forms": "^0.5.9",
-    "@types/node": "^24.8.1",
+    "@types/node": "^20.17.6",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.0.4",
@@ -31,8 +37,9 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.4.0",
     "postcss": "^8.4.49",
+    "prettier": "^3.4.2",
     "tailwindcss": "^3.4.16",
-    "typescript": "~5.9.3",
+    "typescript": "~5.7.2",
     "typescript-eslint": "^8.46.1",
     "vite": "^7.1.10"
   }

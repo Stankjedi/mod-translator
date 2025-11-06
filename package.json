@@ -1,0 +1,37 @@
+{
+  "name": "mod-translator-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Workspace configuration for the Mod Translator desktop application and shared tooling.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "prepare": "husky install",
+    "bootstrap": "pnpm install --frozen-lockfile=false",
+    "build": "pnpm -C \"apps/desktop\" build",
+    "dev": "pnpm -C \"apps/desktop\" dev",
+    "lint": "pnpm -C \"apps/desktop\" lint",
+    "typecheck": "pnpm -C \"apps/desktop\" typecheck",
+    "tauri:dev": "pnpm -C \"apps/desktop\" tauri:dev",
+    "tauri:build": "pnpm -C \"apps/desktop\" tauri:build",
+    "format": "pnpm -C \"apps/desktop\" format"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.10",
+    "only-allow": "^1.2.1"
+  },
+  "lint-staged": {
+    "apps/desktop/**/*.{ts,tsx,js,jsx}": [
+      "pnpm --dir \"apps/desktop\" exec eslint --fix",
+      "pnpm --dir \"apps/desktop\" exec prettier --write"
+    ],
+    "apps/desktop/**/*.{json,css,scss,md,html,yml,yaml}": [
+      "pnpm --dir \"apps/desktop\" exec prettier --write"
+    ]
+  }
+}

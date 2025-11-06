@@ -38,6 +38,16 @@ impl From<&ValidationFailureReport> for ValidationLogEntry {
     }
 }
 
+/// Outcome of a validation attempt
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ValidationOutcome {
+    /// Validation passed without additional recovery
+    Clean,
+    /// Validation passed but required automatic recovery with warnings
+    RecoveredWithWarn,
+}
+
 /// Metrics for validation operations
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +58,7 @@ pub struct ValidationMetrics {
     pub autofix_successes: u64,
     pub retry_attempts: u64,
     pub retry_successes: u64,
+    pub recovered_with_warn: u64,
     pub by_error_code: std::collections::HashMap<String, u64>,
 }
 
@@ -75,6 +86,10 @@ impl ValidationMetrics {
         if success {
             self.retry_successes += 1;
         }
+    }
+
+    pub fn record_recovered_with_warn(&mut self) {
+        self.recovered_with_warn += 1;
     }
 
     pub fn record_error_code(&mut self, code: &ValidationErrorCode) {
@@ -155,13 +170,13 @@ impl ValidationLogger {
         if let Ok(mut metrics) = self.metrics.lock() {
             metrics.record_validation(false);
             metrics.record_error_code(&report.code);
-            
+
             if report.autofix.applied {
                 // If autofix was applied, we don't have the full report, so we can't determine success
                 // In real implementation, we'd track this properly
                 metrics.record_autofix(false);
             }
-            
+
             if report.retry.attempted {
                 metrics.record_retry(report.retry.success.unwrap_or(false));
             }
@@ -169,9 +184,12 @@ impl ValidationLogger {
     }
 
     /// Log a validation success
-    pub fn log_success(&self) {
+    pub fn log_success(&self, outcome: ValidationOutcome) {
         if let Ok(mut metrics) = self.metrics.lock() {
             metrics.record_validation(true);
+            if matches!(outcome, ValidationOutcome::RecoveredWithWarn) {
+                metrics.record_recovered_with_warn();
+            }
         }
     }
 
