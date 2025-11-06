@@ -995,7 +995,12 @@ function SettingsView() {
               <span>검증 모드</span>
               <select
                 value={validationMode}
-                onChange={(event) => setValidationMode(event.target.value as import('../storage/settingsStorage').ValidationMode)}
+                onChange={(event) => {
+                  const value = event.target.value
+                  if (value === 'strict' || value === 'relaxed_xml') {
+                    setValidationMode(value)
+                  }
+                }}
                 className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               >
                 <option value="strict">엄격 (Strict)</option>

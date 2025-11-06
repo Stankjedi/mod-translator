@@ -52,6 +52,11 @@ static LATEX_SUBSCRIPT_REGEX: Lazy<Regex> = Lazy::new(|| {
         .expect("valid LaTeX subscript regex")
 });
 
+static WHITESPACE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\s+")
+        .expect("valid whitespace regex")
+});
+
 /// Error codes for validation failures
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -273,8 +278,7 @@ impl RelaxedValidator {
     /// Normalize whitespace for comparison
     pub fn normalize_whitespace(text: &str) -> String {
         // Replace multiple whitespace with single space
-        let whitespace_regex = Regex::new(r"\s+").unwrap();
-        whitespace_regex.replace_all(text, " ").trim().to_string()
+        WHITESPACE_REGEX.replace_all(text, " ").trim().to_string()
     }
     
     /// Normalize text for relaxed comparison
@@ -345,7 +349,7 @@ impl Segment {
 
 /// Validation mode for different strictness levels
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[serde(rename_all = "snake_case")]
 pub enum ValidationMode {
     /// Strict validation - all tokens must match exactly
     Strict,
