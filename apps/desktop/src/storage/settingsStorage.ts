@@ -3,6 +3,7 @@ import type { RetryPolicy, RetryableErrorCode } from '../types/core'
 const STORAGE_KEY = 'mod_translator_settings_v1'
 
 export type ProviderId = 'gemini' | 'gpt' | 'claude' | 'grok'
+export type ValidationMode = 'strict' | 'relaxed_xml'
 
 export type ProviderModelMap = Record<ProviderId, string>
 export type ProviderModelListMap = Record<ProviderId, string[]>
@@ -127,6 +128,7 @@ export interface PersistedSettings {
   prioritizeDllResources: boolean
   enableQualitySampling: boolean
   useServerHints: boolean
+  validationMode: ValidationMode
 }
 
 export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
@@ -146,6 +148,7 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   prioritizeDllResources: true,
   enableQualitySampling: true,
   useServerHints: true,
+  validationMode: 'relaxed_xml',
 }
 
 function isStorageAvailable() {
@@ -313,6 +316,13 @@ function sanitizeBoolean(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback
 }
 
+function sanitizeValidationMode(value: unknown): ValidationMode {
+  if (value === 'strict' || value === 'relaxed_xml') {
+    return value
+  }
+  return DEFAULT_PERSISTED_SETTINGS.validationMode
+}
+
 function sanitizeProviderRetryPolicyEntry(
   value: unknown,
   fallback: ProviderRetryPolicy,
@@ -428,6 +438,7 @@ export function loadPersistedSettings(): PersistedSettings {
         parsed.useServerHints,
         DEFAULT_PERSISTED_SETTINGS.useServerHints,
       ),
+      validationMode: sanitizeValidationMode(parsed.validationMode),
     }
   } catch (error) {
     console.error('Failed to parse persisted settings, using defaults.', error)
