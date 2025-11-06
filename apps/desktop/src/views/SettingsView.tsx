@@ -180,6 +180,8 @@ function SettingsView() {
     setPrioritizeDllResources,
     setEnableQualitySampling,
     setUseServerHints,
+    validationMode,
+    setValidationMode,
     setProviderModel,
     setProviderRetryPolicy,
   } = useSettingsStore()
@@ -989,6 +991,25 @@ function SettingsView() {
                 className="h-4 w-4 rounded border-slate-700 bg-slate-900"
               />
             </label>
+            <label className="flex items-center justify-between gap-3">
+              <span>검증 모드</span>
+              <select
+                value={validationMode}
+                onChange={(event) => {
+                  const value = event.target.value
+                  if (value === 'strict' || value === 'relaxed_xml') {
+                    setValidationMode(value)
+                  }
+                }}
+                className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              >
+                <option value="strict">엄격 (Strict)</option>
+                <option value="relaxed_xml">느슨 (Relaxed XML)</option>
+              </select>
+            </label>
+            <p className="text-xs text-slate-400">
+              느슨 모드: 수식/라텍스 무시, XML 태그 경계 내 텍스트만 검증, 자동 복구 활성화 (권장)
+            </p>
             <label className="flex items-center justify-between gap-3">
               <span>DLL 리소스 우선 처리 (Mono.Cecil)</span>
               <input

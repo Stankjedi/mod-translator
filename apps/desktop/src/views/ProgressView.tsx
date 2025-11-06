@@ -84,6 +84,8 @@ function ProgressView() {
     appendLog,
     loadFilesForCurrentJob,
     toggleCurrentJobFileSelection,
+    selectAllFiles,
+    deselectAllFiles,
     startTranslationForCurrentJob,
     requestCancelCurrentJob,
     updateCurrentJobTargetLanguage,
@@ -617,7 +619,31 @@ function ProgressView() {
               자동으로 감지된 언어 파일이 선택됩니다. 필요에 따라 번역할 파일을 조정하세요.
             </p>
           </div>
-          {fileLoading && <span className="text-xs text-slate-400">파일 불러오는 중...</span>}
+          <div className="flex items-center gap-2">
+            {fileLoading && <span className="text-xs text-slate-400">파일 불러오는 중...</span>}
+            {!fileLoading && files.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={selectAllFiles}
+                  disabled={disableSelection}
+                  className="inline-flex items-center justify-center rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-brand-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="전체 선택"
+                >
+                  전체 선택
+                </button>
+                <button
+                  type="button"
+                  onClick={deselectAllFiles}
+                  disabled={disableSelection}
+                  className="inline-flex items-center justify-center rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-rose-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="전체 선택 해제"
+                >
+                  전체 선택 해제
+                </button>
+              </>
+            )}
+          </div>
         </div>
 
         {fileListError ? (

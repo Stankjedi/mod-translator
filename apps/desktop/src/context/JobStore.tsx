@@ -181,6 +181,8 @@ interface JobStoreValue {
   cancelQueuedJob: (jobId: string) => boolean
   loadFilesForCurrentJob: () => Promise<void>
   toggleCurrentJobFileSelection: (path: string) => void
+  selectAllFiles: () => void
+  deselectAllFiles: () => void
   startTranslationForCurrentJob: (options: StartTranslationOptions) => Promise<void>
   requestCancelCurrentJob: () => Promise<CancelRequestResult>
   updateCurrentJobTargetLanguage: (value: string) => void
@@ -949,6 +951,60 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const selectAllFiles = useCallback(() => {
+    setState((prev) => {
+      if (
+        !prev.currentJob ||
+        prev.currentJob.status !== 'pending' ||
+        !prev.currentJob.files
+      ) {
+        return prev
+      }
+
+      const files = prev.currentJob.files.map((entry) => ({ ...entry, selected: true }))
+      const selectedFiles = files.map((entry) => entry.path)
+      const sourceLanguageGuess = selectedFiles.length
+        ? guessSourceLanguageFromFiles(files)
+        : DEFAULT_SOURCE_LANGUAGE
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          files,
+          selectedFiles,
+          sourceLanguageGuess,
+        },
+      }
+    })
+  }, [])
+
+  const deselectAllFiles = useCallback(() => {
+    setState((prev) => {
+      if (
+        !prev.currentJob ||
+        prev.currentJob.status !== 'pending' ||
+        !prev.currentJob.files
+      ) {
+        return prev
+      }
+
+      const files = prev.currentJob.files.map((entry) => ({ ...entry, selected: false }))
+      const selectedFiles: string[] = []
+      const sourceLanguageGuess = DEFAULT_SOURCE_LANGUAGE
+
+      return {
+        ...prev,
+        currentJob: {
+          ...prev.currentJob,
+          files,
+          selectedFiles,
+          sourceLanguageGuess,
+        },
+      }
+    })
+  }, [])
+
   const startTranslationForCurrentJob = useCallback(
     async (options: StartTranslationOptions) => {
       if (!isTauri()) {
@@ -1497,6 +1553,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       cancelQueuedJob,
       loadFilesForCurrentJob,
       toggleCurrentJobFileSelection,
+      selectAllFiles,
+      deselectAllFiles,
       startTranslationForCurrentJob,
       requestCancelCurrentJob,
       updateCurrentJobTargetLanguage,
@@ -1515,6 +1573,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
       cancelQueuedJob,
       loadFilesForCurrentJob,
       toggleCurrentJobFileSelection,
+      selectAllFiles,
+      deselectAllFiles,
       startTranslationForCurrentJob,
       requestCancelCurrentJob,
       updateCurrentJobTargetLanguage,

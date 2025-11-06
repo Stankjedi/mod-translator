@@ -24,6 +24,7 @@ import type { RetryPolicy, RetryableErrorCode } from '../types/core'
 import { loadApiKeys, persistApiKeys, type ApiKeyMap } from '../storage/apiKeyStorage'
 
 export type { ProviderId }
+export type { ValidationMode } from '../storage/settingsStorage'
 
 interface SettingsState extends PersistedSettings {
   apiKeys: ApiKeyMap
@@ -59,6 +60,7 @@ interface SettingsStoreValue extends SettingsState {
   setPrioritizeDllResources: (enabled: boolean) => void
   setEnableQualitySampling: (enabled: boolean) => void
   setUseServerHints: (enabled: boolean) => void
+  setValidationMode: (mode: import('../storage/settingsStorage').ValidationMode) => void
   setProviderRetryPolicy: (provider: ProviderId, patch: Partial<ProviderRetryPolicy>) => void
 }
 
@@ -487,6 +489,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         prioritizeDllResources: state.prioritizeDllResources,
         enableQualitySampling: state.enableQualitySampling,
         useServerHints: state.useServerHints,
+        validationMode: state.validationMode,
       })
     } catch (error) {
       console.error('Failed to persist settings', error)
@@ -508,6 +511,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     state.prioritizeDllResources,
     state.enableQualitySampling,
     state.useServerHints,
+    state.validationMode,
   ])
 
   const setProviderEnabled = useCallback((provider: ProviderId, enabled: boolean) => {
@@ -706,6 +710,10 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, useServerHints: enabled }))
   }, [])
 
+  const setValidationMode = useCallback((mode: import('../storage/settingsStorage').ValidationMode) => {
+    setState((prev) => ({ ...prev, validationMode: mode }))
+  }, [])
+
   const setProviderRetryPolicy = useCallback(
     (provider: ProviderId, patch: Partial<ProviderRetryPolicy>) => {
       setState((prev) => {
@@ -760,6 +768,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setPrioritizeDllResources,
       setEnableQualitySampling,
       setUseServerHints,
+      setValidationMode,
       setProviderRetryPolicy,
     }),
     [
@@ -787,6 +796,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setPrioritizeDllResources,
       setEnableQualitySampling,
       setUseServerHints,
+      setValidationMode,
       setProviderRetryPolicy,
     ],
   )
