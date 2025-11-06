@@ -5,23 +5,23 @@ This document captures the initial state of the repository ahead of the comprehe
 ## Repository & Workspace Structure
 
 - The Cargo workspace currently includes the Tauri shell and the Rust core crate only (`apps/desktop/src-tauri`, `core`).【F:Cargo.toml†L1-L6】
-- The desktop frontend lives under `apps/desktop` and ships both `pnpm-lock.yaml` and `package-lock.json`, signalling active usage of multiple package managers.【F:apps/desktop/pnpm-lock.yaml†L1-L8】【F:apps/desktop/package-lock.json†L1-L14】
-- No root-level `.editorconfig` or `.gitattributes` file is present, so contributors rely on personal editor defaults, risking inconsistent line endings and whitespace.【F:.gitignore†L1-L29】
+- The desktop frontend lives under `apps/desktop` and now shares the root pnpm workspace; redundant npm/yarn lockfiles were removed and are ignored going forward.【F:package.json†L1-L37】【F:.gitignore†L1-L24】
+- Root-level `.editorconfig`와 `.gitattributes`가 추가되어 줄바꿈·공백 규칙이 통일되었습니다.【F:.editorconfig†L1-L14】【F:.gitattributes†L1-L17】
 
 ## Package Management & Tooling Baseline
 
-- `package.json` does not declare a `packageManager` field, and the Tauri build hooks rely on plain `npm` (`beforeDevCommand`, `beforeBuildCommand`), which contradicts the single-tool `pnpm` requirement.【F:apps/desktop/package.json†L1-L35】【F:apps/desktop/src-tauri/tauri.conf.json†L7-L29】
-- There is no repository-level `pnpm-workspace.yaml`, so the monorepo layout is not formally wired up for pnpm workspaces.
-- Node/Rust toolchain pins are absent outside of `rust-version = "1.77.2"` in the Tauri crate, leaving contributors to resolve tool versions manually.【F:apps/desktop/src-tauri/Cargo.toml†L1-L27】
+- `package.json`과 `apps/desktop/package.json` 모두 `packageManager` 필드와 Node 20 엔진 범위를 선언하며, Tauri 빌드 훅도 pnpm 스크립트를 사용합니다.【F:package.json†L1-L37】【F:apps/desktop/package.json†L1-L35】【F:apps/desktop/src-tauri/tauri.conf.json†L1-L21】
+- 루트 `pnpm-workspace.yaml`이 생성되어 모노레포 패키지가 정식 워크스페이스로 묶였습니다.【F:pnpm-workspace.yaml†L1-L3】
+- Node 도구 체인은 Corepack+pnpm 조합으로 고정되고, Rust는 기존 버전을 유지합니다.【F:.npmrc†L1-L2】【F:package.json†L1-L37】
 
 ## Quality Gates & CI Status
 
-- The only GitHub Actions workflow (`CI`) installs a Rust toolchain and runs `cargo fmt` plus `cargo clippy`; there are no frontend lint/type checks, no `pnpm` install, and no build artefacts captured.【F:.github/workflows/ci.yml†L1-L32】
-- There are no documented commands for `cargo test`, `pnpm lint`, `pnpm build`, or tauri bundle smoke tests in the workflow. The audit will need dedicated jobs to cover formatting, linting, type-checking, bundling, and artefact upload per the checklist.
+- GitHub Actions 워크플로는 Node 20 + pnpm 설치, 프런트엔드 린트/타입검사/빌드, Rust fmt/clippy, Tauri 번들 생성과 아티팩트 업로드를 모두 수행하도록 재구성되었습니다.【F:.github/workflows/ci.yml†L1-L200】
+- 워크플로 요약과 동일한 스크립트가 `package.json`에 수록되어 로컬에서도 `pnpm lint`, `pnpm build`, `pnpm tauri:build` 등을 그대로 사용할 수 있습니다.【F:package.json†L1-L37】
 
 ## Tauri Configuration Snapshot
 
-- `tauri.conf.json` points to `icons/icon.ico`, which exists, but the command hooks do not align with the desired pnpm-based flow.【F:apps/desktop/src-tauri/tauri.conf.json†L7-L29】
+- `tauri.conf.json`의 `beforeDevCommand`, `beforeBuildCommand`가 pnpm 워크스페이스 스크립트를 호출하도록 업데이트되었습니다.【F:apps/desktop/src-tauri/tauri.conf.json†L1-L21】
 - The bundle targets are set to `"all"`; we must validate Windows/Linux builds explicitly during the audit.
 
 ## Immediate Action Items (PR Breakdown)

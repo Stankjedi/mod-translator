@@ -7,7 +7,7 @@
 
 ## 준비 사항
 
-- 데스크톱 앱을 `npm run tauri:dev`로 실행한다.
+- 데스크톱 앱을 `pnpm tauri:dev`로 실행한다.
 - React 개발자 도구 또는 `window.__JOB_STORE__` 디버거 훅을 사용해 `JobStore.currentJob.metrics` 배열을 확인한다.
 - 테스트용 번역 공급자는 모의 응답(429/Retry-After 헤더)을 반환하도록 HTTP 프록시를 구성한다.
 

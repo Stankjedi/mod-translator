@@ -14,10 +14,10 @@ Every screen is wired for Tailwind styling and can be connected to real Tauri co
 ## Development scripts
 
 ```bash
-npm install           # install dependencies
-npm run dev           # vite dev server (frontend only)
-npm run tauri:dev     # launch the Tauri shell with the React app
-npm run tauri:build   # package the desktop binary
+pnpm bootstrap                # install workspace dependencies from the repo root
+pnpm -C apps/desktop dev      # vite dev server (frontend only)
+pnpm -C apps/desktop tauri:dev   # launch the Tauri shell with the React app
+pnpm -C apps/desktop tauri:build # package the desktop binary
 ```
 
 ## Legal banner

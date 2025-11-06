@@ -1,3 +1,14 @@
+# Node package manager artifacts
+package-lock.json
+yarn.lock
+pnpm-debug.log
+.pnpm-debug.log
+.pnpm-store/
+
+# Node modules
+/node_modules/
+/apps/desktop/node_modules/
+
 # Binary assets
 *.png
 !assets/images/arc-logo.png
@@ -29,7 +40,6 @@
 
 # Build artifacts
 /target/
-/apps/desktop/node_modules/
 /apps/desktop/dist/
 /apps/desktop/.turbo/
 /apps/desktop/.tauri/
