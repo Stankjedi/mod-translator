@@ -5,8 +5,8 @@
   "identifier": "com.modtranslator.desktop",
   "build": {
     "frontendDist": "../dist",
-    "beforeDevCommand": "pnpm --dir .. dev",
-    "beforeBuildCommand": "pnpm --dir .. build"
+    "beforeDevCommand": "pnpm run dev",
+    "beforeBuildCommand": "pnpm run build"
   },
   "app": {
     "windows": [
