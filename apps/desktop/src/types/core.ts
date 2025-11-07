@@ -266,6 +266,8 @@ export interface ValidationFailureReport {
   foundProtected: string[]
   expectedFormat: string[]
   foundFormat: string[]
+  expectedStructureSignature: string[]
+  foundStructureSignature: string[]
   sourceLine: string
   preprocessedSource: string
   candidateLine: string

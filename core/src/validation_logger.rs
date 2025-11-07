@@ -315,6 +315,8 @@ mod tests {
             found_protected: vec![],
             expected_format: vec![],
             found_format: vec![],
+            expected_structure_signature: vec![],
+            found_structure_signature: vec![],
             source_line: "".to_string(),
             preprocessed_source: "".to_string(),
             candidate_line: "".to_string(),
