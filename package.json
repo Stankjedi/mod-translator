@@ -5,7 +5,7 @@
   "description": "Workspace configuration for the Mod Translator desktop application and shared tooling.",
   "license": "MIT",
   "engines": {
-    "node": ">=20 <21"
+    "node": ">=22.12 <23"
   },
   "packageManager": "pnpm@10.0.0",
   "scripts": {
