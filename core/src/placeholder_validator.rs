@@ -82,6 +82,8 @@ pub enum RecoveryStep {
     CorrectFormatTokens,
     /// Preserve {n}% patterns
     PreservePercentBinding,
+    /// Restore structural tokens such as pipes or placeholders
+    RestoreStructureTokens,
 }
 
 /// Auto-recovery result
@@ -164,6 +166,8 @@ pub struct ValidationFailureReport {
     pub found_protected: Vec<String>,
     pub expected_format: Vec<String>,
     pub found_format: Vec<String>,
+    pub expected_structure_signature: Vec<String>,
+    pub found_structure_signature: Vec<String>,
     pub source_line: String,
     pub preprocessed_source: String,
     pub candidate_line: String,
@@ -280,6 +284,250 @@ impl RelaxedValidator {
     }
 }
 
+/// Regex for identifying structural tokens that must be preserved verbatim
+static STRUCTURE_TOKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?x)
+        ⟦MT:[A-Z]+:\d+⟧
+        | \{[^{}]+\}
+        | %\d+\$[sd]
+        | %s
+        | \$\d+
+        | https?://[^\s<>"']+
+        | file://[^\s<>"']+
+        | [A-Za-z]:\[^\s<>"']+
+        | (?:\.\./|\./|/)?(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+
+        | &(?:[a-zA-Z]+|#x?[0-9a-fA-F]+);
+        | ->
+        | =>
+        | \|
+        | :
+        | ;
+        | /
+        | [()\[\]{}<>]
+        | [\+\-*/\^_=]
+        | ±
+        | ×
+        | ÷
+        | °
+        | %
+        "#,
+    )
+    .expect("valid structure token regex")
+});
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SegmentPiece {
+    Word(String),
+    Token(String),
+}
+
+fn segment_text(text: &str) -> Vec<SegmentPiece> {
+    let mut pieces = Vec::new();
+    let mut last_index = 0usize;
+    for mat in STRUCTURE_TOKEN_REGEX.find_iter(text) {
+        if mat.start() > last_index {
+            let word = &text[last_index..mat.start()];
+            if !word.is_empty() {
+                pieces.push(SegmentPiece::Word(word.to_string()));
+            }
+        }
+        pieces.push(SegmentPiece::Token(mat.as_str().to_string()));
+        last_index = mat.end();
+    }
+
+    if last_index < text.len() {
+        let tail = &text[last_index..];
+        if !tail.is_empty() {
+            pieces.push(SegmentPiece::Word(tail.to_string()));
+        }
+    }
+
+    pieces
+}
+
+fn leading_whitespace(text: &str) -> String {
+    text.chars()
+        .take_while(|ch| ch.is_whitespace())
+        .collect::<String>()
+}
+
+fn trailing_whitespace(text: &str) -> String {
+    let mut buf: Vec<char> = text
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_whitespace())
+        .collect();
+    buf.reverse();
+    buf.into_iter().collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StructureSignature {
+    tokens: Vec<String>,
+}
+
+impl StructureSignature {
+    fn from_text(text: &str) -> Self {
+        let tokens = segment_text(text)
+            .into_iter()
+            .filter_map(|piece| match piece {
+                SegmentPiece::Token(token) => Some(token),
+                SegmentPiece::Word(_) => None,
+            })
+            .collect();
+        Self { tokens }
+    }
+
+    fn matches(&self, other: &StructureSignature) -> bool {
+        self.tokens == other.tokens
+    }
+}
+
+fn split_segment_evenly(segment: &str, count: usize) -> Vec<String> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let chars: Vec<char> = segment.chars().collect();
+    let total = chars.len();
+    if total == 0 {
+        return vec![String::new(); count];
+    }
+
+    let mut result = Vec::with_capacity(count);
+    let mut index = 0usize;
+    for slot in 0..count {
+        let remaining_slots = count - slot;
+        let remaining_chars = total.saturating_sub(index);
+        let chunk_len = if remaining_slots == 0 {
+            0
+        } else {
+            (remaining_chars + remaining_slots - 1) / remaining_slots
+        };
+        let mut chunk = String::new();
+        for _ in 0..chunk_len {
+            if index < total {
+                chunk.push(chars[index]);
+                index += 1;
+            }
+        }
+        result.push(chunk);
+    }
+
+    if index < total {
+        if let Some(last) = result.last_mut() {
+            while index < total {
+                last.push(chars[index]);
+                index += 1;
+            }
+        }
+    }
+
+    result
+}
+
+fn split_segment_exact(segment: &str, count: usize) -> Vec<String> {
+    if count == 0 {
+        return Vec::new();
+    }
+    if count == 1 {
+        return vec![segment.to_string()];
+    }
+
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut remaining = count;
+
+    for ch in segment.chars() {
+        current.push(ch);
+        if ch.is_whitespace() && !current.trim().is_empty() && remaining > 1 {
+            parts.push(current.clone());
+            current.clear();
+            remaining -= 1;
+        }
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    if parts.len() == count {
+        return parts;
+    }
+
+    split_segment_evenly(segment, count)
+}
+
+fn align_translation_words(translated: &str, slots: usize) -> Vec<String> {
+    if slots == 0 {
+        return Vec::new();
+    }
+
+    let mut segments: Vec<String> = segment_text(translated)
+        .into_iter()
+        .filter_map(|piece| match piece {
+            SegmentPiece::Word(text) => Some(text),
+            SegmentPiece::Token(_) => None,
+        })
+        .collect();
+
+    if segments.is_empty() {
+        segments.push(String::new());
+    }
+
+    if segments.len() == slots {
+        return segments;
+    }
+
+    if segments.len() > slots {
+        while segments.len() > slots {
+            let tail = segments.pop().unwrap();
+            if let Some(last) = segments.last_mut() {
+                last.push_str(&tail);
+            } else {
+                segments.push(tail);
+                break;
+            }
+        }
+        return segments;
+    }
+
+    let mut result = Vec::new();
+    let mut remaining_slots = slots;
+    let mut remaining_segments = segments.len();
+
+    for segment in segments {
+        if remaining_slots == 0 {
+            break;
+        }
+        remaining_segments -= 1;
+        let min_needed_for_rest = remaining_segments.max(0);
+        let mut slots_for_segment = remaining_slots.saturating_sub(min_needed_for_rest);
+        if slots_for_segment == 0 {
+            slots_for_segment = 1;
+        }
+        if remaining_segments == 0 {
+            slots_for_segment = remaining_slots;
+        }
+
+        let pieces = split_segment_exact(&segment, slots_for_segment);
+        for piece in pieces {
+            if remaining_slots == 0 {
+                break;
+            }
+            result.push(piece);
+            remaining_slots -= 1;
+        }
+    }
+
+    while result.len() < slots {
+        result.push(String::new());
+    }
+
+    result
+}
+
 /// Segment information for validation with format-specific metadata (Section 6)
 #[derive(Debug, Clone)]
 pub struct Segment {
@@ -353,12 +601,14 @@ pub enum ValidationMode {
     Strict,
     /// Relaxed validation for XML - ignore math/LaTeX, validate only between tag boundaries
     RelaxedXml,
+    /// Relaxed XML validation with structural signature enforcement and auto-heal
+    RelaxedXmlPlus,
 }
 
 impl Default for ValidationMode {
     fn default() -> Self {
-        // Default to relaxed mode for XML-Keyed formats as per requirement
-        Self::RelaxedXml
+        // Default to enhanced relaxed mode for XML-Keyed formats as per requirement
+        Self::RelaxedXmlPlus
     }
 }
 
@@ -407,24 +657,89 @@ impl PlaceholderValidator {
         segment: &Segment,
         translated: &str,
     ) -> Result<ValidationSuccess, ValidationFailureReport> {
-        // In RELAXED_XML mode, normalize both texts by removing math/LaTeX patterns
+        let mut translated_candidate = translated.to_string();
+        let mut combined_steps: Vec<RecoveryStep> = Vec::new();
+        let mut recovered_with_warning = false;
+
+        let mut structure_expected_signature: Vec<String> = Vec::new();
+        let mut structure_found_signature: Vec<String> = Vec::new();
+
+        if self.config.validation_mode == ValidationMode::RelaxedXmlPlus {
+            let expected_signature = StructureSignature::from_text(&segment.source_raw);
+            let mut candidate_signature = StructureSignature::from_text(&translated_candidate);
+            structure_expected_signature = expected_signature.tokens.clone();
+            structure_found_signature = candidate_signature.tokens.clone();
+
+            if !candidate_signature.matches(&expected_signature) {
+                let autofix_snapshot = if combined_steps.is_empty() {
+                    AutofixResult::none()
+                } else {
+                    AutofixResult::with_steps(combined_steps.clone())
+                };
+
+                if self.config.enable_autofix {
+                    match self.restore_structure_tokens(segment, &translated_candidate) {
+                        Some((restored, mut steps)) => {
+                            translated_candidate = restored;
+                            candidate_signature =
+                                StructureSignature::from_text(&translated_candidate);
+                            structure_found_signature = candidate_signature.tokens.clone();
+                            if candidate_signature.matches(&expected_signature) {
+                                combined_steps.append(&mut steps);
+                                recovered_with_warning = true;
+                            } else {
+                                let (_, translated_for_validation) =
+                                    self.prepare_for_validation(segment, translated);
+                                let found = PlaceholderSet::from_text(&translated_for_validation);
+                                return Err(self.create_failure_report(
+                                    segment,
+                                    translated,
+                                    &found,
+                                    autofix_snapshot,
+                                    RetryInfo::not_attempted(),
+                                    structure_expected_signature,
+                                    structure_found_signature,
+                                ));
+                            }
+                        }
+                        None => {
+                            let (_, translated_for_validation) =
+                                self.prepare_for_validation(segment, translated);
+                            let found = PlaceholderSet::from_text(&translated_for_validation);
+                            return Err(self.create_failure_report(
+                                segment,
+                                translated,
+                                &found,
+                                autofix_snapshot,
+                                RetryInfo::not_attempted(),
+                                structure_expected_signature,
+                                structure_found_signature,
+                            ));
+                        }
+                    }
+                } else {
+                    let (_, translated_for_validation) =
+                        self.prepare_for_validation(segment, translated);
+                    let found = PlaceholderSet::from_text(&translated_for_validation);
+                    return Err(self.create_failure_report(
+                        segment,
+                        translated,
+                        &found,
+                        AutofixResult::none(),
+                        RetryInfo::not_attempted(),
+                        structure_expected_signature,
+                        structure_found_signature,
+                    ));
+                }
+            }
+        }
+
         let (source_for_validation, translated_for_validation) =
-            if self.config.validation_mode == ValidationMode::RelaxedXml {
-                (
-                    RelaxedValidator::normalize_for_comparison(&segment.source_preprocessed),
-                    RelaxedValidator::normalize_for_comparison(translated),
-                )
-            } else {
-                (segment.source_preprocessed.clone(), translated.to_string())
-            };
+            self.prepare_for_validation(segment, &translated_candidate);
+        let mut found = PlaceholderSet::from_text(&translated_for_validation);
 
-        let found = PlaceholderSet::from_text(&translated_for_validation);
-
-        // Check if validation passes
         if segment.expected.matches_multiset(&found) {
-            // Multiset matches - check order
             if !segment.expected.matches_order(&found) {
-                // Order mismatch - warning but not failure (could auto-reorder if needed)
                 log::warn!(
                     "Token order mismatch in {}:{} ({})",
                     segment.file,
@@ -433,40 +748,45 @@ impl PlaceholderValidator {
                 );
             }
 
-            // Even if validation passes, check if we need to preserve {n}% patterns
             if self.config.preserve_percent_binding {
-                if let Some(corrected) =
-                    self.preserve_percent_patterns(&segment.source_preprocessed, translated)
+                if let Some(corrected) = self
+                    .preserve_percent_patterns(&segment.source_preprocessed, &translated_candidate)
                 {
+                    let autofix = if combined_steps.is_empty() {
+                        AutofixResult::none()
+                    } else {
+                        AutofixResult::with_steps(combined_steps.clone())
+                    };
+
                     return Ok(ValidationSuccess {
                         value: corrected,
-                        autofix: AutofixResult::none(),
-                        recovered_with_warning: false,
+                        autofix,
+                        recovered_with_warning,
                     });
                 }
             }
 
+            let autofix = if combined_steps.is_empty() {
+                AutofixResult::none()
+            } else {
+                AutofixResult::with_steps(combined_steps.clone())
+            };
+
             return Ok(ValidationSuccess {
-                value: translated.to_string(),
-                autofix: AutofixResult::none(),
-                recovered_with_warning: false,
+                value: translated_candidate,
+                autofix,
+                recovered_with_warning,
             });
         }
 
-        // Validation failed - attempt auto-recovery if enabled
         if self.config.enable_autofix {
-            match self.auto_recover(segment, translated, &found) {
-                Ok((recovered, steps)) => {
-                    // Verify recovered text
-                    let recovered_for_validation =
-                        if self.config.validation_mode == ValidationMode::RelaxedXml {
-                            RelaxedValidator::normalize_for_comparison(&recovered)
-                        } else {
-                            recovered.clone()
-                        };
+            match self.auto_recover(segment, &translated_candidate, &found) {
+                Ok((recovered, mut steps)) => {
+                    let (_, recovered_for_validation) =
+                        self.prepare_for_validation(segment, &recovered);
                     let recovered_set = PlaceholderSet::from_text(&recovered_for_validation);
                     if segment.expected.matches_multiset(&recovered_set) {
-                        // Log auto-recovery success as warning
+                        combined_steps.append(&mut steps);
                         log::warn!(
                             "RECOVERED_WITH_WARN: Missing placeholders were re-inserted. key={}, line={}",
                             segment.key,
@@ -474,7 +794,7 @@ impl PlaceholderValidator {
                         );
                         return Ok(ValidationSuccess {
                             value: recovered,
-                            autofix: AutofixResult::with_steps(steps),
+                            autofix: AutofixResult::with_steps(combined_steps),
                             recovered_with_warning: true,
                         });
                     }
@@ -485,16 +805,119 @@ impl PlaceholderValidator {
             }
         }
 
-        // Create failure report
+        let autofix = if combined_steps.is_empty() {
+            AutofixResult::none()
+        } else {
+            AutofixResult::with_steps(combined_steps.clone())
+        };
+
         Err(self.create_failure_report(
             segment,
-            translated,
+            &translated_candidate,
             &found,
-            AutofixResult::none(),
+            autofix,
             RetryInfo::not_attempted(),
+            structure_expected_signature,
+            structure_found_signature,
         ))
     }
+    fn prepare_for_validation(&self, segment: &Segment, translated: &str) -> (String, String) {
+        if matches!(
+            self.config.validation_mode,
+            ValidationMode::RelaxedXml | ValidationMode::RelaxedXmlPlus
+        ) {
+            (
+                RelaxedValidator::normalize_for_comparison(&segment.source_preprocessed),
+                RelaxedValidator::normalize_for_comparison(translated),
+            )
+        } else {
+            (segment.source_preprocessed.clone(), translated.to_string())
+        }
+    }
 
+    fn restore_structure_tokens(
+        &self,
+        segment: &Segment,
+        translated: &str,
+    ) -> Option<(String, Vec<RecoveryStep>)> {
+        let source_segments = segment_text(&segment.source_raw);
+        let word_slots = source_segments
+            .iter()
+            .filter(|piece| matches!(piece, SegmentPiece::Word(_)))
+            .count();
+
+        if word_slots == 0 {
+            let restored: String = source_segments
+                .iter()
+                .filter_map(|piece| match piece {
+                    SegmentPiece::Token(token) => Some(token.clone()),
+                    SegmentPiece::Word(_) => None,
+                })
+                .collect();
+            let expected_signature = StructureSignature::from_text(&segment.source_raw);
+            let restored_signature = StructureSignature::from_text(&restored);
+            if restored_signature.matches(&expected_signature) {
+                return Some((restored, vec![RecoveryStep::RestoreStructureTokens]));
+            } else {
+                return None;
+            }
+        }
+
+        let translation_words = align_translation_words(translated, word_slots);
+        if translation_words.len() != word_slots {
+            return None;
+        }
+
+        let mut restored = String::new();
+        let mut word_iter = translation_words.into_iter();
+
+        for piece in &source_segments {
+            match piece {
+                SegmentPiece::Token(token) => restored.push_str(token),
+                SegmentPiece::Word(original) => {
+                    if let Some(word) = word_iter.next() {
+                        let leading = leading_whitespace(original);
+                        let trailing = trailing_whitespace(original);
+                        let translation_has_leading = word
+                            .chars()
+                            .next()
+                            .map(|ch| ch.is_whitespace())
+                            .unwrap_or(false);
+                        let translation_has_trailing = word
+                            .chars()
+                            .rev()
+                            .next()
+                            .map(|ch| ch.is_whitespace())
+                            .unwrap_or(false);
+
+                        if !leading.is_empty() && !translation_has_leading {
+                            restored.push_str(&leading);
+                        }
+
+                        restored.push_str(&word);
+
+                        if !trailing.is_empty() && !translation_has_trailing {
+                            restored.push_str(&trailing);
+                        }
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        for leftover in word_iter {
+            restored.push_str(&leftover);
+        }
+
+        let expected_signature = StructureSignature::from_text(&segment.source_raw);
+        let restored_signature = StructureSignature::from_text(&restored);
+        if !restored_signature.matches(&expected_signature) {
+            return None;
+        }
+
+        Some((restored, vec![RecoveryStep::RestoreStructureTokens]))
+    }
     /// Attempt automatic recovery
     fn auto_recover(
         &self,
@@ -797,6 +1220,8 @@ impl PlaceholderValidator {
         found: &PlaceholderSet,
         autofix: AutofixResult,
         retry: RetryInfo,
+        expected_structure_signature: Vec<String>,
+        found_structure_signature: Vec<String>,
     ) -> ValidationFailureReport {
         ValidationFailureReport {
             code: ValidationErrorCode::PlaceholderMismatch,
@@ -807,6 +1232,8 @@ impl PlaceholderValidator {
             found_protected: found.protected.clone(),
             expected_format: segment.expected.format.clone(),
             found_format: found.format.clone(),
+            expected_structure_signature,
+            found_structure_signature,
             source_line: segment.source_raw.clone(),
             preprocessed_source: segment.source_preprocessed.clone(),
             candidate_line: candidate.to_string(),
@@ -930,6 +1357,56 @@ mod tests {
                 assert_eq!(report.code, ValidationErrorCode::PlaceholderMismatch);
             }
         }
+    }
+
+    #[test]
+    fn test_relaxed_xml_plus_restores_pipe_structure() {
+        let segment = Segment::new(
+            "Bubbles.xml".to_string(),
+            1,
+            "Bubbles.OffsetDirections".to_string(),
+            "Down|Left|Up|Right".to_string(),
+            "Down|Left|Up|Right".to_string(),
+        );
+
+        let validator = PlaceholderValidator::with_default_config();
+        let translated = "아래 왼쪽 위 오른쪽";
+
+        let result = validator.validate(&segment, translated);
+        assert!(result.is_ok(), "Pipe list should be auto-recovered");
+
+        let success = result.unwrap();
+        assert_eq!(success.value, "아래|왼쪽|위|오른쪽");
+        assert!(success.recovered_with_warning);
+        assert!(success
+            .autofix
+            .steps
+            .contains(&RecoveryStep::RestoreStructureTokens));
+    }
+
+    #[test]
+    fn test_relaxed_xml_plus_restores_url_signature() {
+        let segment = Segment::new(
+            "Links.xml".to_string(),
+            5,
+            "VisitLink".to_string(),
+            "Visit https://example.com".to_string(),
+            "Visit https://example.com".to_string(),
+        );
+
+        let validator = PlaceholderValidator::with_default_config();
+        let translated = "방문하세요";
+
+        let result = validator.validate(&segment, translated);
+        assert!(result.is_ok(), "URL should be reinserted deterministically");
+
+        let success = result.unwrap();
+        assert!(success.value.contains("https://example.com"));
+        assert!(success.recovered_with_warning);
+        assert!(success
+            .autofix
+            .steps
+            .contains(&RecoveryStep::RestoreStructureTokens));
     }
 
     #[test]
