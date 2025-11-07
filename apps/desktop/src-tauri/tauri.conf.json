@@ -3,6 +3,7 @@
   "productName": "Mod Translator Desktop",
   "version": "0.1.0",
   "identifier": "com.stankjedi.modtranslator",
+  "mainBinaryName": "mod-translator-desktop",
   "build": {
     "frontendDist": "../dist",
     "beforeDevCommand": "pnpm run dev",
@@ -27,7 +28,6 @@
     "targets": "all",
     "icon": [
       "icons/icon.ico"
-    ],
-    "identifier": "com.stankjedi.modtranslator"
+    ]
   }
 }
