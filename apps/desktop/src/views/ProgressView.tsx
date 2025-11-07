@@ -8,7 +8,7 @@ import {
   type ChangeEvent,
   type CSSProperties,
 } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { invoke } from "@tauri-apps/api/core";
 import { Link } from "react-router-dom";
 import {
@@ -767,7 +767,7 @@ function ProgressView() {
                     aria-label="번역 대상 파일 목록"
                     role="list"
                   >
-                    {virtualItems.map((virtualRow) => {
+                    {virtualItems.map((virtualRow: VirtualItem) => {
                       const entry = files[virtualRow.index];
                       return (
                         <FileRow

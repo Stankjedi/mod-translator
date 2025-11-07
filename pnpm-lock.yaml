@@ -21,7 +21,7 @@ importers:
   apps/desktop:
     dependencies:
       '@tanstack/react-virtual':
-        specifier: ^3.10.7
+        specifier: 3.13.12
         version: 3.13.12(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       '@tauri-apps/api':
         specifier: ^2.2.0
