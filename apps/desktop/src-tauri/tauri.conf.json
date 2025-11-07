@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "mod-translator",
+  "productName": "Mod Translator Desktop",
   "version": "0.1.0",
-  "identifier": "com.modtranslator.desktop",
+  "identifier": "com.stankjedi.modtranslator",
   "build": {
     "frontendDist": "../dist",
     "beforeDevCommand": "pnpm run dev",
@@ -25,6 +25,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.ico"]
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "identifier": "com.stankjedi.modtranslator"
   }
 }

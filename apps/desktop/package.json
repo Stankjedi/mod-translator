@@ -5,8 +5,9 @@
   "type": "module",
   "packageManager": "pnpm@10.0.0",
   "scripts": {
-    "dev": "vite",
+    "prebuild": "taskkill /F /IM mod-translator-desktop.exe 2>nul || exit /b 0",
     "build": "pnpm run typecheck && vite build",
+    "dev": "vite",
     "lint": "eslint .",
     "lint:fix": "pnpm run lint -- --fix",
     "preview": "vite preview",
