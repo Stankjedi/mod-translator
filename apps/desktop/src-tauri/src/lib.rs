@@ -1,3 +1,27 @@
+use std::sync::Arc;
+
+use log::LevelFilter;
+use mod_translator_core::job::runner::JobRunner;
+use tauri::{Manager, State};
+
+struct Shared(Arc<JobRunner>);
+
+#[tauri::command]
+async fn cmd_start(
+    state: State<'_, Shared>,
+    files: Vec<String>,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let files = files.into_iter().map(Into::into).collect::<Vec<_>>();
+    state.0.start(files, from, to).await
+}
+
+#[tauri::command]
+async fn cmd_cancel(state: State<'_, Shared>) -> Result<(), String> {
+    state.0.cancel().await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 
 pub fn run() {
@@ -6,13 +30,18 @@ pub fn run() {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
+                        .level(LevelFilter::Info)
                         .build(),
                 )?;
             }
+
+            let runner = JobRunner::new(app.handle().clone());
+            app.manage(Shared(runner));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            cmd_start,
+            cmd_cancel,
             mod_translator_core::detect_steam_path,
             mod_translator_core::scan_steam_library,
             mod_translator_core::list_mod_files,
