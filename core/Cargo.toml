@@ -9,6 +9,7 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 thiserror = "1.0"
 tauri = { version = "2.9.1" }
+anyhow = "1.0"
 dirs = "5.0"
 uuid = { version = "1", features = ["v4", "serde"] }
 log = "0.4"
@@ -18,7 +19,7 @@ chrono = { version = "0.4", features = ["clock", "serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 open = "5.3"
 httpdate = "1.0"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 dunce = "1.0"
 hex = "0.4"
 sha2 = "0.10"
