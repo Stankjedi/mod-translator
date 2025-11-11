@@ -1,32 +1,27 @@
 {
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "Mod Translator",
   "version": "0.1.0",
   "identifier": "com.stankjedi.modtranslator",
   "build": {
     "devUrl": "http://localhost:1420",
-    "frontendDist": "../dist",
-    "removeUnusedCommands": true
+    "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
-    "security": {
-      "csp": null,
-      "capabilities": []
-    },
+    "security": { "csp": null },
     "windows": [
-      { "title": "Mod Translator", "width": 1200, "height": 800, "resizable": true }
+      {
+        "label": "main",
+        "title": "Mod Translator",
+        "width": 1200,
+        "height": 800,
+        "resizable": true
+      }
     ]
   },
   "bundle": {
     "active": true,
-    "icon": ["icons/32x32.png","icons/128x128.png","icons/icon.ico"]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
   },
-  "plugins": {},
-  "permissions": [
-    "fs:allow-read-write",
-    "event:default",
-    "shell:allow-open",
-    "path:default",
-    "dialog:default"
-  ]
+  "plugins": {}
 }
