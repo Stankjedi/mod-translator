@@ -1,19 +1,24 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Main window default capabilities for Mod Translator",
+  "description": "Default capabilities for Mod Translator desktop",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "event:default",
-    "dialog:open",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
     "opener:default",
     "fs:default",
-    { "identifier": "fs:scope", "allow": [{ "path": "$HOME/*" }] },
+
     {
       "identifier": "fs:scope",
-      "allow": [{ "path": "$HOME/Steam/steamapps/workshop/content/*" }]
-    },
-    { "identifier": "fs:allow-exists", "allow": [{ "path": "$APPDATA/*" }] }
+      "allow": [
+        { "path": "$HOME/*" },
+        { "path": "$APPDATA/*" },
+        { "path": "$HOME/Steam/steamapps/workshop/content/*" }
+      ]
+    }
   ]
 }
