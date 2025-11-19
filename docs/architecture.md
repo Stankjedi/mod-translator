@@ -1,272 +1,84 @@
-# Universal Mod Translator Architecture
+# Universal Mod Translator 아키텍처
 
-## Overview
+## 개요
 
-The Universal Mod Translator is a comprehensive system for translating Steam Workshop mods while preserving all code structures, placeholders, and formatting tokens.
+Universal Mod Translator는 코드 구조, 자리표시자 및 형식 토큰을 100% 보존하면서 스팀 창작마당 모드를 번역하도록 설계된 포괄적인 시스템입니다. 다양한 파일 형식과 게임별 규칙을 지원합니다.
 
-## Core Principles
+## 핵심 원칙
 
-1. **100% Code Preservation**: Tags, placeholders, escapes, and entities must be preserved exactly
-2. **Format-Agnostic**: Support XML, JSON, YAML, PO, INI, CFG, CSV, Properties, Lua, TXT/Markdown
-3. **Game-Specific Rules**: Plugin system for game-specific detection and rules
-4. **Selective Rollback**: Failed keys rollback, successful keys merge
-5. **Streaming for Large Files**: Handle multi-megabyte files without exhausting memory
-6. **Atomic Writes**: Backup originals, write to temp, then swap
+1.  **100% 코드 보존**: 태그, 자리표시자, 이스케이프 및 엔티티는 정확히 보존되어야 합니다.
+2.  **형식 불가지론 (Format-Agnostic)**: XML, JSON, YAML, PO, INI, CFG, CSV, Properties, Lua, TXT/Markdown을 지원합니다.
+3.  **게임별 규칙**: 게임 감지 및 특정 규칙(RimWorld, Factorio 등)을 위한 플러그인 시스템입니다.
+4.  **선택적 롤백**: 실패한 키는 원본으로 롤백하고, 성공한 키는 병합합니다.
+5.  **대용량 파일 스트리밍**: 메모리 고갈 없이 수 메가바이트 파일을 처리합니다.
+6.  **원자적 쓰기**: 원본을 백업하고, 임시 파일에 쓴 다음 교체(swap)합니다.
 
-## Architecture Components
+## 시스템 구성 요소
 
-### 1. Format Handlers (`core/src/formats/`)
+### 1. 형식 처리기 (`core/src/formats/`)
+각 형식에는 `FormatHandler` 특성(trait)을 구현하는 처리기가 있습니다:
+-   `extract()`: 번역 가능한 키-값 쌍을 추출합니다.
+-   `merge()`: 구조를 보존하면서 번역을 다시 삽입합니다.
+-   **구현됨**: JSON, INI/CFG.
+-   **스텁 (Stubs)**: XML, YAML, PO, CSV, Properties, Lua, TXT.
 
-Each format has a handler implementing the `FormatHandler` trait:
+### 2. 파일 스캐너 (`core/src/scanner.rs`)
+구성 가능한 규칙으로 모드 디렉토리를 스캔합니다:
+-   **포함**: `Languages/`, `locale/`, `i18n/` 등.
+-   **제외**: 바이너리 파일 (`.dll`, `.png`), 대용량 파일 (>20MB).
 
-- `extract()`: Pull translatable key-value pairs from file
-- `merge()`: Reinsert translations while preserving structure
+### 3. 게임 프로필 (`core/src/profiles/`)
+게임별 규칙을 위한 플러그인 시스템:
+-   **RimWorld**: `About/About.xml` 감지, `{PAWN_*}` 보호.
+-   **Factorio**: `info.json` 감지, `__ENTITY__` 보호, `locale/*.cfg` 사용.
+-   **Stardew Valley**: `manifest.json` 감지, `i18n/*.json` 사용.
+-   **Generic**: 인식되지 않는 모드에 대한 대체(Fallback).
 
-**Implemented:**
-- JSON: Full implementation with nested object support
-- INI/CFG: Section-aware key=value parsing
-- XML, YAML, PO, CSV, Properties, Lua, TXT: Stub implementations
+### 4. 보호 시스템 (`core/src/protector.rs`)
+번역 전에 보호된 토큰을 마커(`⟦MT:PLACEHOLDER:0⟧`)로 대체합니다.
+-   **보호된 유형**: 태그, 자리표시자 (`{0}`, `%s`), ICU MessageFormat, Mustache, 서식 있는 텍스트(Rich Text), 엔티티, 이스케이프.
 
-**Key Principle:** Only extract and translate *values*, never keys/tags/structure.
+### 5. 검증 시스템 (`core/src/validator.rs`)
+품질 보장을 위한 다중 게이트 검증입니다. 자세한 내용은 [검증 시스템](./VALIDATION_SYSTEM.md)을 참조하세요.
 
-### 2. File Scanner (`core/src/scanner.rs`)
+### 6. 인코딩 보존 (`core/src/encoding.rs`)
+-   UTF-8 (BOM 포함), UTF-16 LE/BE, Latin-1을 감지하고 보존합니다.
+-   줄 바꿈 스타일(LF vs CRLF)을 보존합니다.
 
-Scans mod directories with configurable rules:
+## 번역 파이프라인
 
-- **Include Paths**: `Languages/`, `locale/`, `i18n/`, `strings/`, `text/`
-- **Exclude Patterns**: Binary files (`.dll`, `.exe`, `.png`, etc.)
-- **Binary Detection**: 20% non-ASCII threshold
-- **Size Limits**: Default 20MB per file
+1.  **스캔 (Scan)**: 번역 가능한 파일 찾기.
+2.  **감지 (Detect)**: 게임 프로필 및 파일 형식 식별.
+3.  **로드 (Load)**: 인코딩 감지와 함께 파일 읽기.
+4.  **추출 (Extract)**: 번역 가능한 항목 추출.
+5.  **보호 (Protect)**: 모든 보호된 토큰 마스킹.
+6.  **번역 (Translate)**: 마스킹된 텍스트를 AI 제공자에게 전송.
+7.  **검증 (Validate)**: 모든 검증 게이트 확인.
+8.  **복원 (Restore)**: 토큰 마스킹 해제.
+9.  **병합 (Merge)**: 번역을 원본 구조에 다시 삽입.
+10. **쓰기 (Write)**: 원본 인코딩/줄 바꿈 스타일로 저장.
 
-### 3. Game Profiles (`core/src/profiles/`)
+## 오류 처리
 
-Plugin system for game-specific translation rules:
+1.  **파싱 오류**: 파일 건너뛰기, 오류 로깅.
+2.  **검증 오류**: 해당 키에 대해 원본으로 롤백, 1회 재시도.
+3.  **API 오류**: 지수 백오프(Exponential backoff), 재개.
+4.  **IO 오류**: 백업에서 복원.
 
-**Implemented Profiles:**
-- **RimWorld**: Detects `About/About.xml`, protects `{PAWN_*}` tokens
-- **Factorio**: Detects `info.json`, protects `__ENTITY__` tokens, uses `locale/*.cfg`
-- **Stardew Valley**: Detects `manifest.json`, uses `i18n/*.json`
-- **Generic**: Fallback for unrecognized mods
+## 프로덕션 강화 계획
 
-**Profile Components:**
-- Detection rules (folder patterns, manifest signatures)
-- Include/exclude paths
-- Extra placeholder patterns
-- Terminology dictionary
+### 완료됨
+-   **경로 및 직렬화**: Tauri 명령을 위한 향상된 `Serialize`/`Deserialize`. 경로 처리 개선.
+-   **시간 처리**: 통일된 시간 형식.
+-   **작업 로그**: 작업 요약을 위한 JSONL 로깅.
+-   **Tauri 2.x 구성**: 런타임 제네릭 및 MSI 아이콘 경로 수정.
+-   **UI/Core 계약**: TypeScript 타입을 Rust 구조체와 일치시킴.
 
-### 4. Protection System (`core/src/protector.rs`)
-
-Replaces protected tokens with markers before translation:
-
-**Protected Token Types:**
-- **Tags**: HTML/XML tags, BBCode
-- **Placeholders**: `{0}`, `{name}`, `%s`, `%1$d`, `$VAR$`
-- **ICU MessageFormat**: `{count, plural, one {1 item} other {# items}}`
-- **Mustache**: `{{variable}}`
-- **Rich Text**: `<color=#ff0000>`, `<sprite=icon>`
-- **Entities**: `&lt;`, `&#10;`, `&nbsp;`
-- **Escapes**: `\n`, `\r`, `\t`, `\"`
-- **Pipes**: `|` (count must match)
-- **Paths**: `data/core/items.xml`
-
-**Process:**
-1. Scan for all protected patterns
-2. Replace with unique markers: `⟦MT:PLACEHOLDER:0⟧`
-3. Translate masked text
-4. Restore markers to original tokens
-5. Validate 1:1 correspondence
-
-### 5. Validation System (`core/src/validator.rs`)
-
-Multi-gate validation ensures quality:
-
-**Error Codes:**
-- `STRUCTURE_MISMATCH`: XML/JSON structure changed
-- `TAG_SET_MISMATCH`: Tag set doesn't match
-- `PLACEHOLDER_MISMATCH`: Token count/order mismatch
-- `PIPE_DELIM_MISMATCH`: Pipe delimiter count changed
-- `ESCAPE_ENTITY_DRIFT`: Entity/escape altered
-- `EMPTY_VALUE`: Result is empty
-- `OVERLONG_DELTA`: Length >4x original (warning)
-- `ILLEGAL_BACKTICK`: Backtick in code context
-
-**Validation Flow:**
-1. Check non-empty
-2. Verify token preservation
-3. Validate pipe count
-4. Check length ratio
-5. Fail fast on errors, warn on concerns
-
-### 6. Encoding Preservation (`core/src/encoding.rs`)
-
-Maintains original file characteristics:
-
-**Encoding Support:**
-- UTF-8 (with or without BOM)
-- UTF-16 LE/BE
-- Latin-1 (fallback)
-
-**Features:**
-- Auto-detection with confidence scoring
-- BOM preservation
-- Newline style detection (LF vs CRLF)
-- Round-trip guarantee
-
-### 7. Translation Pipeline
-
-**Flow:**
-1. **Scan**: Find translatable files using scanner
-2. **Detect**: Identify game profile and format
-3. **Load**: Read file with encoding detection
-4. **Extract**: Pull translatable entries via format handler
-5. **Protect**: Mask all protected tokens
-6. **Translate**: Send masked text to AI provider
-7. **Validate**: Check all validation gates
-8. **Restore**: Unmask tokens
-9. **Merge**: Reinsert translations into original structure
-10. **Write**: Save with original encoding/newline style
-
-**Rollback Strategy:**
-- Key-level granularity
-- Failed keys: Keep original, log error
-- Successful keys: Merge to output
-- Retry failed keys once with enhanced prompt
-- If retry fails: Keep original, mark as untranslatable
-
-### 8. Backup Strategy
-
-**Before Translation:**
-- Copy original to `<name>.orig`
-- Create timestamped backup directory
-- Never overwrite originals
-
-**During Translation:**
-- Write to temporary file
-- Validate output
-- Atomic rename to final location
-
-**After Translation:**
-- Generate change report
-- Log translation statistics
-- Preserve backup for rollback
-
-## Implementation Status
-
-### ✅ Completed
-- Format handler framework
-- JSON and INI handlers
-- File scanner with exclusion rules
-- Game profile system (RimWorld, Factorio, Stardew)
-- Enhanced protector (ICU, Mustache, RichText)
-- Validation system with error codes
-- Encoding preservation
-
-### 🚧 In Progress
-- XML handler (SAX parser needed)
-- YAML handler
-- PO handler
-- CSV handler with configurable columns
-- Lua string literal extraction
-
-### 📋 Planned
-- CLI interface with all options
-- Streaming for 20MB+ files
-- Batch translation queue
-- Progress reporting
-- Resume capability for interrupted jobs
-- Rate limiting integration
-- Terminology enforcement
-
-## Usage Example
-
-```rust
-use mod_translator_core::{
-    scanner::{FileScanner, ScanConfig},
-    profiles::GameProfile,
-    formats::{FileFormat, get_handler},
-    encoding::FileMetadata,
-    protector::Protector,
-    validator::Validator,
-};
-
-// 1. Scan mod directory
-let scanner = FileScanner::new(ScanConfig::default());
-let files = scanner.scan(&mod_path)?;
-
-// 2. Detect game
-let profile = GameProfile::detect(&mod_path)
-    .unwrap_or_else(|| GameProfile::generic());
-
-// 3. Process each file
-for file in files {
-    // Load with encoding detection
-    let (content, metadata) = FileMetadata::read_file(&file.path)?;
-    
-    // Extract translatable entries
-    let handler = get_handler(file.format).unwrap();
-    let entries = handler.extract(&content)?;
-    
-    // Protect and translate each entry
-    for entry in entries {
-        let fragment = Protector::protect(&entry.source);
-        let masked = fragment.masked_text();
-        
-        // ... send to translation API ...
-        let translated = translate(masked)?;
-        
-        // Validate
-        let validation = Validator::validate_all(
-            &entry.source,
-            &fragment,
-            &translated
-        );
-        
-        if !validation.passed {
-            // Rollback to original
-            continue;
-        }
-        
-        // Restore tokens
-        let restored = fragment.restore(&translated)?;
-        
-        // Merge back
-        // ...
-    }
-    
-    // Write with original encoding
-    FileMetadata::write_file(&file.path, &result, &metadata)?;
-}
-```
-
-## Error Handling
-
-All operations follow consistent error patterns:
-
-1. **Parse Errors**: Format-specific parse failures → skip file, log error
-2. **Validation Errors**: Token mismatch → rollback to original, retry once
-3. **API Errors**: Rate limits → exponential backoff, resume
-4. **IO Errors**: File write failures → restore from backup, report
-
-## Performance Considerations
-
-- **Memory**: Streaming for files >5MB
-- **Concurrency**: Parallel file processing (respecting rate limits)
-- **Caching**: Deduplicate identical strings
-- **Incremental**: Only translate changed files
-
-## Security
-
-- Never commit secrets
-- Validate all file paths (no directory traversal)
-- Sandbox binary execution
-- Validate output before writing
-- Maintain audit logs
-
-## Testing Strategy
-
-- Unit tests for each module
-- Format handler round-trip tests
-- Protection/restoration tests
-- Encoding preservation tests
-- Integration tests with real mod samples
-- Fuzzing for parser robustness
+### 향후 작업
+-   **실제 번역 파이프라인**: DLL 문자열 추출, ZIP 재패키징 구현.
+-   **작업 실행기 (Job Executor)**: 취소 및 진행 상황 업데이트가 포함된 비동기 작업 스케줄러 추가.
+-   **로그 회전**: 로그 회전 및 복구 UI 구현.
+-   **보안 저장소**: API 키를 위해 Windows 자격 증명 관리자 / macOS 키체인과 통합.
+-   **백업 전략**: 번역 전 전체 디렉토리 백업.
+-   **인코딩 왕복 (Roundtrip)**: 견고한 `chardetng` 통합.
+-   **속도 제한**: 제공자별 기능 및 스마트 스로틀링.
