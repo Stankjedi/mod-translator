@@ -18,12 +18,24 @@ use std::collections::HashSet;
 static MATH_EXPR_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?x)
+        # Pattern 1: number operator number (like 2 + 2)
         \d+(?:\.\d+)?  # number
         \s*[+\-×*÷/^=≠≈≤≥<>]\s*  # operator with optional whitespace
         \d+(?:\.\d+)?  # another number
         (?:\s*[+\-×*÷/^=≠≈≤≥<>]\s*\d+(?:\.\d+)?)*  # additional terms
         |
-        \([^)]+[+\-×*÷/^=≠≈≤≥<>][^)]+\)  # expressions in parentheses
+        # Pattern 2: number operator variable (like 3.14 × r or x^2)
+        \d+(?:\.\d+)?  # number
+        \s*[×*÷/]\s*  # multiply/divide operator
+        [a-zA-Z]+(?:\^\d+)?  # variable with optional exponent
+        |
+        # Pattern 3: variable operator number (like x ≥ 10)
+        [a-zA-Z]+
+        \s*[+\-×*÷/^=≠≈≤≥<>]\s*
+        \d+(?:\.\d+)?
+        |
+        # Pattern 4: expressions in parentheses
+        \([^)]+[+\-×*÷/^=≠≈≤≥<>][^)]+\)
         "
     )
     .expect("valid math expression regex")

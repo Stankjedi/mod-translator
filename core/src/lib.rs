@@ -19,11 +19,16 @@ pub mod quality;
 pub mod scanner;
 pub mod scanners;
 mod steam;
+pub mod text_extractor;
 mod time;
+pub mod tone_analyzer;
 pub mod translate;
 mod validation;
 pub mod validation_logger;
 pub mod validator;
+
+#[cfg(test)]
+mod integration_tests;
 
 pub use config::{TranslatorConfig, UiOptions, ValidatorOptions};
 pub use jobs::{
@@ -39,6 +44,7 @@ pub use placeholder_validator::{
     PlaceholderValidator, Segment, ValidationErrorCode, ValidationFailureReport, ValidatorConfig,
 };
 pub use policy::{default_policy_banner, PolicyBanner, PolicyProfile};
+pub use protector::{ProtectionMode, Protector, ProtectedFragment, ProtectorError};
 pub use steam::{detect_steam_path, SteamLocator, SteamPathResponse};
 pub use validation::validate_api_key_and_list_models;
 pub use validation_logger::{

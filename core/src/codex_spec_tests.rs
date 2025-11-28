@@ -229,7 +229,7 @@ mod codex_spec_tests {
         assert!(result.is_ok(), "Should auto-recover missing % after {{0}}");
         
         if let Ok(recovered) = result {
-            assert!(recovered.contains("{0}%"), "Should preserve {{0}}% binding");
+            assert!(recovered.value.contains("{0}%"), "Should preserve {{0}}% binding");
         }
     }
     

@@ -294,8 +294,22 @@ async fn translate_with_gemini(
     target_lang: &str,
 ) -> Result<String, TranslationError> {
     let prompt = format!(
-        "Translate the following text from {source_lang} to {target_lang}. \
-Preserve any placeholders such as {{0}}, %1$s, or similar tokens exactly as they appear.\n\n{input}"
+        r#"Translate the following text from {source_lang} to {target_lang}.
+
+CRITICAL RULES (MUST FOLLOW):
+1. Preserve ALL placeholders exactly: {{0}}, {{1}}, %1$s, %d, ${{variable}}, etc.
+2. DO NOT translate or modify:
+   - Numbers and numeric values (keep "100", "3.14" as-is)
+   - Mathematical expressions (keep "x^2", "10-20" as-is)  
+   - Units and measurements (keep "10kg", "5m", "20%" as-is)
+   - Code tokens: __TOKEN_0__, __PROTECT_1__, etc.
+   - File paths, URLs, variable names
+   - Formatting codes: \n, \r, \t, color codes like <color=#FF0000>
+3. Only translate natural language text
+4. Return ONLY the translated text, no explanations
+
+Text to translate:
+{input}"#
     );
 
     let trimmed_model = model_id.trim();
@@ -379,7 +393,16 @@ async fn translate_with_gpt(
     target_lang: &str,
 ) -> Result<String, TranslationError> {
     let prompt = format!(
-        "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders such as {{0}} or %1$s exactly as they appear. Return only the translated text.\n\n{input}"
+        r#"Translate the following text from {source_lang} to {target_lang}.
+
+CRITICAL RULES:
+1. Preserve ALL placeholders: {{0}}, %1$s, ${{var}}, etc.
+2. DO NOT translate numbers, math expressions, units, code tokens
+3. Keep formatting codes (\n, \t, color tags) unchanged
+4. Return ONLY the translated text
+
+Text:
+{input}"#
     );
 
     let trimmed_model = model_id.trim();
@@ -398,7 +421,7 @@ async fn translate_with_gpt(
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a professional game localization translator. Preserve formatting and placeholders exactly."
+                    "content": "You are a professional game localization translator. CRITICAL: Preserve ALL placeholders ({0}, %s, ${var}), numbers, math expressions, units, and formatting codes EXACTLY as they appear. Only translate natural language text. Never modify code tokens like __TOKEN_0__ or __PROTECT_1__."
                 },
                 {
                     "role": "user",
@@ -465,7 +488,16 @@ async fn translate_with_claude(
     target_lang: &str,
 ) -> Result<String, TranslationError> {
     let prompt = format!(
-        "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders exactly as they appear, including tokens like {{0}} or %1$s. Return only the translated text.\n\n{input}"
+        r#"Translate the following text from {source_lang} to {target_lang}.
+
+CRITICAL RULES:
+1. Preserve ALL placeholders: {{0}}, %1$s, ${{var}}, etc.
+2. DO NOT translate numbers, math expressions, units, code tokens
+3. Keep formatting codes (\n, \t, color tags) unchanged
+4. Return ONLY the translated text
+
+Text:
+{input}"#
     );
 
     let trimmed_model = model_id.trim();
@@ -483,7 +515,7 @@ async fn translate_with_claude(
         .json(&serde_json::json!({
             "model": trimmed_model,
             "max_tokens": 1024,
-            "system": "You are a professional game localization translator. Preserve formatting and placeholders exactly.",
+            "system": "You are a professional game localization translator. CRITICAL: Preserve ALL placeholders ({0}, %s, ${var}), numbers, math expressions, units, and formatting codes EXACTLY as they appear. Only translate natural language text. Never modify code tokens like __TOKEN_0__ or __PROTECT_1__.",
             "messages": [
                 {
                     "role": "user",
@@ -551,7 +583,16 @@ async fn translate_with_grok(
     target_lang: &str,
 ) -> Result<String, TranslationError> {
     let prompt = format!(
-        "Translate the following text from {source_lang} to {target_lang}. Preserve all placeholders such as {{0}} or %1$s exactly as they appear. Return only the translated text.\n\n{input}"
+        r#"Translate the following text from {source_lang} to {target_lang}.
+
+CRITICAL RULES:
+1. Preserve ALL placeholders: {{0}}, %1$s, ${{var}}, etc.
+2. DO NOT translate numbers, math expressions, units, code tokens
+3. Keep formatting codes (\n, \t, color tags) unchanged
+4. Return ONLY the translated text
+
+Text:
+{input}"#
     );
 
     let trimmed_model = model_id.trim();
@@ -570,7 +611,7 @@ async fn translate_with_grok(
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a professional game localization translator. Preserve formatting and placeholders exactly."
+                    "content": "You are a professional game localization translator. CRITICAL: Preserve ALL placeholders ({0}, %s, ${var}), numbers, math expressions, units, and formatting codes EXACTLY as they appear. Only translate natural language text. Never modify code tokens like __TOKEN_0__ or __PROTECT_1__."
                 },
                 {
                     "role": "user",

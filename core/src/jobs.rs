@@ -1133,25 +1133,88 @@ async fn run_translation_job(
             }
 
             let Some(translated_value) = translated_value else {
+                // API error occurred - keep original and continue instead of failing
                 let error = last_error.expect("translation error must exist on failure");
-                let log_message = format_translation_error(segment, &error);
-                let file_message = format_file_error_message(segment, &error);
-                last_file_name = Some(segment.relative_path.clone());
-                last_file_success = Some(false);
+                
+                // Check if this is a fatal error that should stop the entire job
+                let is_fatal = matches!(
+                    &error,
+                    TranslationError::Unauthorized { .. } 
+                    | TranslationError::Forbidden { .. }
+                    | TranslationError::ModelNotFound { .. }
+                );
+                
+                if is_fatal {
+                    // For authentication/authorization errors, stop the job
+                    let log_message = format_translation_error(segment, &error);
+                    let file_message = format_file_error_message(segment, &error);
+                    last_file_name = Some(segment.relative_path.clone());
+                    last_file_success = Some(false);
+                    file_errors.push(TranslationFileErrorEntry {
+                        file_path: segment.relative_path.clone(),
+                        message: file_message.clone(),
+                        code: Some(error_code_for(&error).into()),
+                    });
+                    save_job_state(&payload.job_id, job_state.clone());
+                    emit_progress(
+                        &app,
+                        TranslationProgressEventPayload {
+                            job_id: payload.job_id.clone(),
+                            status: "failed".into(),
+                            progress_pct: Some(percentage(processed, total_segments)),
+                            cancel_requested: None,
+                            log: Some(log_message.clone()),
+                            translated_count: Some(processed_segments),
+                            total_count: Some(total_segments),
+                            file_name: last_file_name.clone(),
+                            file_success: last_file_success,
+                            file_errors: clone_errors(&file_errors),
+                            last_written: None,
+                            checkpoint: Some(job_state.checkpoint.clone()),
+                            retry: None,
+                        },
+                    );
+                    return;
+                }
+                
+                // For non-fatal errors (transient), keep original and continue
+                warn!(
+                    "Translation failed for {}:{}, keeping original: {:?}",
+                    segment.relative_path, segment.line_number, error
+                );
+                
+                let log_message = format!(
+                    "{} {}행 번역 실패, 원본 유지: {}",
+                    segment.relative_path, segment.line_number,
+                    error.to_string().chars().take(100).collect::<String>()
+                );
+                
                 file_errors.push(TranslationFileErrorEntry {
                     file_path: segment.relative_path.clone(),
-                    message: file_message.clone(),
+                    message: format!("Line {}: {}", segment.line_number, error),
                     code: Some(error_code_for(&error).into()),
                 });
+                
+                rolled_back_segments.push(format!(
+                    "{}:{}",
+                    segment.relative_path, segment.line_number
+                ));
+                
+                // Continue processing with original text
+                processed_segments = processed + 1;
+                last_file_name = Some(segment.relative_path.clone());
+                last_file_success = Some(false);
+                update_checkpoint_for_next_segment(&mut job_state, &segments, processed_segments);
                 save_job_state(&payload.job_id, job_state.clone());
+                
                 emit_progress(
                     &app,
                     TranslationProgressEventPayload {
                         job_id: payload.job_id.clone(),
-                        status: "failed".into(),
-                        progress_pct: Some(percentage(processed, total_segments)),
+                        status: "running".into(),
+                        progress_pct: Some(percentage(processed_segments, total_segments)),
                         cancel_requested: None,
-                        log: Some(log_message.clone()),
+                        log: Some(log_message),
                         translated_count: Some(processed_segments),
                         total_count: Some(total_segments),
                         file_name: last_file_name.clone(),
@@ -1162,7 +1225,8 @@ async fn run_translation_job(
                         retry: None,
                     },
                 );
-                return;
+                
+                continue; // Continue to next segment instead of returning
             };
 
             if let Some(context) = file_contexts.get_mut(segment.file_index) {

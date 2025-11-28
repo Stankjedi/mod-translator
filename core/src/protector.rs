@@ -106,21 +106,37 @@ static ESCAPE_REGEX: Lazy<Regex> =
 
 // === Math/Numerical Patterns (Section 2.1) ===
 
-// Arithmetic expressions: numbers with operators + - × * ÷ / ^ = ≠ ≈ ≤ ≥ < >
+// Arithmetic expressions: ONLY genuine mathematical formulas like 3.14 × r^2
+// Excludes simple ranges like "10-20" which should be handled by RANGE_REGEX
 static MATH_EXPR_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?x)
-        \d+(?:\.\d+)?  # number
-        \s*[+\-×*÷/^=≠≈≤≥<>]\s*  # operator with optional whitespace
-        \d+(?:\.\d+)?  # another number
-        (?:\s*[+\-×*÷/^=≠≈≤≥<>]\s*\d+(?:\.\d+)?)*  # additional terms
+        # Scientific formulas with variables: 3.14 × r^2, E = mc^2
+        (?:[A-Za-z]\s*=\s*)?\d+(?:\.\d+)?\s*[×*]\s*[A-Za-z]+(?:\^\d+)?
         |
-        \([^)]+[+\-×*÷/^=≠≈≤≥<>][^)]+\)  # expressions in parentheses
+        # Formulas with parentheses: (a+b)/2
+        \([^)]*[A-Za-z][^)]*[+\-×*÷/][^)]*\)
+        |
+        # Power expressions with variables: x^2, r^2
+        [A-Za-z]\^\d+
+        |
+        # Comparison with special math symbols: x ≥ 10, n ≤ 20
+        [A-Za-z]\s*[≠≈≤≥]\s*\d+(?:\.\d+)?
+        |
+        # Numeric comparisons with special symbols: 10 ≤ x, 5 ≥ n
+        \d+(?:\.\d+)?\s*[≠≈≤≥]\s*[A-Za-z]
+        |
+        # Simple arithmetic: 2 + 2 = 4
+        \d+\s*[+\-*/]\s*\d+\s*=\s*\d+
+        |
+        # En-dash ranges with percent: 10–20%
+        \d+–\d+%
     ").expect("valid math expression regex")
 });
 
 // Range/interval patterns: a~b, a-b, a–b (with en dash)
+// Only match when followed by unit or % to avoid matching arbitrary number-dash-number
 static RANGE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\d+(?:\.\d+)?\s*[~\-–]\s*\d+(?:\.\d+)?(?:\s*[a-zA-Z°%]+)?")
+    Regex::new(r"\d+(?:\.\d+)?\s*[~–]\s*\d+(?:\.\d+)?(?:\s*[a-zA-Z°%]+)?|\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*(?:%|°|[A-Za-z]{1,4}\b)")
         .expect("valid range regex")
 });
 
@@ -266,10 +282,85 @@ pub enum ProtectorError {
     UnexpectedTokens(Vec<String>),
 }
 
+/// Protection mode determines how aggressively tokens are protected
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProtectionMode {
+    /// Protect all detected tokens including math expressions
+    #[default]
+    Full,
+    /// Only protect format tokens and markup, skip math/numeric patterns
+    /// Use this mode when you want LLM to handle numbers naturally
+    Minimal,
+    /// Only protect critical format tokens ({0}, %s, etc.) and game-specific tokens
+    /// Skip all markup, math, and other patterns
+    CodeOnly,
+}
+
 pub struct Protector;
 
 impl Protector {
+    /// Check if text appears to be a code block or non-translatable content
+    pub fn is_likely_code(text: &str) -> bool {
+        let trimmed = text.trim();
+        
+        // Empty or whitespace-only
+        if trimmed.is_empty() {
+            return true;
+        }
+        
+        // Looks like a file path
+        if trimmed.contains('/') && !trimmed.contains(' ') && trimmed.chars().filter(|c| *c == '/').count() >= 2 {
+            return true;
+        }
+        
+        // Looks like a variable name (no spaces, starts with letter/underscore)
+        if !trimmed.contains(' ') && trimmed.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false) {
+            // Check if it's mostly alphanumeric with underscores/dots
+            let alphanum_ratio = trimmed.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.').count() as f32 / trimmed.len() as f32;
+            if alphanum_ratio > 0.9 && trimmed.len() < 50 {
+                return true;
+            }
+        }
+        
+        // Pure numbers
+        if trimmed.parse::<f64>().is_ok() {
+            return true;
+        }
+        
+        // Looks like XML comment or CDATA
+        if trimmed.starts_with("<!--") || trimmed.starts_with("<![CDATA[") {
+            return true;
+        }
+        
+        false
+    }
+    
+    /// Check if text contains translatable natural language
+    pub fn has_translatable_text(text: &str) -> bool {
+        // Remove all protected token markers first
+        let cleaned = MARKER_REGEX.replace_all(text, "");
+        let trimmed = cleaned.trim();
+        
+        if trimmed.is_empty() {
+            return false;
+        }
+        
+        // Count words (sequences of alphabetic chars)
+        let word_count = trimmed.split_whitespace()
+            .filter(|word| word.chars().any(|c| c.is_alphabetic()))
+            .count();
+        
+        // Need at least one word with letters
+        word_count > 0
+    }
+    
+    /// Protect input with default (Full) mode
     pub fn protect(input: &str) -> ProtectedFragment {
+        Self::protect_with_mode(input, ProtectionMode::Full)
+    }
+    
+    /// Protect input with specified mode
+    pub fn protect_with_mode(input: &str, mode: ProtectionMode) -> ProtectedFragment {
         let original = input.to_string();
         if input.is_empty() {
             return ProtectedFragment {
@@ -356,36 +447,47 @@ impl Protector {
             TokenClass::RimworldColor,
             &RIMWORLD_COLOR_REGEX,
         );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::RichText,
-            &RICH_TEXT_REGEX,
-        );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::Tag,
-            &TAG_REGEX,
-        );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::BbCode,
-            &BB_TAG_REGEX,
-        );
         
-        // Bracket variations
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::DoubleBracket,
-            &DOUBLE_BRACKET_REGEX,
-        );
+        // Markup tags - only in Full mode
+        if mode == ProtectionMode::Full {
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::RimworldColor,
+                &RIMWORLD_COLOR_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::RichText,
+                &RICH_TEXT_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::Tag,
+                &TAG_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::BbCode,
+                &BB_TAG_REGEX,
+            );
+            
+            // Bracket variations
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::DoubleBracket,
+                &DOUBLE_BRACKET_REGEX,
+            );
+        }
         
         // Format tokens (specific to general)
         collect_tokens(
@@ -417,74 +519,81 @@ impl Protector {
             &SHELL_VAR_REGEX,
         );
         
-        // Math/numerical patterns (Section 2.1) - before entities to avoid conflicts
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::Scientific,
-            &SCIENTIFIC_NOTATION_REGEX,
-        );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::Unit,
-            &UNIT_WITH_NUMBER_REGEX,
-        );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::MathExpr,
-            &MATH_EXPR_REGEX,
-        );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::Range,
-            &RANGE_REGEX,
-        );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::Percent,
-            &PERCENT_SIMPLE_REGEX,
-        );
+        // Math/numerical patterns - only in Full mode
+        // In Minimal/CodeOnly mode, let the LLM handle numbers naturally
+        if mode == ProtectionMode::Full {
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::Scientific,
+                &SCIENTIFIC_NOTATION_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::Unit,
+                &UNIT_WITH_NUMBER_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::MathExpr,
+                &MATH_EXPR_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::Range,
+                &RANGE_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::Percent,
+                &PERCENT_SIMPLE_REGEX,
+            );
+        }
         
-        // HTML entities and escapes
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::Entity,
-            &ENTITY_REGEX,
-        );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::Escape,
-            &ESCAPE_REGEX,
-        );
+        // HTML entities and escapes - in Full and Minimal modes
+        if mode != ProtectionMode::CodeOnly {
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::Entity,
+                &ENTITY_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::Escape,
+                &ESCAPE_REGEX,
+            );
+        }
         
-        // Legacy patterns (low priority)
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::Pipe,
-            &PIPE_REGEX,
-        );
-        collect_tokens(
-            &mut tokens,
-            &mut occupied,
-            input,
-            TokenClass::IdPath,
-            &ID_PATH_REGEX,
-        );
+        // Legacy patterns (low priority) - only in Full mode
+        if mode == ProtectionMode::Full {
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::Pipe,
+                &PIPE_REGEX,
+            );
+            collect_tokens(
+                &mut tokens,
+                &mut occupied,
+                input,
+                TokenClass::IdPath,
+                &ID_PATH_REGEX,
+            );
+        }
 
         tokens.sort_by_key(|token| token.span.0);
 
