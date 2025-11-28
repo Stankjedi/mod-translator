@@ -77,7 +77,7 @@ impl LuaScanner {
             // Check for string literals
             if chars[i] == '"' || chars[i] == '\'' {
                 let quote_char = chars[i];
-                let start = i;
+                let _start = i;
                 let start_line = line;
                 i += 1;
                 

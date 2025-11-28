@@ -31,11 +31,11 @@ impl JobRunner {
         let app_handle = app.clone();
 
         tauri::async_runtime::spawn(async move {
-            let mut cancelling = false;
+            let mut _cancelling = false;
             while let Some(msg) = rx.recv().await {
                 match msg {
                     JobMsg::Start { files, from, to } => {
-                        cancelling = false;
+                        _cancelling = false;
                         let total = files.len() as u32;
                         let _ = app_handle.emit(
                             "translate:started",
@@ -45,7 +45,7 @@ impl JobRunner {
                         let mut done = 0u32;
 
                         for path in files.into_iter() {
-                            if cancelling {
+                            if _cancelling {
                                 let _ = app_handle.emit(
                                     "translate:cancelled",
                                     &serde_json::json!({ "done": done, "total": total }),
@@ -106,7 +106,7 @@ impl JobRunner {
                         );
                     }
                     JobMsg::Cancel => {
-                        cancelling = true;
+                        _cancelling = true;
                         let _ = app_handle.emit("translate:stopping", &serde_json::json!({}));
                     }
                 }

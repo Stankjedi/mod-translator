@@ -1,6 +1,6 @@
 /// Lua format handler with scanner integration
 use super::{FileFormat, FormatError, FormatHandler, TranslatableEntry, TranslationResult};
-use crate::scanners::{LuaScanner, lua::QuoteType};
+use crate::scanners::LuaScanner;
 use std::collections::HashMap;
 
 pub struct LuaHandler {
@@ -43,7 +43,7 @@ impl FormatHandler for LuaHandler {
         translations: &TranslationResult,
     ) -> Result<String, FormatError> {
         // Parse original to get string positions
-        let literals = self.scanner.parse_file(original);
+        let _literals = self.scanner.parse_file(original);
         
         // Build translation map by index
         let mut translation_map: HashMap<String, String> = HashMap::new();
@@ -53,8 +53,8 @@ impl FormatHandler for LuaHandler {
         
         // Since replacing strings in Lua requires careful position tracking,
         // and the string positions can shift, we'll need to process from end to start
-        let mut result = original.to_string();
-        let chars: Vec<char> = original.chars().collect();
+        let result = original.to_string();
+        let _chars: Vec<char> = original.chars().collect();
         
         // For simplicity in this initial implementation, we'll just return the original
         // A full implementation would need to track exact positions and do careful replacement

@@ -107,7 +107,7 @@ impl MarkdownScanner {
         
         // Process in reverse to maintain string positions
         for m in matches.iter().rev() {
-            let original = m.as_str();
+            let _original = m.as_str();
             let token = self.next_token("CODE_FENCE");
             
             result.expected_tokens.push(token.clone());

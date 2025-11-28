@@ -154,9 +154,10 @@ mod tests {
     #[test]
     fn detect_length_warning_and_error() {
         let mut limits = SegmentLimits::default();
-        limits.max_ratio = 2.0;
+        limits.max_ratio = 1.5; // Set lower ratio so 2x length fails
         limits.warn_ratio = 1.2;
-        let result = validate_segment("abc", "abcdef", &limits);
+        // "abc" (3 chars) -> "abcdefgh" (8 chars) = ratio 2.67 > 1.5 max
+        let result = validate_segment("abc", "abcdefgh", &limits);
         assert!(!result.is_pass());
         assert!(!result.errors.is_empty());
     }

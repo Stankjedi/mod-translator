@@ -76,7 +76,7 @@ impl PropertiesScanner {
             }
             
             // Parse key=value or key:value
-            if let Some((key, mut value)) = Self::parse_key_value(line) {
+            if let Some((key, value)) = Self::parse_key_value(line) {
                 let line_num = i + 1;
                 
                 // Handle line continuations
@@ -191,7 +191,7 @@ impl PropertiesScanner {
         current
     }
 
-    fn protect_line_continuations(&mut self, text: &str, result: &mut ScanResult) -> String {
+    fn protect_line_continuations(&mut self, text: &str, _result: &mut ScanResult) -> String {
         // Line continuations are handled at parse time, not in individual values
         // This is a no-op for individual value scanning
         text.to_string()

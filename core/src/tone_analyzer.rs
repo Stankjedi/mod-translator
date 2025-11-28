@@ -120,6 +120,7 @@ static EXCLAMATION_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"!+").expect("valid regex")
 });
 
+#[allow(dead_code)]
 static ELLIPSIS_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\.{2,}|…").expect("valid regex")
 });

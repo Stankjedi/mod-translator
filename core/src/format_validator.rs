@@ -144,7 +144,7 @@ pub fn validate_po(content: &str) -> Result<(), FormatValidationError> {
     let lines: Vec<&str> = content.lines().collect();
     let mut in_msgid = false;
     let mut in_msgstr = false;
-    let mut has_msgid = false;
+    let mut _has_msgid = false;
     
     for line in lines {
         let trimmed = line.trim();
@@ -157,7 +157,7 @@ pub fn validate_po(content: &str) -> Result<(), FormatValidationError> {
             }
             in_msgid = true;
             in_msgstr = false;
-            has_msgid = true;
+            _has_msgid = true;
         } else if trimmed.starts_with("msgstr") {
             if !in_msgid {
                 return Err(FormatValidationError::PoError(

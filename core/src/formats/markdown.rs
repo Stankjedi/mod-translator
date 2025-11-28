@@ -3,6 +3,7 @@ use super::{FileFormat, FormatError, FormatHandler, TranslatableEntry, Translati
 use crate::scanners::MarkdownScanner;
 
 pub struct MarkdownHandler {
+    #[allow(dead_code)]
     scanner: MarkdownScanner,
 }
 

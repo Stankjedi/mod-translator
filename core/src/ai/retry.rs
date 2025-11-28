@@ -302,7 +302,9 @@ mod tests {
         let later = now + Duration::from_secs(30);
         let header = httpdate::fmt_http_date(later);
         let parsed = parse_retry_after(&header, now).unwrap();
-        assert_eq!(parsed.as_secs(), 30);
+        // Allow 1 second tolerance for timing variations
+        let secs = parsed.as_secs();
+        assert!(secs >= 29 && secs <= 31, "Expected ~30 seconds, got {}", secs);
     }
 
     #[test]

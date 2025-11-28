@@ -40,6 +40,7 @@ static JOB_STATES: Lazy<Mutex<HashMap<String, JobState>>> =
 static JOB_BACKOFFS: Lazy<Mutex<HashMap<String, Arc<BackoffController>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ActiveBackoff {
     attempt: u32,
@@ -329,6 +330,7 @@ pub struct RetryStatusPayload {
     pub reason: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResumeHintPayload {
@@ -349,6 +351,7 @@ struct Segment {
 
 struct FileContext {
     relative_path: String,
+    #[allow(dead_code)]
     mod_install_path: PathBuf,
     lines: Vec<String>,
     translated_lines: Vec<Option<String>>,
@@ -1638,6 +1641,7 @@ fn normalize_relative_display(path: &Path) -> String {
         .join("/")
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 struct ResumeMetadata {
     next_line_index: usize,
@@ -1653,6 +1657,7 @@ fn build_resume_metadata_path(output_path: &Path) -> PathBuf {
     metadata_dir.join(file_name)
 }
 
+#[allow(dead_code)]
 fn load_resume_metadata(path: &Path) -> Option<ResumeMetadata> {
     if !path.exists() {
         return None;
@@ -1681,6 +1686,7 @@ fn load_resume_metadata(path: &Path) -> Option<ResumeMetadata> {
     }
 }
 
+#[allow(dead_code)]
 fn save_resume_metadata(path: &Path, metadata: &ResumeMetadata) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1699,6 +1705,7 @@ fn clear_resume_metadata(path: &Path) -> Result<(), String> {
     }
 }
 
+#[allow(dead_code)]
 fn persist_partial_translation(context: &FileContext) -> Result<(), String> {
     if let Some(parent) = context.output_absolute_path.parent() {
         fs::create_dir_all(parent)
