@@ -159,7 +159,7 @@ mod tests {
         let handler = JsonHandler::new();
         let json = r#"{"message": "Hello", "count": 42}"#;
         
-        let mut result = TranslationResult {
+        let result = TranslationResult {
             translated: vec![TranslatedEntry {
                 key: "message".to_string(),
                 source: "Hello".to_string(),

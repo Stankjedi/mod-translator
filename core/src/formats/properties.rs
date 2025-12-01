@@ -135,7 +135,7 @@ impl PropertiesHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::{TranslatedEntry, FailedEntry};
+    use crate::formats::TranslatedEntry;
 
     #[test]
     fn test_extract_properties() {

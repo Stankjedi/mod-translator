@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod codex_spec_tests {
-    use crate::protector::{Protector, ProtectedFragment};
-    use crate::placeholder_validator::{PlaceholderValidator, Segment, ValidationErrorCode};
+    use crate::protector::Protector;
+    use crate::placeholder_validator::{PlaceholderValidator, Segment};
     use crate::format_validator;
     
     /// Section 13 Test Set 1: Mathematical expressions must be preserved

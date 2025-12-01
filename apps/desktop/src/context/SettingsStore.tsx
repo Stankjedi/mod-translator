@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import type { ReactNode } from 'react'
+import type { ReactNode } from "react";
 import {
   createContext,
   useCallback,
@@ -8,8 +8,8 @@ import {
   useMemo,
   useRef,
   useState,
-} from 'react'
-import { invoke } from '@tauri-apps/api/core'
+} from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   DEFAULT_PERSISTED_SETTINGS,
   PROVIDER_MODEL_OPTIONS,
@@ -19,61 +19,80 @@ import {
   type ProviderId,
   type ProviderRetryPolicy,
   normalizeRetryPolicy,
-} from '../storage/settingsStorage'
-import type { RetryPolicy, RetryableErrorCode } from '../types/core'
-import { loadApiKeys, persistApiKeys, type ApiKeyMap } from '../storage/apiKeyStorage'
+} from "../storage/settingsStorage";
+import type { RetryPolicy, RetryableErrorCode } from "../types/core";
+import {
+  loadApiKeys,
+  persistApiKeys,
+  type ApiKeyMap,
+} from "../storage/apiKeyStorage";
 
-export type { ProviderId }
-export type { ValidationMode } from '../storage/settingsStorage'
+export type { ProviderId };
+export type { ValidationMode } from "../storage/settingsStorage";
 
 interface SettingsState extends PersistedSettings {
-  apiKeys: ApiKeyMap
+  apiKeys: ApiKeyMap;
 }
 
-export type KeyValidationState = 'valid' | 'unauthorized' | 'forbidden' | 'network_error'
+export type KeyValidationState =
+  | "valid"
+  | "unauthorized"
+  | "forbidden"
+  | "network_error";
 
 interface SettingsStoreValue extends SettingsState {
-  providerModelOptions: Record<ProviderId, string[]>
-  keyValidation: Record<ProviderId, KeyValidationState | null>
-  validationInFlight: Record<ProviderId, boolean>
-  modelDiscoveryState: Record<ProviderId, ProviderModelDiscoveryState>
-  providerModelNotices: Record<ProviderId, string | null>
-  setProviderEnabled: (provider: ProviderId, enabled: boolean) => void
-  toggleProvider: (provider: ProviderId) => void
-  setActiveProvider: (provider: ProviderId) => void
-  setProviderModel: (provider: ProviderId, modelId: string) => void
-  updateApiKey: (provider: ProviderId, value: string | null) => void
-  refreshProviderModels: (provider: ProviderId, apiKeyOverride?: string) => Promise<void>
+  providerModelOptions: Record<ProviderId, string[]>;
+  keyValidation: Record<ProviderId, KeyValidationState | null>;
+  validationInFlight: Record<ProviderId, boolean>;
+  modelDiscoveryState: Record<ProviderId, ProviderModelDiscoveryState>;
+  providerModelNotices: Record<ProviderId, string | null>;
+  setProviderEnabled: (provider: ProviderId, enabled: boolean) => void;
+  toggleProvider: (provider: ProviderId) => void;
+  setActiveProvider: (provider: ProviderId) => void;
+  setProviderModel: (provider: ProviderId, modelId: string) => void;
+  updateApiKey: (provider: ProviderId, value: string | null) => void;
+  refreshProviderModels: (
+    provider: ProviderId,
+    apiKeyOverride?: string,
+  ) => Promise<void>;
   revalidateProviderKey: (
     provider: ProviderId,
     apiKeyOverride?: string,
     modelOverride?: string,
-  ) => Promise<KeyValidationState>
-  setConcurrency: (value: number) => void
-  setWorkerCount: (value: number) => void
-  setBucketSize: (value: number) => void
-  setRefillMs: (value: number) => void
-  updateRetryPolicy: (provider: ProviderId, updates: Partial<RetryPolicy>) => void
-  setAutoTuneConcurrencyOn429: (enabled: boolean) => void
-  setEnableBackendLogging: (enabled: boolean) => void
-  setEnforcePlaceholderGuard: (enabled: boolean) => void
-  setPrioritizeDllResources: (enabled: boolean) => void
-  setEnableQualitySampling: (enabled: boolean) => void
-  setUseServerHints: (enabled: boolean) => void
-  setValidationMode: (mode: import('../storage/settingsStorage').ValidationMode) => void
-  setProviderRetryPolicy: (provider: ProviderId, patch: Partial<ProviderRetryPolicy>) => void
+  ) => Promise<KeyValidationState>;
+  setConcurrency: (value: number) => void;
+  setWorkerCount: (value: number) => void;
+  setBucketSize: (value: number) => void;
+  setRefillMs: (value: number) => void;
+  updateRetryPolicy: (
+    provider: ProviderId,
+    updates: Partial<RetryPolicy>,
+  ) => void;
+  setAutoTuneConcurrencyOn429: (enabled: boolean) => void;
+  setEnableBackendLogging: (enabled: boolean) => void;
+  setEnforcePlaceholderGuard: (enabled: boolean) => void;
+  setPrioritizeDllResources: (enabled: boolean) => void;
+  setEnableQualitySampling: (enabled: boolean) => void;
+  setUseServerHints: (enabled: boolean) => void;
+  setValidationMode: (
+    mode: import("../storage/settingsStorage").ValidationMode,
+  ) => void;
+  setProviderRetryPolicy: (
+    provider: ProviderId,
+    patch: Partial<ProviderRetryPolicy>,
+  ) => void;
 }
 
-type ProviderModelSource = 'live' | 'fallback'
+type ProviderModelSource = "live" | "fallback";
 
 interface ProviderModelDiscoveryState {
-  source: ProviderModelSource
-  networkError: boolean
+  source: ProviderModelSource;
+  networkError: boolean;
 }
 
 interface ProviderValidationResponse {
-  validationStatus: KeyValidationState
-  models: string[]
+  validationStatus: KeyValidationState;
+  models: string[];
 }
 
 function createValidationResponse(
@@ -83,74 +102,81 @@ function createValidationResponse(
   return {
     validationStatus: status,
     models: models.length > 0 ? [...models] : [],
-  }
+  };
 }
 
-const SettingsStoreContext = createContext<SettingsStoreValue | undefined>(undefined)
+const SettingsStoreContext = createContext<SettingsStoreValue | undefined>(
+  undefined,
+);
 
-const PROVIDER_ORDER: ProviderId[] = ['gemini', 'gpt', 'claude', 'grok']
+const PROVIDER_ORDER: ProviderId[] = ["gemini", "gpt", "claude", "grok"];
 
 function normalizeModelList(models: string[]): string[] {
   const normalized = Array.from(
     new Set(
       models
-        .map((model) => (typeof model === 'string' ? model.trim() : ''))
+        .map((model) => (typeof model === "string" ? model.trim() : ""))
         .filter((model): model is string => Boolean(model)),
     ),
-  )
-  normalized.sort((a, b) => a.localeCompare(b))
-  return normalized
+  );
+  normalized.sort((a, b) => a.localeCompare(b));
+  return normalized;
 }
 
-function mergeModelOptions(primary: string[] | undefined, fallback: string[]): string[] {
-  const normalizedPrimary = normalizeModelList(primary ?? [])
-  const normalizedFallback = normalizeModelList(fallback)
-  const extras = normalizedFallback.filter((model) => !normalizedPrimary.includes(model))
-  return [...normalizedPrimary, ...extras]
+function mergeModelOptions(
+  primary: string[] | undefined,
+  fallback: string[],
+): string[] {
+  const normalizedPrimary = normalizeModelList(primary ?? []);
+  const normalizedFallback = normalizeModelList(fallback);
+  const extras = normalizedFallback.filter(
+    (model) => !normalizedPrimary.includes(model),
+  );
+  return [...normalizedPrimary, ...extras];
 }
 
 function arraysEqual<T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>) {
-  if (a.length !== b.length) return false
-  return a.every((value, index) => value === b[index])
+  if (a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
 }
 
 const clampPositiveInteger = (value: number, minimum: number) => {
-  if (!Number.isFinite(value)) return minimum
-  return Math.max(minimum, Math.round(value))
-}
+  if (!Number.isFinite(value)) return minimum;
+  return Math.max(minimum, Math.round(value));
+};
 
 const clampNonNegativeInteger = (value: number, minimum = 0) => {
-  if (!Number.isFinite(value)) return minimum
-  return Math.max(minimum, Math.round(value))
-}
+  if (!Number.isFinite(value)) return minimum;
+  return Math.max(minimum, Math.round(value));
+};
 
 const RETRYABLE_ERROR_CODES: RetryableErrorCode[] = [
-  'RATE_LIMITED',
-  'NETWORK_TRANSIENT',
-  'SERVER_TRANSIENT',
-]
+  "RATE_LIMITED",
+  "NETWORK_TRANSIENT",
+  "SERVER_TRANSIENT",
+];
 
 function normalizeRetryableErrorList(
   list: ReadonlyArray<RetryableErrorCode> | undefined,
   fallback: ReadonlyArray<RetryableErrorCode>,
 ): RetryableErrorCode[] {
   if (!list || list.length === 0) {
-    return [...fallback]
+    return [...fallback];
   }
 
-  const allowed = new Set(RETRYABLE_ERROR_CODES)
-  const ordered = new Set<RetryableErrorCode>()
+  const allowed = new Set(RETRYABLE_ERROR_CODES);
+  const ordered = new Set<RetryableErrorCode>();
   list.forEach((item) => {
     if (allowed.has(item)) {
-      ordered.add(item)
+      ordered.add(item);
     }
-  })
+  });
 
   if (ordered.size === 0) {
-    fallback.forEach((item) => ordered.add(item))
+    fallback.forEach((item) => ordered.add(item));
   }
 
-  return RETRYABLE_ERROR_CODES.filter((code) => ordered.has(code))
+  return RETRYABLE_ERROR_CODES.filter((code) => ordered.has(code));
 }
 
 function normalizeRetryPolicyForProvider(
@@ -158,81 +184,122 @@ function normalizeRetryPolicyForProvider(
   current: RetryPolicy,
   updates: Partial<RetryPolicy>,
 ): RetryPolicy {
-  const fallback = DEFAULT_PERSISTED_SETTINGS.retryPolicy[provider]
+  const fallback = DEFAULT_PERSISTED_SETTINGS.retryPolicy[provider];
   const maxAttempts = clampPositiveInteger(
     updates.maxAttempts ?? current.maxAttempts ?? fallback.maxAttempts,
     1,
-  )
+  );
   const initialDelayMs = clampNonNegativeInteger(
     updates.initialDelayMs ?? current.initialDelayMs ?? fallback.initialDelayMs,
     0,
-  )
+  );
   const rawMaxDelay = clampNonNegativeInteger(
     updates.maxDelayMs ?? current.maxDelayMs ?? fallback.maxDelayMs,
     0,
-  )
+  );
   const retryableErrors = normalizeRetryableErrorList(
     updates.retryableErrors ?? current.retryableErrors,
     fallback.retryableErrors,
-  )
+  );
 
   return {
     maxAttempts,
     initialDelayMs,
     maxDelayMs: Math.max(initialDelayMs, rawMaxDelay),
     retryableErrors,
-  }
+  };
 }
 
 export function SettingsStoreProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SettingsState>(() => ({
     ...DEFAULT_PERSISTED_SETTINGS,
     ...loadPersistedSettings(),
-    apiKeys: loadApiKeys(),
-  }))
-  const [providerModelOptions, setProviderModelOptions] = useState<Record<ProviderId, string[]>>({
-    gemini: mergeModelOptions(state.verifiedModels.gemini, PROVIDER_MODEL_OPTIONS.gemini),
-    gpt: mergeModelOptions(state.verifiedModels.gpt, PROVIDER_MODEL_OPTIONS.gpt),
-    claude: mergeModelOptions(state.verifiedModels.claude, PROVIDER_MODEL_OPTIONS.claude),
-    grok: mergeModelOptions(state.verifiedModels.grok, PROVIDER_MODEL_OPTIONS.grok),
-  })
-  const [keyValidation, setKeyValidation] = useState<Record<ProviderId, KeyValidationState | null>>({
+    apiKeys: {}, // 초기값은 빈 객체, useEffect에서 로드
+  }));
+  const [isApiKeysLoaded, setIsApiKeysLoaded] = useState(false);
+  // isApiKeysLoaded는 향후 로딩 상태 표시에 사용될 수 있음
+  void isApiKeysLoaded;
+  const [providerModelOptions, setProviderModelOptions] = useState<
+    Record<ProviderId, string[]>
+  >({
+    gemini: mergeModelOptions(
+      state.verifiedModels.gemini,
+      PROVIDER_MODEL_OPTIONS.gemini,
+    ),
+    gpt: mergeModelOptions(
+      state.verifiedModels.gpt,
+      PROVIDER_MODEL_OPTIONS.gpt,
+    ),
+    claude: mergeModelOptions(
+      state.verifiedModels.claude,
+      PROVIDER_MODEL_OPTIONS.claude,
+    ),
+    grok: mergeModelOptions(
+      state.verifiedModels.grok,
+      PROVIDER_MODEL_OPTIONS.grok,
+    ),
+  });
+  const [keyValidation, setKeyValidation] = useState<
+    Record<ProviderId, KeyValidationState | null>
+  >({
     gemini: null,
     gpt: null,
     claude: null,
     grok: null,
-  })
-  const [validationInFlight, setValidationInFlight] = useState<Record<ProviderId, boolean>>({
+  });
+  const [validationInFlight, setValidationInFlight] = useState<
+    Record<ProviderId, boolean>
+  >({
     gemini: false,
     gpt: false,
     claude: false,
     grok: false,
-  })
+  });
   const [modelDiscoveryState, setModelDiscoveryState] = useState<
     Record<ProviderId, ProviderModelDiscoveryState>
   >({
-    gemini: { source: 'fallback', networkError: false },
-    gpt: { source: 'fallback', networkError: false },
-    claude: { source: 'fallback', networkError: false },
-    grok: { source: 'fallback', networkError: false },
-  })
-  const [providerModelNotices, setProviderModelNotices] = useState<Record<ProviderId, string | null>>({
+    gemini: { source: "fallback", networkError: false },
+    gpt: { source: "fallback", networkError: false },
+    claude: { source: "fallback", networkError: false },
+    grok: { source: "fallback", networkError: false },
+  });
+  const [providerModelNotices, setProviderModelNotices] = useState<
+    Record<ProviderId, string | null>
+  >({
     gemini: null,
     gpt: null,
     claude: null,
     grok: null,
-  })
+  });
   const validationLocks = useRef<
     Record<
       ProviderId,
-      { promise: Promise<ProviderValidationResponse>; key: string; model: string } | null
+      {
+        promise: Promise<ProviderValidationResponse>;
+        key: string;
+        model: string;
+      } | null
     >
   >({
     gemini: null,
     gpt: null,
     claude: null,
     grok: null,
-  })
+  });
+
+  // API 키를 비동기적으로 로드
+  useEffect(() => {
+    let mounted = true;
+    loadApiKeys().then((keys) => {
+      if (mounted) {
+        setState((prev) => ({ ...prev, apiKeys: keys }));
+        setIsApiKeysLoaded(true);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const runValidation = useCallback(
     async (
@@ -240,149 +307,188 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       apiKeyOverride?: string,
       modelOverride?: string,
     ): Promise<ProviderValidationResponse> => {
-      const trimmed = (apiKeyOverride ?? state.apiKeys[provider] ?? '').trim()
-      const modelHint = (modelOverride ?? state.providerModels[provider] ?? '').trim()
+      const trimmed = (apiKeyOverride ?? state.apiKeys[provider] ?? "").trim();
+      const modelHint = (
+        modelOverride ??
+        state.providerModels[provider] ??
+        ""
+      ).trim();
 
-      const lock = validationLocks.current[provider]
+      const lock = validationLocks.current[provider];
       if (lock) {
         if (lock.key === trimmed && lock.model === modelHint) {
-          return lock.promise
+          return lock.promise;
         }
-        await lock.promise
+        await lock.promise;
       }
 
       if (!trimmed) {
         setValidationInFlight((prev) => ({
           ...prev,
           [provider]: false,
-        }))
-        return createValidationResponse('unauthorized')
+        }));
+        return createValidationResponse("unauthorized");
       }
 
       setValidationInFlight((prev) => ({
         ...prev,
         [provider]: true,
-      }))
+      }));
 
       const task = (async () => {
         try {
-          const response = await invoke<ProviderValidationResponse>('validate_api_key_and_list_models', {
-            provider,
-            apiKey: trimmed,
-            modelHint: modelHint || undefined,
-          })
-          return createValidationResponse(response.validationStatus, response.models)
+          const response = await invoke<ProviderValidationResponse>(
+            "validate_api_key_and_list_models",
+            {
+              provider,
+              apiKey: trimmed,
+              modelHint: modelHint || undefined,
+            },
+          );
+          return createValidationResponse(
+            response.validationStatus,
+            response.models,
+          );
         } catch (error) {
-          console.error(`Failed to validate API key for ${provider}`, error)
-          return createValidationResponse('network_error')
+          console.error(`Failed to validate API key for ${provider}`, error);
+          return createValidationResponse("network_error");
         }
-      })()
+      })();
 
-      validationLocks.current[provider] = { promise: task, key: trimmed, model: modelHint }
+      validationLocks.current[provider] = {
+        promise: task,
+        key: trimmed,
+        model: modelHint,
+      };
 
-      const result = await task
+      const result = await task;
 
-      validationLocks.current[provider] = null
+      validationLocks.current[provider] = null;
       setValidationInFlight((prev) => ({
         ...prev,
         [provider]: false,
-      }))
+      }));
 
-      return result
+      return result;
     },
     [setValidationInFlight, state.apiKeys, state.providerModels],
-  )
+  );
 
   useEffect(() => {
     setProviderModelOptions((prev) => {
       const next: Record<ProviderId, string[]> = {
-        gemini: mergeModelOptions(state.verifiedModels.gemini, PROVIDER_MODEL_OPTIONS.gemini),
-        gpt: mergeModelOptions(state.verifiedModels.gpt, PROVIDER_MODEL_OPTIONS.gpt),
-        claude: mergeModelOptions(state.verifiedModels.claude, PROVIDER_MODEL_OPTIONS.claude),
-        grok: mergeModelOptions(state.verifiedModels.grok, PROVIDER_MODEL_OPTIONS.grok),
-      }
+        gemini: mergeModelOptions(
+          state.verifiedModels.gemini,
+          PROVIDER_MODEL_OPTIONS.gemini,
+        ),
+        gpt: mergeModelOptions(
+          state.verifiedModels.gpt,
+          PROVIDER_MODEL_OPTIONS.gpt,
+        ),
+        claude: mergeModelOptions(
+          state.verifiedModels.claude,
+          PROVIDER_MODEL_OPTIONS.claude,
+        ),
+        grok: mergeModelOptions(
+          state.verifiedModels.grok,
+          PROVIDER_MODEL_OPTIONS.grok,
+        ),
+      };
 
       const changed = (Object.keys(next) as ProviderId[]).some((provider) => {
-        const previous = prev[provider] ?? []
-        const current = next[provider]
-        return !arraysEqual(previous, current)
-      })
+        const previous = prev[provider] ?? [];
+        const current = next[provider];
+        return !arraysEqual(previous, current);
+      });
 
-      return changed ? next : prev
-    })
-  }, [state.verifiedModels])
+      return changed ? next : prev;
+    });
+  }, [state.verifiedModels]);
 
   useEffect(() => {
     setModelDiscoveryState((prev) => {
-      let changed = false
-      const next: Record<ProviderId, ProviderModelDiscoveryState> = { ...prev }
+      let changed = false;
+      const next: Record<ProviderId, ProviderModelDiscoveryState> = { ...prev };
 
-      ;(Object.keys(state.verifiedModels) as ProviderId[]).forEach((provider) => {
-        const hasVerified = (state.verifiedModels[provider] ?? []).length > 0
-        if (!hasVerified) {
-          return
-        }
-        const current = prev[provider]
-        if (!current || current.source !== 'live' || current.networkError) {
-          next[provider] = { source: 'live', networkError: false }
-          changed = true
-        }
-      })
+      (Object.keys(state.verifiedModels) as ProviderId[]).forEach(
+        (provider) => {
+          const hasVerified = (state.verifiedModels[provider] ?? []).length > 0;
+          if (!hasVerified) {
+            return;
+          }
+          const current = prev[provider];
+          if (!current || current.source !== "live" || current.networkError) {
+            next[provider] = { source: "live", networkError: false };
+            changed = true;
+          }
+        },
+      );
 
-      return changed ? next : prev
-    })
-  }, [state.verifiedModels])
+      return changed ? next : prev;
+    });
+  }, [state.verifiedModels]);
 
   const applyValidationResult = useCallback(
     (provider: ProviderId, response: ProviderValidationResponse) => {
-      const fallback = [...PROVIDER_MODEL_OPTIONS[provider]]
-      const normalized = normalizeModelList(response.models)
-      const status = response.validationStatus
+      const fallback = [...PROVIDER_MODEL_OPTIONS[provider]];
+      const normalized = normalizeModelList(response.models);
+      const status = response.validationStatus;
 
       setKeyValidation((prev) => ({
         ...prev,
         [provider]: status,
-      }))
+      }));
 
-      let mergedVerified: string[] = []
-      let combinedOptions: string[] = mergeModelOptions([], fallback)
-      let nextModelValue: string | null = null
-      let forbiddenModel: string | null = null
+      let mergedVerified: string[] = [];
+      let combinedOptions: string[] = mergeModelOptions([], fallback);
+      let nextModelValue: string | null = null;
+      let forbiddenModel: string | null = null;
 
       setState((prev) => {
-        const currentVerified = prev.verifiedModels[provider] ?? []
-        const currentModel = prev.providerModels[provider] ?? ''
+        const currentVerified = prev.verifiedModels[provider] ?? [];
+        const currentModel = prev.providerModels[provider] ?? "";
 
-        let nextVerified = currentVerified
-        let nextModel = currentModel
+        let nextVerified = currentVerified;
+        let nextModel = currentModel;
 
-        if (status === 'valid' && normalized.length > 0) {
-          const merged = normalizeModelList([...currentVerified, ...normalized])
-          nextVerified = merged
+        if (status === "valid" && normalized.length > 0) {
+          const merged = normalizeModelList([
+            ...currentVerified,
+            ...normalized,
+          ]);
+          nextVerified = merged;
         }
 
-        const allowedOptions = mergeModelOptions(nextVerified, fallback)
-        if (status === 'forbidden' && currentModel && !nextVerified.includes(currentModel)) {
-          forbiddenModel = currentModel
+        const allowedOptions = mergeModelOptions(nextVerified, fallback);
+        if (
+          status === "forbidden" &&
+          currentModel &&
+          !nextVerified.includes(currentModel)
+        ) {
+          forbiddenModel = currentModel;
         }
 
-        if (status === 'valid' && normalized.length > 0 && !nextVerified.includes(nextModel)) {
-          nextModel = allowedOptions[0] ?? ''
+        if (
+          status === "valid" &&
+          normalized.length > 0 &&
+          !nextVerified.includes(nextModel)
+        ) {
+          nextModel = allowedOptions[0] ?? "";
         }
 
         if (!allowedOptions.includes(nextModel)) {
-          nextModel = allowedOptions[0] ?? ''
+          nextModel = allowedOptions[0] ?? "";
         }
 
-        const verifiedChanged = !arraysEqual(nextVerified, currentVerified)
-        const modelChanged = nextModel !== currentModel
+        const verifiedChanged = !arraysEqual(nextVerified, currentVerified);
+        const modelChanged = nextModel !== currentModel;
 
-        mergedVerified = nextVerified
-        combinedOptions = allowedOptions
-        nextModelValue = nextModel
+        mergedVerified = nextVerified;
+        combinedOptions = allowedOptions;
+        nextModelValue = nextModel;
 
         if (!verifiedChanged && !modelChanged) {
-          return prev
+          return prev;
         }
 
         return {
@@ -399,76 +505,89 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
                 [provider]: nextVerified,
               }
             : prev.verifiedModels,
-        }
-      })
+        };
+      });
 
       setProviderModelOptions((prev) => ({
         ...prev,
         [provider]: combinedOptions,
-      }))
+      }));
 
       setModelDiscoveryState((prev) => ({
         ...prev,
         [provider]: {
-          source: mergedVerified.length > 0 ? 'live' : 'fallback',
-          networkError: status === 'network_error',
+          source: mergedVerified.length > 0 ? "live" : "fallback",
+          networkError: status === "network_error",
         },
-      }))
+      }));
 
       setProviderModelNotices((prev) => {
-        if (status === 'valid') {
+        if (status === "valid") {
           if (prev[provider] === null) {
-            return prev
+            return prev;
           }
           return {
             ...prev,
             [provider]: null,
-          }
+          };
         }
 
-        if (status === 'forbidden') {
-          const modelName = forbiddenModel ?? nextModelValue ?? ''
+        if (status === "forbidden") {
+          const modelName = forbiddenModel ?? nextModelValue ?? "";
           const notice = modelName
             ? `${modelName} 모델은 현재 API 키로 사용할 수 없습니다. 다른 모델을 선택해 주세요.`
-            : '선택한 모델을 사용할 수 없습니다. 다른 모델을 선택해 주세요.'
+            : "선택한 모델을 사용할 수 없습니다. 다른 모델을 선택해 주세요.";
           return {
             ...prev,
             [provider]: notice,
-          }
+          };
         }
 
         if (prev[provider] === null) {
-          return prev
+          return prev;
         }
 
-        if (status === 'unauthorized' || status === 'network_error') {
+        if (status === "unauthorized" || status === "network_error") {
           return {
             ...prev,
             [provider]: null,
-          }
+          };
         }
 
-        return prev
-      })
+        return prev;
+      });
     },
-    [setModelDiscoveryState, setProviderModelNotices, setProviderModelOptions, setState],
-  )
+    [
+      setModelDiscoveryState,
+      setProviderModelNotices,
+      setProviderModelOptions,
+      setState,
+    ],
+  );
 
   const revalidateProviderKey = useCallback(
-    async (provider: ProviderId, apiKeyOverride?: string, modelOverride?: string) => {
-      const result = await runValidation(provider, apiKeyOverride, modelOverride)
-      applyValidationResult(provider, result)
-      return result.validationStatus
+    async (
+      provider: ProviderId,
+      apiKeyOverride?: string,
+      modelOverride?: string,
+    ) => {
+      const result = await runValidation(
+        provider,
+        apiKeyOverride,
+        modelOverride,
+      );
+      applyValidationResult(provider, result);
+      return result.validationStatus;
     },
     [applyValidationResult, runValidation],
-  )
+  );
 
   const refreshProviderModels = useCallback(
     async (provider: ProviderId, apiKeyOverride?: string) => {
-      await revalidateProviderKey(provider, apiKeyOverride)
+      await revalidateProviderKey(provider, apiKeyOverride);
     },
     [revalidateProviderKey],
-  )
+  );
 
   useEffect(() => {
     try {
@@ -490,9 +609,9 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
         enableQualitySampling: state.enableQualitySampling,
         useServerHints: state.useServerHints,
         validationMode: state.validationMode,
-      })
+      });
     } catch (error) {
-      console.error('Failed to persist settings', error)
+      console.error("Failed to persist settings", error);
     }
   }, [
     state.selectedProviders,
@@ -512,213 +631,229 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
     state.enableQualitySampling,
     state.useServerHints,
     state.validationMode,
-  ])
+  ]);
 
-  const setProviderEnabled = useCallback((provider: ProviderId, enabled: boolean) => {
-    setState((prev) => {
-      const set = new Set(prev.selectedProviders)
-      if (enabled) {
-        set.add(provider)
-      } else {
-        set.delete(provider)
-      }
-
-      const ordered = PROVIDER_ORDER.filter((item) => set.has(item))
-      const nextProviders = ordered.length
-        ? ordered
-        : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders]
-      const nextActive = nextProviders.includes(prev.activeProviderId)
-        ? prev.activeProviderId
-        : nextProviders[0]
-      return {
-        ...prev,
-        selectedProviders: nextProviders,
-        activeProviderId: nextActive,
-      }
-    })
-  }, [])
-
-  const toggleProvider = useCallback(
-    (provider: ProviderId) => {
+  const setProviderEnabled = useCallback(
+    (provider: ProviderId, enabled: boolean) => {
       setState((prev) => {
-        const set = new Set(prev.selectedProviders)
-        if (set.has(provider)) {
-          set.delete(provider)
+        const set = new Set(prev.selectedProviders);
+        if (enabled) {
+          set.add(provider);
         } else {
-          set.add(provider)
+          set.delete(provider);
         }
-        const ordered = PROVIDER_ORDER.filter((item) => set.has(item))
+
+        const ordered = PROVIDER_ORDER.filter((item) => set.has(item));
         const nextProviders = ordered.length
           ? ordered
-          : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders]
+          : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders];
         const nextActive = nextProviders.includes(prev.activeProviderId)
           ? prev.activeProviderId
-          : nextProviders[0]
+          : nextProviders[0];
         return {
           ...prev,
           selectedProviders: nextProviders,
           activeProviderId: nextActive,
-        }
-      })
+        };
+      });
     },
     [],
-  )
+  );
+
+  const toggleProvider = useCallback((provider: ProviderId) => {
+    setState((prev) => {
+      const set = new Set(prev.selectedProviders);
+      if (set.has(provider)) {
+        set.delete(provider);
+      } else {
+        set.add(provider);
+      }
+      const ordered = PROVIDER_ORDER.filter((item) => set.has(item));
+      const nextProviders = ordered.length
+        ? ordered
+        : [...DEFAULT_PERSISTED_SETTINGS.selectedProviders];
+      const nextActive = nextProviders.includes(prev.activeProviderId)
+        ? prev.activeProviderId
+        : nextProviders[0];
+      return {
+        ...prev,
+        selectedProviders: nextProviders,
+        activeProviderId: nextActive,
+      };
+    });
+  }, []);
 
   const setActiveProvider = useCallback((provider: ProviderId) => {
     setState((prev) => {
-      if (!prev.selectedProviders.includes(provider) || prev.activeProviderId === provider) {
-        return prev
+      if (
+        !prev.selectedProviders.includes(provider) ||
+        prev.activeProviderId === provider
+      ) {
+        return prev;
       }
 
       return {
         ...prev,
         activeProviderId: provider,
-      }
-    })
-  }, [])
+      };
+    });
+  }, []);
 
   const setProviderModel = useCallback(
     (provider: ProviderId, modelId: string) => {
-      const trimmed = modelId.trim()
+      const trimmed = modelId.trim();
       if (!trimmed) {
-        return
+        return;
       }
 
-      let changed = false
+      let changed = false;
       setState((prev) => {
         if (prev.providerModels[provider] === trimmed) {
-          return prev
+          return prev;
         }
-        changed = true
+        changed = true;
         return {
           ...prev,
           providerModels: {
             ...prev.providerModels,
             [provider]: trimmed,
           },
-        }
-      })
+        };
+      });
 
       if (changed) {
         setProviderModelNotices((prev) => ({
           ...prev,
           [provider]: null,
-        }))
+        }));
       }
     },
     [setProviderModelNotices],
-  )
+  );
 
   const updateApiKey = useCallback(
-    (provider: ProviderId, value: string | null) => {
-      let outcome: { success: boolean; error?: unknown } = { success: true }
-      let trimmedValue = ''
-      setState((prev) => {
-        const nextKeys: ApiKeyMap = { ...prev.apiKeys }
-        const trimmed = (value ?? '').trim()
-        trimmedValue = trimmed
-        if (trimmed) {
-          nextKeys[provider] = trimmed
-        } else {
-          delete nextKeys[provider]
-        }
+    async (provider: ProviderId, value: string | null) => {
+      const trimmed = (value ?? "").trim();
+      const nextKeys: ApiKeyMap = { ...state.apiKeys };
 
-        try {
-          persistApiKeys(nextKeys)
-          outcome = { success: true }
-          return { ...prev, apiKeys: nextKeys }
-        } catch (error) {
-          outcome = { success: false, error }
-          return prev
-        }
-      })
-
-      if (!outcome.success) {
-        throw outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error))
+      if (trimmed) {
+        nextKeys[provider] = trimmed;
+      } else {
+        delete nextKeys[provider];
       }
+
+      try {
+        await persistApiKeys(nextKeys);
+        setState((prev) => ({ ...prev, apiKeys: nextKeys }));
+      } catch (error) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+
       setProviderModelNotices((prev) => ({
         ...prev,
         [provider]: null,
-      }))
-      ;(async () => {
-        await revalidateProviderKey(provider, trimmedValue)
-      })()
+      }));
+
+      // 키 재검증
+      await revalidateProviderKey(provider, trimmed);
     },
-    [revalidateProviderKey, setProviderModelNotices],
-  )
+    [state.apiKeys, revalidateProviderKey, setProviderModelNotices],
+  );
 
   const setConcurrency = useCallback((value: number) => {
-    setState((prev) => ({ ...prev, concurrency: clampPositiveInteger(value, 1) }))
-  }, [])
+    setState((prev) => ({
+      ...prev,
+      concurrency: clampPositiveInteger(value, 1),
+    }));
+  }, []);
 
   const setWorkerCount = useCallback((value: number) => {
-    setState((prev) => ({ ...prev, workerCount: clampPositiveInteger(value, 1) }))
-  }, [])
+    setState((prev) => ({
+      ...prev,
+      workerCount: clampPositiveInteger(value, 1),
+    }));
+  }, []);
 
   const setBucketSize = useCallback((value: number) => {
-    setState((prev) => ({ ...prev, bucketSize: clampPositiveInteger(value, 1) }))
-  }, [])
+    setState((prev) => ({
+      ...prev,
+      bucketSize: clampPositiveInteger(value, 1),
+    }));
+  }, []);
 
   const setRefillMs = useCallback((value: number) => {
-    setState((prev) => ({ ...prev, refillMs: clampPositiveInteger(value, 50) }))
-  }, [])
+    setState((prev) => ({
+      ...prev,
+      refillMs: clampPositiveInteger(value, 50),
+    }));
+  }, []);
 
-  const updateRetryPolicy = useCallback((provider: ProviderId, updates: Partial<RetryPolicy>) => {
-    setState((prev) => {
-      const current = prev.retryPolicy[provider]
-      const next = normalizeRetryPolicyForProvider(provider, current, updates)
-      if (
-        next.maxAttempts === current.maxAttempts &&
-        next.initialDelayMs === current.initialDelayMs &&
-        next.maxDelayMs === current.maxDelayMs &&
-        arraysEqual(next.retryableErrors, current.retryableErrors)
-      ) {
-        return prev
-      }
+  const updateRetryPolicy = useCallback(
+    (provider: ProviderId, updates: Partial<RetryPolicy>) => {
+      setState((prev) => {
+        const current = prev.retryPolicy[provider];
+        const next = normalizeRetryPolicyForProvider(
+          provider,
+          current,
+          updates,
+        );
+        if (
+          next.maxAttempts === current.maxAttempts &&
+          next.initialDelayMs === current.initialDelayMs &&
+          next.maxDelayMs === current.maxDelayMs &&
+          arraysEqual(next.retryableErrors, current.retryableErrors)
+        ) {
+          return prev;
+        }
 
-      return {
-        ...prev,
-        retryPolicy: {
-          ...prev.retryPolicy,
-          [provider]: next,
-        },
-      }
-    })
-  }, [])
+        return {
+          ...prev,
+          retryPolicy: {
+            ...prev.retryPolicy,
+            [provider]: next,
+          },
+        };
+      });
+    },
+    [],
+  );
 
   const setAutoTuneConcurrencyOn429 = useCallback((enabled: boolean) => {
-    setState((prev) => ({ ...prev, autoTuneConcurrencyOn429: enabled }))
-  }, [])
+    setState((prev) => ({ ...prev, autoTuneConcurrencyOn429: enabled }));
+  }, []);
 
   const setEnableBackendLogging = useCallback((enabled: boolean) => {
-    setState((prev) => ({ ...prev, enableBackendLogging: enabled }))
-  }, [])
+    setState((prev) => ({ ...prev, enableBackendLogging: enabled }));
+  }, []);
 
   const setEnforcePlaceholderGuard = useCallback((enabled: boolean) => {
-    setState((prev) => ({ ...prev, enforcePlaceholderGuard: enabled }))
-  }, [])
+    setState((prev) => ({ ...prev, enforcePlaceholderGuard: enabled }));
+  }, []);
 
   const setPrioritizeDllResources = useCallback((enabled: boolean) => {
-    setState((prev) => ({ ...prev, prioritizeDllResources: enabled }))
-  }, [])
+    setState((prev) => ({ ...prev, prioritizeDllResources: enabled }));
+  }, []);
 
   const setEnableQualitySampling = useCallback((enabled: boolean) => {
-    setState((prev) => ({ ...prev, enableQualitySampling: enabled }))
-  }, [])
+    setState((prev) => ({ ...prev, enableQualitySampling: enabled }));
+  }, []);
 
   const setUseServerHints = useCallback((enabled: boolean) => {
-    setState((prev) => ({ ...prev, useServerHints: enabled }))
-  }, [])
+    setState((prev) => ({ ...prev, useServerHints: enabled }));
+  }, []);
 
-  const setValidationMode = useCallback((mode: import('../storage/settingsStorage').ValidationMode) => {
-    setState((prev) => ({ ...prev, validationMode: mode }))
-  }, [])
+  const setValidationMode = useCallback(
+    (mode: import("../storage/settingsStorage").ValidationMode) => {
+      setState((prev) => ({ ...prev, validationMode: mode }));
+    },
+    [],
+  );
 
   const setProviderRetryPolicy = useCallback(
     (provider: ProviderId, patch: Partial<ProviderRetryPolicy>) => {
       setState((prev) => {
-        const current = prev.providerRetryPolicies[provider]
-        const next = normalizeRetryPolicy({ ...current, ...patch })
+        const current = prev.providerRetryPolicies[provider];
+        const next = normalizeRetryPolicy({ ...current, ...patch });
         if (
           current.maxRetries === next.maxRetries &&
           current.initialDelayMs === next.initialDelayMs &&
@@ -727,7 +862,7 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
           current.respectServerRetryAfter === next.respectServerRetryAfter &&
           current.autoTuneConcurrencyOn429 === next.autoTuneConcurrencyOn429
         ) {
-          return prev
+          return prev;
         }
 
         return {
@@ -736,11 +871,11 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
             ...prev.providerRetryPolicies,
             [provider]: next,
           },
-        }
-      })
+        };
+      });
     },
     [],
-  )
+  );
 
   const value = useMemo<SettingsStoreValue>(
     () => ({
@@ -799,15 +934,21 @@ export function SettingsStoreProvider({ children }: { children: ReactNode }) {
       setValidationMode,
       setProviderRetryPolicy,
     ],
-  )
+  );
 
-  return <SettingsStoreContext.Provider value={value}>{children}</SettingsStoreContext.Provider>
+  return (
+    <SettingsStoreContext.Provider value={value}>
+      {children}
+    </SettingsStoreContext.Provider>
+  );
 }
 
 export function useSettingsStore() {
-  const context = useContext(SettingsStoreContext)
+  const context = useContext(SettingsStoreContext);
   if (!context) {
-    throw new Error('SettingsStore must be used within a SettingsStoreProvider')
+    throw new Error(
+      "SettingsStore must be used within a SettingsStoreProvider",
+    );
   }
-  return context
+  return context;
 }

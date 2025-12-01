@@ -72,7 +72,6 @@ impl FormatHandler for LuaHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::{TranslatedEntry, FailedEntry};
 
     #[test]
     fn test_extract_lua() {

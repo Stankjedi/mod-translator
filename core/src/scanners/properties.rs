@@ -267,8 +267,6 @@ mod tests {
 
     #[test]
     fn test_parse_key_value() {
-        let scanner = PropertiesScanner::new();
-        
         let (key, value) = PropertiesScanner::parse_key_value("message=Hello World").unwrap();
         assert_eq!(key, "message");
         assert_eq!(value, "Hello World");

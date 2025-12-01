@@ -26,6 +26,40 @@ async fn cmd_cancel(state: State<'_, Shared>) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::<tauri::Wry>::default()
+        .plugin(tauri_plugin_stronghold::Builder::new(|password| {
+            // 앱 고유 키로 Stronghold 암호화 (실제 배포시 더 강력한 키 필요)
+            // argon2 또는 더 안전한 해시를 사용하는 것이 권장됨
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            
+            let mut hasher = DefaultHasher::new();
+            password.hash(&mut hasher);
+            b"mod-translator-stronghold-key-v1".hash(&mut hasher);
+            let hash1 = hasher.finish();
+            
+            hasher = DefaultHasher::new();
+            hash1.hash(&mut hasher);
+            password.hash(&mut hasher);
+            let hash2 = hasher.finish();
+            
+            hasher = DefaultHasher::new();
+            hash2.hash(&mut hasher);
+            b"salt-key".hash(&mut hasher);
+            let hash3 = hasher.finish();
+            
+            hasher = DefaultHasher::new();
+            hash3.hash(&mut hasher);
+            password.hash(&mut hasher);
+            let hash4 = hasher.finish();
+            
+            // 4개의 u64 해시를 조합하여 32바이트 키 생성
+            let mut key = Vec::with_capacity(32);
+            key.extend_from_slice(&hash1.to_le_bytes());
+            key.extend_from_slice(&hash2.to_le_bytes());
+            key.extend_from_slice(&hash3.to_le_bytes());
+            key.extend_from_slice(&hash4.to_le_bytes());
+            key
+        }).build())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

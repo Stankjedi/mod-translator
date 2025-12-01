@@ -11,6 +11,7 @@
     "dialog:allow-save",
     "opener:default",
     "fs:default",
+    "stronghold:default",
 
     {
       "identifier": "fs:scope",
