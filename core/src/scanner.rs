@@ -1,5 +1,6 @@
 /// File scanning with format detection and exclusion rules
 use crate::formats::{FileFormat, get_handler};
+use crate::config::{IgnoreOptions, matches_ignore_pattern};
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ pub struct ScanConfig {
     #[serde(default = "default_include_paths")]
     pub include_paths: Vec<String>,
     
-    /// Exclude patterns
+    /// Exclude patterns (legacy - prefer using IgnoreOptions)
     #[serde(default = "default_exclude_patterns")]
     pub exclude_patterns: Vec<String>,
     
@@ -21,6 +22,10 @@ pub struct ScanConfig {
     /// Binary detection threshold (% non-ASCII)
     #[serde(default = "default_binary_threshold")]
     pub binary_threshold: f32,
+    
+    /// Ignore options (for .modtranslatorignore support)
+    #[serde(default)]
+    pub ignore: IgnoreOptions,
 }
 
 fn default_include_paths() -> Vec<String> {
@@ -68,6 +73,7 @@ impl Default for ScanConfig {
             exclude_patterns: default_exclude_patterns(),
             max_file_size: default_max_size(),
             binary_threshold: default_binary_threshold(),
+            ignore: IgnoreOptions::default(),
         }
     }
 }
@@ -83,17 +89,30 @@ pub struct ScannedFile {
 #[derive(Debug)]
 pub struct FileScanner {
     config: ScanConfig,
+    /// Compiled ignore patterns (collected on scan start)
+    ignore_patterns: Vec<String>,
 }
 
 impl FileScanner {
     pub fn new(config: ScanConfig) -> Self {
-        Self { config }
+        Self { 
+            config,
+            ignore_patterns: Vec::new(),
+        }
     }
     
     /// Scan a directory for translatable files
     pub fn scan(&self, root: &Path) -> Result<Vec<ScannedFile>, std::io::Error> {
+        let mut scanner = Self {
+            config: self.config.clone(),
+            ignore_patterns: self.config.ignore.collect_patterns(root),
+        };
+        
+        // Also add legacy exclude_patterns
+        scanner.ignore_patterns.extend(self.config.exclude_patterns.clone());
+        
         let mut files = Vec::new();
-        self.scan_recursive(root, root, &mut files)?;
+        scanner.scan_recursive(root, root, &mut files)?;
         Ok(files)
     }
     
@@ -107,10 +126,19 @@ impl FileScanner {
             let entry = entry?;
             let path = entry.path();
             
+            // Get relative path for pattern matching
+            let relative = path.strip_prefix(root)
+                .ok()
+                .and_then(|p| p.to_str())
+                .unwrap_or("");
+            
+            // Check if directory should be skipped
             if path.is_dir() {
-                self.scan_recursive(root, &path, files)?;
+                if !self.is_path_ignored(relative) {
+                    self.scan_recursive(root, &path, files)?;
+                }
             } else if path.is_file() {
-                if let Some(scanned) = self.process_file(root, &path)? {
+                if let Some(scanned) = self.process_file(root, &path, relative)? {
                     files.push(scanned);
                 }
             }
@@ -122,6 +150,7 @@ impl FileScanner {
         &self,
         root: &Path,
         path: &Path,
+        relative_path: &str,
     ) -> Result<Option<ScannedFile>, std::io::Error> {
         let metadata = fs::metadata(path)?;
         let size = metadata.len();
@@ -131,12 +160,8 @@ impl FileScanner {
             return Ok(None);
         }
         
-        // Check exclusion patterns
-        let file_name = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        
-        if self.is_excluded(file_name) {
+        // Check exclusion patterns (using new ignore system)
+        if self.is_path_ignored(relative_path) {
             return Ok(None);
         }
         
@@ -166,18 +191,14 @@ impl FileScanner {
             path: path.to_path_buf(),
             format,
             size,
-            relative_path,
+            relative_path: relative_path.to_string(),
         }))
     }
     
-    fn is_excluded(&self, filename: &str) -> bool {
-        for pattern in &self.config.exclude_patterns {
-            if pattern.starts_with("*.") {
-                let ext = &pattern[2..];
-                if filename.ends_with(ext) {
-                    return true;
-                }
-            } else if filename.contains(pattern) {
+    /// Check if a path matches any ignore pattern
+    fn is_path_ignored(&self, relative_path: &str) -> bool {
+        for pattern in &self.ignore_patterns {
+            if matches_ignore_pattern(relative_path, pattern) {
                 return true;
             }
         }
