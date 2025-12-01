@@ -1,0 +1,12 @@
+{
+  "greeting": "Hello, World!",
+  "farewell": "Goodbye!",
+  "nested": {
+    "welcome": "Welcome to our game",
+    "thanks": "Thank you for playing"
+  },
+  "items": [
+    { "name": "Sword", "description": "A sharp blade" },
+    { "name": "Shield", "description": "Strong defense" }
+  ]
+}

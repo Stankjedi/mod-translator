@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+  <ModName>Test Mod</ModName>
+  <ModDescription>A test mod for translation</ModDescription>
+  <Items>
+    <Item id="sword">
+      <label>Iron Sword</label>
+      <description>A sturdy iron sword forged by skilled blacksmiths.</description>
+    </Item>
+    <Item id="potion">
+      <label>Health Potion</label>
+      <description>Restores 50 health points when consumed.</description>
+    </Item>
+  </Items>
+</LanguageData>
