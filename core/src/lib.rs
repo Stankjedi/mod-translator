@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod archive;
 pub mod backup;
 pub mod codex_spec_tests;
 pub mod config;
@@ -30,6 +31,9 @@ pub mod validator;
 #[cfg(test)]
 mod integration_tests;
 
+pub use archive::{
+    is_archive_file, scan_archive, ArchiveEntry, ArchiveModification, ArchiveScanResult, ArchiveType,
+};
 pub use config::{TranslatorConfig, UiOptions, ValidatorOptions};
 pub use jobs::{
     cancel_translation_job, open_output_folder, retry_translation_now, start_translation_job,

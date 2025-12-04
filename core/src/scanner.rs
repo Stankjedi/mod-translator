@@ -1,4 +1,5 @@
 /// File scanning with format detection and exclusion rules
+use crate::archive::{self, ArchiveType};
 use crate::formats::{FileFormat, get_handler};
 use crate::config::{IgnoreOptions, matches_ignore_pattern};
 use std::path::{Path, PathBuf};
@@ -84,6 +85,22 @@ pub struct ScannedFile {
     pub format: FileFormat,
     pub size: u64,
     pub relative_path: String,
+    /// 아카이브 파일 내부 엔트리인 경우 아카이브 경로
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<PathBuf>,
+    /// 아카이브 내부 경로
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_entry_path: Option<String>,
+    /// 아카이브 타입
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_type: Option<ArchiveType>,
+}
+
+impl ScannedFile {
+    /// 아카이브 내부 파일인지 확인
+    pub fn is_archive_entry(&self) -> bool {
+        self.archive_path.is_some()
+    }
 }
 
 #[derive(Debug)]
@@ -192,6 +209,9 @@ impl FileScanner {
             format,
             size,
             relative_path: relative_path.to_string(),
+            archive_path: None,
+            archive_entry_path: None,
+            archive_type: None,
         }))
     }
     
@@ -218,6 +238,72 @@ impl FileScanner {
         
         let ratio = non_ascii as f32 / sample_size as f32;
         Ok(ratio > self.config.binary_threshold)
+    }
+
+    /// JAR/ZIP 아카이브 파일 내부 스캔
+    pub fn scan_archive(&self, archive_path: &Path, root: &Path) -> Result<Vec<ScannedFile>, std::io::Error> {
+        if !archive::is_archive_file(archive_path) {
+            return Ok(Vec::new());
+        }
+
+        let scan_result = archive::scan_archive(archive_path)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+
+        let archive_relative = archive_path.strip_prefix(root)
+            .ok()
+            .and_then(|p| p.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        let mut files = Vec::new();
+
+        for entry in scan_result.language_files {
+            let format = FileFormat::from_extension(
+                Path::new(&entry.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+            );
+
+            if format == FileFormat::Unknown {
+                continue;
+            }
+
+            // 아카이브 내부 파일의 상대 경로: archive.jar!entry/path.json
+            let relative_path = format!("{}!{}", archive_relative, entry.path);
+
+            files.push(ScannedFile {
+                path: archive_path.to_path_buf(),
+                format,
+                size: entry.size,
+                relative_path,
+                archive_path: Some(archive_path.to_path_buf()),
+                archive_entry_path: Some(entry.path),
+                archive_type: Some(scan_result.archive_type),
+            });
+        }
+
+        Ok(files)
+    }
+
+    /// 디렉터리 내 모든 아카이브 파일 스캔
+    pub fn scan_archives_in_directory(&self, root: &Path) -> Result<Vec<ScannedFile>, std::io::Error> {
+        let mut all_files = Vec::new();
+
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_file() && archive::is_archive_file(&path) {
+                let archive_files = self.scan_archive(&path, root)?;
+                all_files.extend(archive_files);
+            } else if path.is_dir() {
+                let sub_files = self.scan_archives_in_directory(&path)?;
+                all_files.extend(sub_files);
+            }
+        }
+
+        Ok(all_files)
     }
 }
 

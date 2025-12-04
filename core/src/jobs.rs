@@ -2,6 +2,7 @@ use crate::ai::{
     hints::{RetryHint, RetryHintSource},
     translate_text, ProviderId, TranslationError,
 };
+use crate::archive::{self, ArchiveModification};
 use crate::backup::backup_and_swap;
 use crate::placeholder_validator::{PlaceholderValidator, Segment as ValidatorSegment};
 use crate::protector::Protector;
@@ -256,6 +257,19 @@ fn set_checkpoint_for_pending_segment(
 pub struct TranslationFileInput {
     pub relative_path: String,
     pub mod_install_path: String,
+    /// 아카이브 내부 파일인 경우 아카이브의 상대 경로
+    #[serde(default)]
+    pub archive_path: Option<String>,
+    /// 아카이브 내부 엔트리 경로
+    #[serde(default)]
+    pub archive_entry_path: Option<String>,
+}
+
+impl TranslationFileInput {
+    /// 아카이브 내부 파일인지 확인
+    pub fn is_archive_entry(&self) -> bool {
+        self.archive_path.is_some() && self.archive_entry_path.is_some()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -349,6 +363,7 @@ struct Segment {
     suffix: String,
 }
 
+#[derive(Clone)]
 struct FileContext {
     relative_path: String,
     #[allow(dead_code)]
@@ -360,6 +375,10 @@ struct FileContext {
     output_absolute_path: PathBuf,
     resume_metadata_path: PathBuf,
     resume_line_index: usize,
+    /// 아카이브 파일 경로 (아카이브 내부 파일인 경우)
+    archive_path: Option<PathBuf>,
+    /// 아카이브 내부 엔트리 경로
+    archive_entry_path: Option<String>,
 }
 
 fn compute_backoff_ms(attempt: u32) -> u64 {
@@ -729,22 +748,50 @@ async fn run_translation_job(
         let relative_path = PathBuf::from(&file.relative_path);
         let mod_root_raw = PathBuf::from(&file.mod_install_path);
         let mod_root = mod_root_raw.canonicalize().unwrap_or(mod_root_raw.clone());
-        let source_file_path = mod_root.join(&relative_path);
-
-        let content = match fs::read_to_string(&source_file_path) {
-            Ok(value) => value,
-            Err(err) => {
-                let message = format!(
-                    "Failed to read {}: {}",
-                    source_file_path.to_string_lossy(),
-                    err
-                );
-                file_errors.push(TranslationFileErrorEntry {
-                    file_path: file.relative_path.clone(),
-                    message,
-                    code: Some("READ_FAILED".into()),
-                });
-                continue;
+        
+        // 아카이브 내부 파일인지 확인
+        let (content, archive_path, archive_entry_path, source_file_path) = if file.is_archive_entry() {
+            let archive_rel = file.archive_path.as_ref().unwrap();
+            let entry_path = file.archive_entry_path.as_ref().unwrap();
+            let archive_full_path = mod_root.join(archive_rel);
+            
+            match archive::read_archive_entry_string(&archive_full_path, entry_path) {
+                Ok(content) => (
+                    content,
+                    Some(archive_full_path.clone()),
+                    Some(entry_path.clone()),
+                    archive_full_path,
+                ),
+                Err(err) => {
+                    let message = format!(
+                        "Failed to read {}!{}: {}",
+                        archive_rel, entry_path, err
+                    );
+                    file_errors.push(TranslationFileErrorEntry {
+                        file_path: file.relative_path.clone(),
+                        message,
+                        code: Some("ARCHIVE_READ_FAILED".into()),
+                    });
+                    continue;
+                }
+            }
+        } else {
+            let source_file_path = mod_root.join(&relative_path);
+            match fs::read_to_string(&source_file_path) {
+                Ok(value) => (value, None, None, source_file_path),
+                Err(err) => {
+                    let message = format!(
+                        "Failed to read {}: {}",
+                        source_file_path.to_string_lossy(),
+                        err
+                    );
+                    file_errors.push(TranslationFileErrorEntry {
+                        file_path: file.relative_path.clone(),
+                        message,
+                        code: Some("READ_FAILED".into()),
+                    });
+                    continue;
+                }
             }
         };
 
@@ -768,6 +815,8 @@ async fn run_translation_job(
             output_absolute_path,
             resume_metadata_path,
             resume_line_index: 0,
+            archive_path,
+            archive_entry_path,
         };
         context.translated_lines = vec![None; context.lines.len()];
 
@@ -1312,6 +1361,7 @@ async fn run_translation_job(
         return;
     }
 
+    // 일반 파일 저장 (아카이브 내부 파일은 별도 처리)
     for context in &mut file_contexts {
         if cancel_flag.load(Ordering::SeqCst) {
             emit_cancelled_progress(
@@ -1324,6 +1374,11 @@ async fn run_translation_job(
                 &file_errors,
             );
             return;
+        }
+
+        // 아카이브 내부 파일은 나중에 일괄 처리
+        if context.archive_path.is_some() {
+            continue;
         }
 
         let output_absolute_path = context.output_absolute_path.clone();
@@ -1465,6 +1520,92 @@ async fn run_translation_job(
                 retry: None,
             },
         );
+    }
+
+    // 아카이브 내부 파일 일괄 저장
+    let archive_contexts: Vec<&FileContext> = file_contexts.iter()
+        .filter(|c| c.archive_path.is_some())
+        .collect();
+    
+    if !archive_contexts.is_empty() {
+        emit_progress(
+            &app,
+            TranslationProgressEventPayload {
+                job_id: payload.job_id.clone(),
+                status: "running".into(),
+                progress_pct: Some(percentage(processed_segments, total_segments)),
+                cancel_requested: None,
+                log: Some("아카이브 파일을 저장하는 중...".into()),
+                translated_count: Some(processed_segments),
+                total_count: Some(total_segments),
+                file_name: None,
+                file_success: None,
+                file_errors: clone_errors(&file_errors),
+                last_written: None,
+                checkpoint: Some(job_state.checkpoint.clone()),
+                retry: None,
+            },
+        );
+
+        // 아카이브별로 그룹화하여 저장
+        let archive_save_contexts: Vec<FileContext> = file_contexts.iter()
+            .filter(|c| c.archive_path.is_some())
+            .cloned()
+            .collect();
+        
+        match save_archive_translations(&archive_save_contexts, &target_lang) {
+            Ok(results) => {
+                for (archive_path, count) in results {
+                    let archive_name = archive_path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| archive_path.to_string_lossy().to_string());
+                    
+                    emit_progress(
+                        &app,
+                        TranslationProgressEventPayload {
+                            job_id: payload.job_id.clone(),
+                            status: "running".into(),
+                            progress_pct: Some(percentage(processed_segments, total_segments)),
+                            cancel_requested: None,
+                            log: Some(format!("{} 아카이브에 {}개 파일 저장 완료", archive_name, count)),
+                            translated_count: Some(processed_segments),
+                            total_count: Some(total_segments),
+                            file_name: Some(archive_name),
+                            file_success: Some(true),
+                            file_errors: clone_errors(&file_errors),
+                            last_written: None,
+                            checkpoint: Some(job_state.checkpoint.clone()),
+                            retry: None,
+                        },
+                    );
+                }
+            }
+            Err(err) => {
+                file_errors.push(TranslationFileErrorEntry {
+                    file_path: "archive".into(),
+                    message: err.clone(),
+                    code: Some("ARCHIVE_WRITE_FAILED".into()),
+                });
+                emit_progress(
+                    &app,
+                    TranslationProgressEventPayload {
+                        job_id: payload.job_id.clone(),
+                        status: "running".into(),
+                        progress_pct: Some(percentage(processed_segments, total_segments)),
+                        cancel_requested: None,
+                        log: Some(format!("아카이브 저장 실패: {}", err)),
+                        translated_count: Some(processed_segments),
+                        total_count: Some(total_segments),
+                        file_name: None,
+                        file_success: Some(false),
+                        file_errors: clone_errors(&file_errors),
+                        last_written: None,
+                        checkpoint: Some(job_state.checkpoint.clone()),
+                        retry: None,
+                    },
+                );
+            }
+        }
     }
 
     let final_status = if !file_errors.is_empty() {
@@ -1632,6 +1773,102 @@ fn render_translated_file(context: &FileContext) -> String {
     }
 
     buffer
+}
+
+/// 아카이브 파일에 번역된 내용 저장
+/// 
+/// 같은 아카이브에 속한 모든 번역된 파일을 한 번에 처리합니다.
+fn save_archive_translations(
+    contexts: &[FileContext],
+    target_lang: &str,
+) -> Result<Vec<(PathBuf, usize)>, String> {
+    // 아카이브별로 컨텍스트 그룹화
+    let mut archive_groups: HashMap<PathBuf, Vec<&FileContext>> = HashMap::new();
+    
+    for context in contexts {
+        if let Some(archive_path) = &context.archive_path {
+            archive_groups
+                .entry(archive_path.clone())
+                .or_default()
+                .push(context);
+        }
+    }
+    
+    let mut results = Vec::new();
+    
+    for (archive_path, group_contexts) in archive_groups {
+        let mut modifications = ArchiveModification::new();
+        
+        for context in &group_contexts {
+            if let Some(entry_path) = &context.archive_entry_path {
+                let translated_content = render_translated_file(context);
+                
+                // 대상 언어로 경로 변환 (예: en_us.json -> ko_kr.json)
+                let target_entry_path = derive_archive_entry_output_path(entry_path, target_lang);
+                
+                // 원본 경로와 다른 경우 새 파일로 추가, 같으면 업데이트
+                if target_entry_path != *entry_path {
+                    modifications.add_file_string(&target_entry_path, &translated_content);
+                } else {
+                    modifications.update_file_string(entry_path, &translated_content);
+                }
+            }
+        }
+        
+        if modifications.is_empty() {
+            continue;
+        }
+        
+        // 백업 디렉토리 생성
+        let backup_dir = archive_path.parent()
+            .map(|p| p.join(".backup"))
+            .unwrap_or_else(|| PathBuf::from(".backup"));
+        
+        // 아카이브 수정 적용
+        archive::update_archive_with_translations(
+            &archive_path,
+            modifications.updates.into_iter()
+                .chain(modifications.additions.into_iter())
+                .map(|(k, v)| (k, String::from_utf8_lossy(&v).to_string()))
+                .collect(),
+            Some(&backup_dir),
+        ).map_err(|e| format!("아카이브 수정 실패: {}", e))?;
+        
+        results.push((archive_path, group_contexts.len()));
+    }
+    
+    Ok(results)
+}
+
+/// 아카이브 내부 파일 경로를 대상 언어 경로로 변환
+fn derive_archive_entry_output_path(entry_path: &str, target_lang: &str) -> String {
+    // 마인크래프트 언어 파일 패턴 처리 (en_us.json -> ko_kr.json)
+    if let Some(new_path) = archive::minecraft_lang_target_path(entry_path, target_lang) {
+        return new_path;
+    }
+    
+    // 일반적인 언어 코드 패턴 처리
+    let path = Path::new(entry_path);
+    if let (Some(stem), Some(ext)) = (path.file_stem(), path.extension()) {
+        let stem_str = stem.to_string_lossy();
+        let ext_str = ext.to_string_lossy();
+        
+        // 파일명에 언어 코드가 있는 경우 (예: messages_en.json)
+        let lang_patterns = ["_en", "_eng", "_english", ".en", ".eng", ".english"];
+        for pattern in lang_patterns {
+            if stem_str.to_lowercase().ends_with(pattern) {
+                let base = &stem_str[..stem_str.len() - pattern.len()];
+                let new_name = format!("{}_{}.{}", base, target_lang, ext_str);
+                if let Some(parent) = path.parent() {
+                    return parent.join(new_name).to_string_lossy().replace('\\', "/");
+                }
+                return new_name;
+            }
+        }
+    }
+    
+    // 변환할 수 없는 경우 원본 경로 반환 (덮어쓰기)
+    entry_path.to_string()
 }
 
 fn normalize_relative_display(path: &Path) -> String {

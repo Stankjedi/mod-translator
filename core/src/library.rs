@@ -1,3 +1,4 @@
+use crate::archive::{self, ArchiveType};
 use crate::policy::{self, PolicyBanner, PolicyProfile};
 use crate::steam::{resolve_app_name, LibraryDiscovery, LibraryDiscoveryDebug, SteamLocator};
 use crate::time::{format_system_time, FormattedTimestamp};
@@ -42,6 +43,12 @@ pub struct ModFileDescriptor {
     #[serde(default)]
     pub auto_selected: bool,
     pub language_hint: Option<String>,
+    /// 아카이브 내부 파일인 경우 아카이브 경로
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<String>,
+    /// 아카이브 타입 (jar, zip)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_type: Option<ArchiveType>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -517,6 +524,31 @@ pub fn list_mod_files(mod_directory: String) -> Result<ModFileListing, String> {
                 continue;
             }
 
+            // JAR/ZIP 아카이브 파일인 경우 내부 스캔
+            if archive::is_archive_file(&path) {
+                if let Ok(scan_result) = archive::scan_archive(&path) {
+                    let archive_rel = path.strip_prefix(&root)
+                        .map(|p| normalize_relative_path(p))
+                        .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                    
+                    for entry in scan_result.language_files {
+                        let language_hint = detect_archive_entry_language(&entry.path);
+                        let auto_selected = language_hint.as_deref().map_or(true, |lang| lang != "ko");
+                        
+                        files.push(ModFileDescriptor {
+                            path: entry.path,
+                            mod_install_path: mod_install_path.clone(),
+                            translatable: true,
+                            auto_selected,
+                            language_hint,
+                            archive_path: Some(archive_rel.clone()),
+                            archive_type: Some(scan_result.archive_type),
+                        });
+                    }
+                }
+                continue;
+            }
+
             if let Some(descriptor) = classify_mod_file(&root, &path, &mod_install_path) {
                 files.push(descriptor);
             }
@@ -761,6 +793,8 @@ fn classify_mod_file(
         translatable: true,
         auto_selected,
         language_hint,
+        archive_path: None,
+        archive_type: None,
     })
 }
 
@@ -889,8 +923,38 @@ fn normalize_language_code(token: &str) -> Option<String> {
         "pl" | "pol" | "polish" => Some("pl".into()),
         "it" | "ita" | "italian" => Some("it".into()),
         "ko" | "kor" | "korean" => Some("ko".into()),
+        // 마인크래프트 언어 코드
+        "en_us" | "en_gb" => Some("en".into()),
+        "ko_kr" => Some("ko".into()),
+        "ja_jp" => Some("ja".into()),
+        "zh_cn" => Some("zh-cn".into()),
         _ => None,
     }
+}
+
+/// 아카이브 내부 파일 경로에서 언어 힌트 감지
+fn detect_archive_entry_language(entry_path: &str) -> Option<String> {
+    let path = Path::new(entry_path);
+    
+    // 파일명에서 언어 코드 추출 (예: en_us.json, ko_kr.json)
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        let lower = stem.to_lowercase();
+        if let Some(code) = normalize_language_code(&lower) {
+            return Some(code);
+        }
+    }
+    
+    // 경로의 각 부분에서 언어 코드 탐색
+    for component in entry_path.split('/') {
+        let lower = component.to_lowercase();
+        for token in split_language_tokens(&lower) {
+            if let Some(code) = normalize_language_code(&token) {
+                return Some(code);
+            }
+        }
+    }
+    
+    None
 }
 
 fn file_name_to_string(path: &Path) -> Result<String, String> {
