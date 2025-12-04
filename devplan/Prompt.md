@@ -19,240 +19,290 @@
 
 | # | Prompt ID | Title | Priority | Status |
 |:---:|:---|:---|:---:|:---:|
-| 1 | PROMPT-001 | -1] API 키 저장소 보안 강화 (Tauri Stronghold) | P1 | ⬜ Pending |
-| 2 | PROMPT-002 | -1] E2E 테스트 스위트 추가 | P2 | ⬜ Pending |
-| 3 | PROMPT-003 | -2] UI 에러 피드백 상세화 | P2 | ⬜ Pending |
-| 4 | PROMPT-004 | -3] 번역 제외(ignore) 기능 | P2 | ⬜ Pending |
-| 5 | PROMPT-005 | -1] 다국어 UI 지원 (i18n) | P3 | ⬜ Pending |
+| 1 | PROMPT-001 | [P2-1] Add Japanese & Chinese UI Support | P2 | ⬜ Pending |
+| 2 | PROMPT-002 | [P2-2] Generate API Documentation (rustdoc) | P2 | ⬜ Pending |
+| 3 | PROMPT-003 | [P2-3] Large File Streaming Processing | P2 | ⬜ Pending |
+| 4 | PROMPT-004 | [P2-4] Complete LUA Handler Merge Function | P2 | ⬜ Pending |
+| 5 | PROMPT-005 | [P3-1] User Onboarding/Tutorial | P3 | ⬜ Pending |
+| 6 | PROMPT-006 | [P3-2] Glossary Feature | P3 | ⬜ Pending |
 
-**Total: 5 prompts** | **Completed: 0** | **Remaining: 5**
+**Total: 6 prompts** | **Completed: 0** | **Remaining: 6**
 
 ---
 
-## 🔴 Priority 1 (Critical) - Execute First
+## 🟡 Priority 2 (Important) - Execute First
 
-### [PROMPT-001] -1] API 키 저장소 보안 강화 (Tauri Stronghold)
+### [PROMPT-001] [P2-1] Add Japanese & Chinese UI Support
 
 **⏱️ Execute this prompt now, then proceed to PROMPT-002**
 
 > **🚨 REQUIRED: Use `replace_string_in_file` or `create_file` to make changes. Do NOT just show code.**
 
-**Task**: -1] API 키 저장소 Security 강화 (Tauri Stronghold)
+**Task**: Add Japanese and Chinese (Simplified) language support to the existing i18n system
 
 **Details:**
 
-| 항목 | 내용 |
+| Item | Content |
 |:---|:---|
-| **ID** | `SEC-001` |
-| **Category** | 🔒 보안 |
-| **Complexity** | Medium |
-| **Target Files** | `apps/desktop/src/storage/apiKeyStorage.ts`, `apps/desktop/src-tauri/Cargo.toml`, `apps/desktop/src-tauri/src/lib.rs` |
+| **ID** | `I18N-001` |
+| **Category** | 🌐 i18n |
+| **Complexity** | Low |
+| **Target Files** | `apps/desktop/src/i18n/locales/ja.ts`, `apps/desktop/src/i18n/locales/zh.ts`, `apps/desktop/src/i18n/types.ts`, `apps/desktop/src/i18n/index.ts` |
 
-**Current State:** API 키가 브라우저의 `localStorage`에 일반 텍스트로 저장됩니다. CSP 정책으로 외부 접근은 차단되지만, 로컬 파일 시스템에서 데이터 추출이 가능합니다.
+**Current State:** v0.1.3 implemented Korean/English UI with react-i18next. The `SupportedLocale` type is defined as `"ko" | "en"` only.
 
-**Improvement:** `tauri-plugin-stronghold`를 도입하여 API 키를 OS 수준 암호화 저장소(Windows Credential Manager, macOS Keychain)에 저장합니다. Tauri 커맨드를 통해 키를 읽고 쓰는 방식으로 변경합니다.
+**Implementation Steps:**
+1. Update `apps/desktop/src/i18n/types.ts` to add 'ja' and 'zh' to `SupportedLocale` type
+2. Create `apps/desktop/src/i18n/locales/ja.ts` with Japanese translations (copy structure from `en.ts`)
+3. Create `apps/desktop/src/i18n/locales/zh.ts` with Simplified Chinese translations
+4. Update `apps/desktop/src/i18n/index.ts` to import and register new language resources
+5. Ensure language dropdown in settings shows all 4 languages
 
-**Expected Effect:**
-- API 키 탈취 위험 원천 차단
-- 사용자 계정 보안 강화
-- 보안 점수 76 → 90+ 예상
-
----
-
-### 🟡 중요 (P2)
-
-#
+**Expected Result:**
+- Users can select Japanese or Chinese from the language dropdown
+- All UI text is translated appropriately
+- Browser language auto-detection includes ja/zh
 
 #### Verification:
-
-- Run: `cd vibereport-extension && pnpm compile`
-- Run: `cd vibereport-extension && pnpm test`
-- Confirm no compilation errors
+- Run: `cd apps/desktop && pnpm typecheck`
+- Confirm no TypeScript errors
 
 **✅ After completing this prompt, proceed to [PROMPT-002]**
 
 ---
 
-## 🟡 Priority 2 (High) - Execute Second
-
-### [PROMPT-002] -1] E2E 테스트 스위트 추가
+### [PROMPT-002] [P2-2] Generate API Documentation (rustdoc)
 
 **⏱️ Execute this prompt now, then proceed to PROMPT-003**
 
 > **🚨 REQUIRED: Use `replace_string_in_file` or `create_file` to make changes. Do NOT just show code.**
 
-**Task**: -1] E2E Testing 스위트 추가
+**Task**: Add rustdoc comments to public APIs and configure CI for documentation generation
 
 **Details:**
 
-| 항목 | 내용 |
+| Item | Content |
 |:---|:---|
-| **ID** | `TEST-001` |
-| **Category** | 🧪 테스트 |
-| **Complexity** | High |
-| **Target Files** | `core/tests/e2e_test.rs` (신규), `core/tests/fixtures/` (신규) |
+| **ID** | `DOC-001` |
+| **Category** | 📚 Documentation |
+| **Complexity** | Medium |
+| **Target Files** | `core/src/lib.rs`, `core/Cargo.toml`, `.github/workflows/docs.yml` |
 
-**Current State:** 186개 단위/통합 테스트가 있으나, 실제 파일 I/O부터 번역 API 모킹까지 전체 파이프라인을 검증하는 E2E 테스트가 없습니다.
+**Current State:** `core/src/lib.rs` exports 30+ public modules and types without `///` doc comments. Running `cargo doc` produces empty documentation.
 
-**Improvement:** `wiremock` 크레이트로 AI API를 모킹하고, 다양한 형식의 샘플 파일을 사용하여 전체 번역 파이프라인을 검증하는 E2E 테스트 스위트를 구축합니다.
+**Implementation Steps:**
+1. Add crate-level documentation at the top of `core/src/lib.rs` using `//!` comments
+2. Add `///` documentation comments to all `pub use` exports explaining each type/function
+3. Update `core/Cargo.toml` with documentation metadata:
+   - `documentation = "https://stankjedi.github.io/mod-translator"`
+   - `homepage = "https://github.com/Stankjedi/mod-translator"`
+4. Create `.github/workflows/docs.yml` for automatic doc generation on push to main
+5. Add docs badge to README.md
 
-**Expected Effect:**
-- 리팩토링 시 회귀 버그 방지
-- 새 형식 추가 시 안정성 보장
-- 테스트 커버리지 85 → 92+ 예상
-
----
-
-#
+**Expected Result:**
+- `cargo doc --open` generates comprehensive HTML documentation
+- GitHub Actions automatically deploys docs on push to main
 
 #### Verification:
-
-- Run: `cd vibereport-extension && pnpm compile`
-- Run: `cd vibereport-extension && pnpm test`
-- Confirm no compilation errors
+- Run: `cd core && cargo doc --no-deps`
+- Confirm documentation generates without warnings
 
 **✅ After completing this prompt, proceed to [PROMPT-003]**
 
 ---
 
-### [PROMPT-003] -2] UI 에러 피드백 상세화
+### [PROMPT-003] [P2-3] Large File Streaming Processing
 
 **⏱️ Execute this prompt now, then proceed to PROMPT-004**
 
 > **🚨 REQUIRED: Use `replace_string_in_file` or `create_file` to make changes. Do NOT just show code.**
 
-**Task**: -2] UI 에러 피드백 상세화
+**Task**: Implement streaming processing for large files to reduce memory usage
 
 **Details:**
 
-| 항목 | 내용 |
+| Item | Content |
 |:---|:---|
-| **ID** | `UI-001` |
-| **Category** | 🎨 UI/UX |
-| **Complexity** | Medium |
-| **Target Files** | `apps/desktop/src/context/ToastStore.tsx`, `apps/desktop/src/lib/ipc.ts` |
+| **ID** | `PERF-001` |
+| **Category** | ⚡ Performance |
+| **Complexity** | High |
+| **Target Files** | `core/src/formats/mod.rs`, `core/src/formats/json.rs`, `core/src/pipeline.rs` |
 
-**Current State:** 에러 발생 시 일반적인 Toast 알림만 표시됩니다. 에러 유형(네트워크, API 한도, 파일 형식 등)에 따른 구체적인 안내가 없습니다.
+**Current State:** Files are loaded entirely into memory before processing. Large modpacks (10MB+) can cause memory issues.
 
-**Improvement:**
-1. Rust 백엔드에서 구조화된 에러 타입 정의 (`AppError` enum)
-2. 프론트엔드에서 에러 유형별 아이콘, 색상, 해결 방법 표시
-3. API 한도 초과 시 남은 대기 시간 표시
+**Implementation Steps:**
+1. Add `is_large_file(path: &Path) -> bool` helper function in `core/src/formats/mod.rs` (threshold: 5MB)
+2. Add `StreamingConfig` struct with chunk size and threshold settings
+3. Implement chunked JSON parsing using `serde_json::StreamDeserializer` for large files
+4. Update `FormatHandler` trait with optional `extract_streaming()` method
+5. Update pipeline to detect large files and use streaming mode automatically
+6. Update progress reporting to show chunk-level progress
 
-**Expected Effect:**
-- 사용자 문제 해결 시간 단축
-- 지원 문의 감소
-- UI/UX 점수 75 → 82+ 예상
-<!-- AUTO-IMPROVEMENT-LIST-END -->
-
----
-
-## 3. ✨ 기능 추가 항목 (새 기능)
-
-<!-- AUTO-FEATURE-LIST-START -->
-
-### 🟡 중요 (P2)
-
-#
+**Expected Result:**
+- Files under 5MB: processed normally (current behavior preserved)
+- Files over 5MB: processed in chunks (memory efficient)
+- Memory usage reduced by up to 80% for large files
+- Progress bar shows chunk completion percentage
 
 #### Verification:
-
-- Run: `cd vibereport-extension && pnpm compile`
-- Run: `cd vibereport-extension && pnpm test`
-- Confirm no compilation errors
+- Run: `cd core && cargo test`
+- Confirm all 199 tests pass
 
 **✅ After completing this prompt, proceed to [PROMPT-004]**
 
 ---
 
-### [PROMPT-004] -3] 번역 제외(ignore) 기능
+### [PROMPT-004] [P2-4] Complete LUA Handler Merge Function
 
 **⏱️ Execute this prompt now, then proceed to PROMPT-005**
 
 > **🚨 REQUIRED: Use `replace_string_in_file` or `create_file` to make changes. Do NOT just show code.**
 
-**Task**: -3] 번역 제외(ignore) 기능
+**Task**: Complete the stub implementation of LUA format handler's merge function
 
 **Details:**
 
-| 항목 | 내용 |
+| Item | Content |
 |:---|:---|
-| **ID** | `FEAT-001` |
-| **Category** | ✨ 기능 추가 |
+| **ID** | `CODE-001` |
+| **Category** | 🔧 Code Quality |
 | **Complexity** | Medium |
-| **Target Files** | `core/src/config.rs`, `core/src/scanner.rs`, `apps/desktop/src/views/SettingsView.tsx` |
+| **Target Files** | `core/src/formats/lua.rs` |
 
-**Current State:** 스캔된 모든 파일이 번역 대상이 됩니다. 개발자 노트, 테스트 파일, 특정 언어 폴더 등을 제외할 방법이 없습니다.
+**Current State:** The evaluation report noted "일부 LUA 핸들러 merge 기능 stub 상태". The `FormatHandler` trait's `merge` method for LUA files is incomplete.
 
-**Improvement:**
-1. `.modtranslatorignore` 파일 지원 (gitignore 형식)
-2. `config.rs`에 `ignore_patterns: Vec<String>` 필드 추가
-3. `scanner.rs`에서 패턴 매칭으로 파일 제외
-4. 설정 UI에서 직접 패턴 편집 가능
+**Implementation Steps:**
+1. Review current `LuaHandler` implementation in `core/src/formats/lua.rs`
+2. Implement proper merge logic that:
+   - Preserves original LUA file structure and comments
+   - Replaces only the translated string values
+   - Handles nested table structures correctly
+   - Maintains Lua syntax validity
+3. Add unit tests for merge functionality:
+   - Test simple key-value pairs
+   - Test nested tables
+   - Test multiline strings
+   - Test comments preservation
+4. Update any related error handling
 
-**Expected Effect:**
-- 불필요한 번역 작업 감소 → API 비용 절감
-- 사용자 제어권 향상
-- 대규모 모드팩 처리 시 효율성 증가
-
----
-
-### 🟢 선택적 (P3)
-
-#
+**Expected Result:**
+- LUA files can be properly merged after translation
+- Original file structure and formatting preserved
+- All existing tests continue to pass
+- New merge tests added and passing
 
 #### Verification:
-
-- Run: `cd vibereport-extension && pnpm compile`
-- Run: `cd vibereport-extension && pnpm test`
-- Confirm no compilation errors
+- Run: `cd core && cargo test lua`
+- Confirm all LUA-related tests pass
 
 **✅ After completing this prompt, proceed to [PROMPT-005]**
 
 ---
 
-## 🟢 Priority 3 (Medium) - Execute Last
+## 🟢 Priority 3 (Nice-to-have) - Execute Last
 
-### [PROMPT-005] -1] 다국어 UI 지원 (i18n)
+### [PROMPT-005] [P3-1] User Onboarding/Tutorial
+
+**⏱️ Execute this prompt now, then proceed to PROMPT-006**
+
+> **🚨 REQUIRED: Use `replace_string_in_file` or `create_file` to make changes. Do NOT just show code.**
+
+**Task**: Implement first-run onboarding experience for new users
+
+**Details:**
+
+| Item | Content |
+|:---|:---|
+| **ID** | `UX-001` |
+| **Category** | 🎨 UI/UX |
+| **Complexity** | Medium |
+| **Target Files** | `apps/desktop/src/views/OnboardingView.tsx`, `apps/desktop/src/stores/appStore.ts`, `apps/desktop/src/App.tsx`, `apps/desktop/src/i18n/locales/*.ts` |
+
+**Current State:** No guidance for first-time users. Users must figure out API key setup and mod scanning on their own.
+
+**Implementation Steps:**
+1. Create `apps/desktop/src/views/OnboardingView.tsx` with 4-step wizard:
+   - Step 1: Welcome message + Language selection
+   - Step 2: API Key setup with links to provider documentation
+   - Step 3: Steam/Mod folder detection and selection
+   - Step 4: Quick start guide showing basic workflow
+2. Add `hasCompletedOnboarding: boolean` field to app store (persisted via Stronghold)
+3. Check onboarding status on app launch in `App.tsx`, redirect if not completed
+4. Add "Show Onboarding Again" option in Settings view
+5. Add all onboarding text to i18n translation files (ko, en, ja, zh)
+
+**Expected Result:**
+- First-time users see guided setup wizard automatically
+- "Skip" and "Don't show again" options available
+- Settings menu allows re-running onboarding
+- All text properly internationalized
+
+#### Verification:
+- Run: `cd apps/desktop && pnpm typecheck`
+- Confirm no TypeScript errors
+
+**✅ After completing this prompt, proceed to [PROMPT-006]**
+
+---
+
+### [PROMPT-006] [P3-2] Glossary Feature
 
 **⏱️ Execute this prompt now - FINAL PROMPT**
 
 > **🚨 REQUIRED: Use `replace_string_in_file` or `create_file` to make changes. Do NOT just show code.**
 
-**Task**: -1] 다국어 UI 지원 (i18n)
+**Task**: Implement glossary system for consistent translation of game-specific terms
 
 **Details:**
 
-| 항목 | 내용 |
+| Item | Content |
 |:---|:---|
-| **ID** | `FEAT-002` |
-| **Category** | ✨ 기능 추가 |
-| **Complexity** | Medium |
-| **Target Files** | `apps/desktop/src/i18n/` (신규), `apps/desktop/src/App.tsx` |
+| **ID** | `FEAT-001` |
+| **Category** | ✨ Feature Addition |
+| **Complexity** | High |
+| **Target Files** | `core/src/glossary.rs`, `core/src/lib.rs`, `core/src/pipeline.rs`, `apps/desktop/src/views/GlossaryView.tsx` |
 
-**Current State:** UI 텍스트가 한국어로 하드코딩되어 있습니다. 글로벌 사용자 접근이 제한됩니다.
+**Current State:** Game-specific terms (item names, place names, character names) are translated inconsistently. No mechanism to enforce community-agreed translations.
 
-**Improvement:**
-1. `react-i18next` 라이브러리 도입
-2. `i18n/locales/` 폴더에 언어별 JSON 파일 생성 (ko, en, ja, zh)
-3. 언어 선택 드롭다운 추가
-4. 브라우저 언어 자동 감지
+**Implementation Steps:**
+1. Create `core/src/glossary.rs` module with:
+   - `GlossaryEntry` struct: source term, target translation, optional context/notes
+   - `Glossary` struct: collection of entries with game profile association
+   - `load_from_file(path: &Path) -> Result<Glossary>` for JSON file loading
+   - `apply_to_text(&self, text: &str) -> String` for pre-translation replacement
+   - `save_to_file(&self, path: &Path) -> Result<()>` for exporting
+2. Add `pub mod glossary;` to `core/src/lib.rs` and re-export public types
+3. Integrate glossary into translation pipeline:
+   - Load glossary before translation
+   - Apply glossary replacements to source text
+   - Protect glossary terms like placeholders
+4. Create `apps/desktop/src/views/GlossaryView.tsx`:
+   - List view of all glossary entries
+   - Add/Edit/Delete entry forms
+   - Import from JSON file
+   - Export to JSON file
+   - Filter by game profile
+5. Add navigation link to Glossary view in sidebar
+6. Add glossary-related i18n keys to all locale files
 
-**Expected Effect:**
-- 글로벌 사용자 접근성 향상
-- 번역 프로젝트답게 다국어 지원
-- 커뮤니티 번역 기여 가능
-<!-- AUTO-FEATURE-LIST-END -->
+**Expected Result:**
+- Users can create and manage glossary entries in UI
+- Glossary terms are consistently applied before AI translation
+- Import/export allows sharing glossaries with community
+- Game-specific terms maintain consistency across translations
 
 #### Verification:
+- Run: `cd core && cargo test glossary`
+- Run: `cd apps/desktop && pnpm typecheck`
+- Confirm all tests pass
 
-- Run: `cd vibereport-extension && pnpm compile`
-- Run: `cd vibereport-extension && pnpm test`
-- Confirm no compilation errors
+**🎉 ALL PROMPTS COMPLETED! Run final verification:**
 
-**🎉 ALL PROMPTS COMPLETED! Run final verification.**
+```bash
+cd core && cargo test --workspace
+cd apps/desktop && pnpm typecheck
+```
 
 ---
 
-
-*Generated: 2025-12-01T15:27:24.555Z*
+*Generated: 2025-12-03*
