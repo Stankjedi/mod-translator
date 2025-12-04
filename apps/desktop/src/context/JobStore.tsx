@@ -924,7 +924,8 @@ export function JobStoreProvider({ children }: { children: ReactNode }) {
 
         const files: JobFileEntry[] = listing.files.map((entry) => ({
           path: entry.path,
-          relativePath: entry.path,
+          // 아카이브 내부 파일의 경우 relativePath는 아카이브 경로
+          relativePath: entry.archive_path ?? entry.path,
           modInstallPath: entry.mod_install_path,
           translatable: entry.translatable,
           autoSelected: entry.auto_selected,
